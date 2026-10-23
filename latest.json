@@ -1,7 +1,7 @@
 {
- "tag": "v0.9-beta22",
- "name": "0.9-beta22",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta22/subaru-ssm-dashboard.apk",
- "size": 128285360,
- "notes": "OpenPort на Teyes CC4 Pro и новых магнитолах, исправленное радио (диапазоны, пресеты, частота сразу), логи с короткой колонкой Time для EcuEdit, карточка гидротрансформатора, доп датчики на ESP32-S3."
+ "tag": "v0.9-beta23",
+ "name": "0.9-beta23",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta23/subaru-ssm-dashboard.apk",
+ "size": 128350992,
+ "notes": "Приборка с картой ведёт по 2ГИС (его карта, манёвры, камеры, ограничения), подсказки Яндекса, замеры как у Dragy и торможение 100–0, Multitronics MPC-800, папка своих определений RomRaider. Исправлены зависания и перезагрузки на магнитолах с K-line кабелем."
 }
