@@ -51,6 +51,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
@@ -64,6 +66,27 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.ArrowUp
+import com.composables.icons.lucide.ArrowUpLeft
+import com.composables.icons.lucide.ArrowUpRight
+import com.composables.icons.lucide.CornerUpLeft
+import com.composables.icons.lucide.CornerUpRight
+import com.composables.icons.lucide.CornerLeftDown
+import com.composables.icons.lucide.CornerRightDown
+import com.composables.icons.lucide.Undo2
+import com.composables.icons.lucide.Redo2
+import com.composables.icons.lucide.RotateCcw
+import com.composables.icons.lucide.FlagTriangleRight
+import com.composables.icons.lucide.Cctv
+import com.composables.icons.lucide.Construction
+import com.composables.icons.lucide.TriangleAlert
+import com.composables.icons.lucide.Fuel
+import com.composables.icons.lucide.Thermometer
+import androidx.compose.material3.Icon
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.wrapContentHeight
 import kg.forester.sg.data.Repo
 import kg.forester.sg.service.MediaSessions
 import kg.forester.sg.service.NavGuidance
@@ -80,7 +103,8 @@ import org.osmdroid.views.overlay.Polyline
 /*
  * «Приборка с картой»: two round gauges with the map between them, as the digital clusters of new cars show the
  * navigation. The map is our own (OpenStreetMap, turned along the course, the way just driven drawn on it);
- * the next turn comes from the navigator's notification (see NavGuidance).
+ * the next turn comes from the navigator's notification (see NavGuidance). When 2GIS guides, its dashboard service
+ * (DgisDashboard) gives its own map with the route, the manoeuvre, speed bumps, cameras, the limit and the lights.
  */
 
 /** Map colours of the cluster: the OSM tiles recoloured from their brightness, like the mini-map designs. */
@@ -119,7 +143,8 @@ val NavAccents = listOf(
 /**
  * Settings of a «Приборка с картой» card, kept in its style:
  * "nav:l=<left value>|r=<right value>|g=<ring, or a dial design id>|m=<map colours>|z=<zoom>|c=<accent>|h=<0 hides
- * the turn hints>|x=<0 hides the fuel and coolant scales>" (no ';' after the prefix). An empty style is the default look.
+ * the turn hints>|x=<0 hides the fuel and coolant scales>|t=<1 tilts 2GIS's map in perspective>" (no ';' after the prefix).
+ * An empty style is the default look.
  */
 data class NavCfg(
     val left: String = "speed",
@@ -130,9 +155,10 @@ data class NavCfg(
     val accent: String = "sky",
     val hints: Boolean = true,
     val extras: Boolean = true,
+    val tilt: Boolean = false,
 ) {
     fun format() = if (this == NavCfg()) "" else
-        "nav:l=$left|r=$right|g=$gauge|m=$map|z=$zoom|c=$accent|h=${if (hints) 1 else 0}|x=${if (extras) 1 else 0}"
+        "nav:l=$left|r=$right|g=$gauge|m=$map|z=$zoom|c=$accent|h=${if (hints) 1 else 0}|x=${if (extras) 1 else 0}|t=${if (tilt) 1 else 0}"
 
     val color get() = (NavAccents.firstOrNull { it.first == accent } ?: NavAccents.first()).second.second
 
@@ -151,6 +177,7 @@ data class NavCfg(
                     "c" -> if (v.isNotEmpty()) c = c.copy(accent = v)
                     "h" -> c = c.copy(hints = v != "0")
                     "x" -> c = c.copy(extras = v != "0")
+                    "t" -> c = c.copy(tilt = v == "1")
                 }
             }
             return c
@@ -205,6 +232,14 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
     }
     val route by Routing.route.collectAsState()
     val progress by Routing.progress.collectAsState()
+    // 2GIS's dashboard service while the card is on screen (not in the settings preview)
+    if (interactive) DisposableEffect(Unit) {
+        kg.forester.sg.service.DgisDashboard.start(ctx)
+        onDispose { kg.forester.sg.service.DgisDashboard.stop() }
+    }
+    val dgis by kg.forester.sg.service.DgisDashboard.info.collectAsState()
+    val dgisFrame by kg.forester.sg.service.DgisDashboard.frame.collectAsState()
+    val guiding = dgis?.guiding == true
     var heading by remember { mutableStateOf(0f) }
     LaunchedEffect(gps) {
         val g = gps ?: return@LaunchedEffect
@@ -238,17 +273,72 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
         val hPx = with(d) { maxHeight.toPx() }
         // the car sits low in the middle, so more of the road ahead is in view
         val carY = hPx * 0.68f
-        AndroidView({ map }, Modifier.fillMaxSize()) { v ->
-            v.overlayManager.tilesOverlay.setColorFilter(look.tiles)
-            v.overlayManager.tilesOverlay.loadingBackgroundColor = look.bg.toArgb()
-            v.overlayManager.tilesOverlay.loadingLineColor = look.bg.toArgb()
+        // 2GIS's map, the route on it, while it guides: asked at the card's size, only then (it renders it for us).
+        // Its zoom is its own; a higher dpi draws it larger: the card's zoom setting scales it, x2 per two steps
+        val dpi = with(d) { (density * 160 * Math.pow(2.0, (cfg.zoom - 15.0) / 2)).toInt() }
+        // the card's own size (2GIS sends nothing for a frame much taller than its screen); the tilt stretches it (see below)
+        val frameH = hPx.toInt()
+        LaunchedEffect(interactive, guiding, wPx.toInt(), frameH, dpi) {
+            kg.forester.sg.service.DgisDashboard.frames(if (interactive && guiding) Triple(wPx.toInt(), frameH, dpi) else null)
+        }
+        val ownMap = dgisFrame?.takeIf { guiding }?.first
+        // the map set up only when what it shows changes: the card recomposes with every ECU sample (up to 12 a second),
+        // and a fresh tile colour filter or centre each time redrew the whole map, so the map, the speed and the revs
+        // moved in jerks on slower head units
+        DisposableEffect(look) {
+            map.overlayManager.tilesOverlay.setColorFilter(look.tiles)
+            map.overlayManager.tilesOverlay.loadingBackgroundColor = look.bg.toArgb()
+            map.overlayManager.tilesOverlay.loadingLineColor = look.bg.toArgb()
+            map.invalidate()
+            onDispose {}
+        }
+        DisposableEffect(accent, hPx) {
             trail.outlinePaint.apply { color = Color(0x66FFFFFF).toArgb(); strokeWidth = hPx * 0.008f; strokeCap = android.graphics.Paint.Cap.ROUND }
             glow.outlinePaint.apply { color = accent.copy(alpha = 0.3f).toArgb(); strokeWidth = hPx * 0.06f; strokeCap = android.graphics.Paint.Cap.ROUND; strokeJoin = android.graphics.Paint.Join.ROUND }
             line.outlinePaint.apply { color = accent.toArgb(); strokeWidth = hPx * 0.022f; strokeCap = android.graphics.Paint.Cap.ROUND; strokeJoin = android.graphics.Paint.Join.ROUND }
-            if (v.zoomLevelDouble != cfg.zoom) v.controller.setZoom(cfg.zoom)
-            v.setMapCenterOffset(0, (carY - hPx / 2).toInt())
-            gps?.let { g -> if (g.lat != null && g.lon != null) v.controller.setCenter(GeoPoint(g.lat, g.lon)) }
-            v.mapOrientation = -heading
+            map.invalidate()
+            onDispose {}
+        }
+        DisposableEffect(cfg.zoom, carY, hPx) {
+            if (map.zoomLevelDouble != cfg.zoom) map.controller.setZoom(cfg.zoom)
+            map.setMapCenterOffset(0, (carY - hPx / 2).toInt())
+            onDispose {}
+        }
+        // from fix to fix in one glide as long as the time between them (1–2 a second): the map drives on instead of jumping
+        val g0 = gps
+        val lastFix = remember { LongArray(1) }
+        DisposableEffect(g0?.lat, g0?.lon, heading) {
+            if (g0?.lat != null && g0.lon != null) {
+                val now = android.os.SystemClock.uptimeMillis()
+                val dt = now - lastFix[0]
+                lastFix[0] = now
+                if (dt > 3000) { map.controller.setCenter(GeoPoint(g0.lat, g0.lon)); map.mapOrientation = -heading }
+                else map.controller.animateTo(GeoPoint(g0.lat, g0.lon), null, dt.coerceIn(250, 1500), -heading)
+            } else map.mapOrientation = -heading
+            onDispose {}
+        }
+        AndroidView({ map }, Modifier.fillMaxSize())
+        if (ownMap != null) {
+            val img = remember(ownMap) { ownMap.asImageBitmap() }
+            val tilt = cfg.tilt
+            val cardH = maxHeight
+            // over our own map, which must not show at the edges the tilt leaves
+            Box(Modifier.fillMaxSize().clipToBounds().background(look.bg)) {
+                if (!tilt) Image(img, null, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                // tilted: the frame stretched up out of the card from its bottom edge, then laid back (2GIS's camera is flat,
+                // the tilt is ours): the perspective takes the stretch back, and its far part fills the top as the road ahead
+                else Image(img, null, Modifier.fillMaxWidth().align(Alignment.BottomCenter)
+                    .wrapContentHeight(Alignment.Bottom, unbounded = true).height(cardH * 3.4f)
+                    .graphicsLayer {
+                        rotationX = 52f
+                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+                        cameraDistance = 22f * density
+                        scaleX = 1.35f
+                        // the car (in the middle of 2GIS's frame) lower down, more of the road ahead in view
+                        translationY = size.height * 0.1f
+                    }, contentScale = androidx.compose.ui.layout.ContentScale.FillBounds)
+                if (tilt) Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to look.bg.copy(alpha = 0.85f), 0.22f to Color.Transparent)))
+            }
         }
         // the map fades into the gauges at the sides and into the frame at the top and bottom. This layer over the map
         // also takes the touches (the map view would swallow them): a short tap is «where to», and the down stays
@@ -263,8 +353,9 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
             drawRect(Brush.horizontalGradient(0f to look.bg, 0.22f to look.bg.copy(alpha = 0.92f), 0.4f to Color.Transparent,
                 0.6f to Color.Transparent, 0.78f to look.bg.copy(alpha = 0.92f), 1f to look.bg))
             drawRect(Brush.verticalGradient(0f to look.bg.copy(alpha = 0.7f), 0.18f to Color.Transparent, 0.85f to Color.Transparent, 1f to look.bg.copy(alpha = 0.8f)))
-            drawCar(Offset(size.width / 2, carY), size.height * 0.055f, accent)
-            if (gps?.lat == null) {
+            // 2GIS draws the car on its own map
+            if (ownMap == null) drawCar(Offset(size.width / 2, carY), size.height * 0.055f, accent)
+            if (gps?.lat == null && ownMap == null) {
                 val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     color = C.Sub.toArgb(); textSize = size.height * 0.05f; textAlign = android.graphics.Paint.Align.CENTER
                 }
@@ -279,24 +370,37 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
         Clock(Modifier.align(Alignment.TopCenter).padding(top = maxHeight * 0.03f))
         val n = hint
         val p = progress
+        val dg = dgis?.takeIf { guiding && it.maneuverDistance.isNotEmpty() }
         val shown = when {
             !cfg.hints -> null
-            n != null -> Shown(n.title, n.text, n.icon, null, false)
+            dg != null -> kg.forester.sg.service.DgisDashboard.kind(dg.maneuverIcon).let { k ->
+                // an icon name it has not told us before: the words, and the notification's arrow if there is one
+                Shown(dg.maneuverDistance, dg.maneuverDescription.ifEmpty { turnWords(k) }, if (k == null) n?.icon else null, k)
+            }
+            n != null -> Shown(n.title, n.text, n.icon, null)
             p?.next != null -> Shown(Routing.distanceText(p.toNextM), Routing.say(p.next) + p.next.road.takeIf { it.isNotEmpty() }?.let { ", $it" }.orEmpty(),
-                null, Routing.angle(p.next), p.next.type.startsWith("roundabout") || p.next.type == "rotary")
+                null, Routing.kind(p.next))
             else -> null
         }
         if (shown != null) TurnHint(shown, accent, Modifier.align(Alignment.TopCenter).padding(top = maxHeight * 0.03f + 24.dp).widthIn(max = maxWidth * 0.38f))
         // at the bottom: what is left of the route, or how to get one
         val status by Routing.status.collectAsState()
+        val dgBottom = dgis?.takeIf { guiding }?.let { i ->
+            listOf(i.total, i.remaining, i.arrival.takeIf { it.isNotEmpty() }?.let { "прибытие $it" }).filter { !it.isNullOrEmpty() }.joinToString(" · ")
+        }?.ifEmpty { null }
         val bottom = when {
+            dgBottom != null -> dgBottom
             p != null -> "${Routing.distanceText(p.leftM)} · ${(p.leftS / 60).toInt().coerceAtLeast(1)} мин · прибытие " +
                 java.util.Calendar.getInstance().apply { add(java.util.Calendar.SECOND, p.leftS.toInt()) }.let { "%d:%02d".format(it.get(java.util.Calendar.HOUR_OF_DAY), it.get(java.util.Calendar.MINUTE)) }
             status.isNotEmpty() -> status
             route == null -> "нажмите, чтобы проложить маршрут"
             else -> ""
         }
-        if (bottom.isNotEmpty()) T(bottom, 13.sp, if (p != null) Color(0xFFE2E6EE) else Color(0xFF8E95AB), FontWeight.Medium, maxLines = 1,
+        // what 2GIS warns of ahead: speed bumps, a camera, the limit, the light
+        dgis?.takeIf { guiding && cfg.hints }?.let { i ->
+            DgisAlerts(i, accent, Modifier.align(Alignment.BottomCenter).padding(bottom = maxHeight * 0.03f + 26.dp).widthIn(max = maxWidth * 0.4f))
+        }
+        if (bottom.isNotEmpty()) T(bottom, 13.sp, if (p != null || dgBottom != null) Color(0xFFE2E6EE) else Color(0xFF8E95AB), FontWeight.Medium, maxLines = 1,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = maxHeight * 0.03f).clip(RoundedCornerShape(8.dp))
                 .background(Color(0xB3070A12)).padding(horizontal = 10.dp, vertical = 3.dp))
         InfoButton("Приборка с картой", info, Modifier.align(Alignment.TopEnd))
@@ -334,43 +438,68 @@ private fun NavGauge(
         if (ind == null || v == null) 0f else ((v - ind.min) / (ind.max - ind.min)).coerceIn(0f, 1f),
         androidx.compose.animation.core.tween(240), label = "ring",
     )
+    // where the red zone starts on the scale (the rpm limit), null without one
+    val red = ind?.warnAbove?.let { ((it - ind.min) / (ind.max - ind.min)).coerceIn(0f, 1f) }
+    val warn = ind?.warn(v) == true
+    val lit = if (warn) C.Orange else accent
     BoxWithConstraints(m, contentAlignment = Alignment.Center) {
         val r = maxWidth
         Canvas(Modifier.fillMaxSize()) {
-            val sw = size.minDimension * 0.045f
-            val inset = sw / 2 + size.minDimension * 0.02f
-            val tl = Offset(inset, inset)
-            val sz = Size(size.width - inset * 2, size.height - inset * 2)
+            val d = size.minDimension
+            val sw = d * 0.04f
+            val radius = d / 2 - sw * 1.4f
+            val tl = Offset(center.x - radius, center.y - radius)
+            val sz = Size(radius * 2, radius * 2)
             // a dark disc behind, so the gauge reads over any map
-            drawCircle(Brush.radialGradient(listOf(Color(0xF0070A12), Color(0xD9070A12), Color(0x00070A12)), radius = size.minDimension * 0.56f), size.minDimension * 0.56f)
-            drawArc(Color(0x33FFFFFF), 135f, 270f, false, tl, sz, style = Stroke(sw, cap = StrokeCap.Round))
-            if (shown > 0.001f) drawArc(
-                Brush.sweepGradient(listOf(accent.copy(alpha = 0.55f), accent, accent.copy(alpha = 0.55f))), 135f, 270f * shown, false, tl, sz,
-                style = Stroke(sw, cap = StrokeCap.Round),
-            )
-            // the small scale at the bottom: fuel left on the left gauge, coolant on the right, as the clusters show them
-            extra?.let { f ->
-                val r2 = size.minDimension * 0.36f
-                val c = center
-                val tl2 = Offset(c.x - r2, c.y - r2)
-                val sz2 = Size(r2 * 2, r2 * 2)
-                val st = Stroke(sw * 0.55f, cap = StrokeCap.Round)
-                if (left) {
-                    drawArc(Color(0x33FFFFFF), 150f, -60f, false, tl2, sz2, style = st)
-                    drawArc(if (f < 0.12f) C.Orange else Color.White, 150f, -60f * f, false, tl2, sz2, style = st)
-                } else {
-                    drawArc(Color(0x33FFFFFF), 30f, 60f, false, tl2, sz2, style = st)
-                    drawArc(if (f > 0.85f) C.Red else Color.White, 30f, 60f * f, false, tl2, sz2, style = st)
+            drawCircle(Brush.radialGradient(listOf(Color(0xF2070A12), Color(0xE0070A12), Color(0x00070A12)), radius = d * 0.56f), d * 0.56f)
+            // the track, its red zone, and the ticks inside it: every 5 % thin, every 25 % long
+            drawArc(Color(0x1FFFFFFF), 135f, 270f, false, tl, sz, style = Stroke(sw, cap = StrokeCap.Round))
+            red?.let { z -> drawArc(Color(0x66FF5252), 135f + 270f * z, 270f * (1f - z), false, tl, sz, style = Stroke(sw, cap = StrokeCap.Butt)) }
+            for (k in 0..20) {
+                val f = k / 20f
+                val a = Math.toRadians((135f + 270f * f).toDouble())
+                val major = k % 5 == 0
+                val r1 = radius - sw * 1.1f
+                val r2 = r1 - d * (if (major) 0.06f else 0.03f)
+                val col = when {
+                    f <= shown -> lit.copy(alpha = 0.95f)
+                    red != null && f >= red -> Color(0xAAFF5252)
+                    else -> Color(if (major) 0x66FFFFFF else 0x33FFFFFF)
                 }
+                drawLine(col, Offset(center.x + r1 * kotlin.math.cos(a).toFloat(), center.y + r1 * kotlin.math.sin(a).toFloat()),
+                    Offset(center.x + r2 * kotlin.math.cos(a).toFloat(), center.y + r2 * kotlin.math.sin(a).toFloat()),
+                    if (major) d * 0.012f else d * 0.007f, StrokeCap.Round)
+            }
+            if (shown > 0.002f) {
+                // the value: a soft glow under a bright stroke, its colour growing from the start, and a lit tip
+                rotate(135f) {
+                    val g = Brush.sweepGradient(0f to lit.copy(alpha = 0.35f), (270f * shown / 360f).coerceAtLeast(0.01f) to lit, 1f to lit)
+                    drawArc(lit.copy(alpha = 0.18f), 0f, 270f * shown, false, tl, sz, style = Stroke(sw * 2.6f, cap = StrokeCap.Round))
+                    drawArc(g, 0f, 270f * shown, false, tl, sz, style = Stroke(sw, cap = StrokeCap.Round))
+                }
+                val a = Math.toRadians((135f + 270f * shown).toDouble())
+                val tip = Offset(center.x + radius * kotlin.math.cos(a).toFloat(), center.y + radius * kotlin.math.sin(a).toFloat())
+                drawCircle(lit.copy(alpha = 0.35f), sw * 1.5f, tip)
+                drawCircle(Color.White, sw * 0.62f, tip)
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            val warn = ind?.warn(v) == true
             T(ind?.text(v) ?: "—", (r.value * 0.26f).coerceIn(14f, 96f).sp, if (warn) C.Orange else Color.White, FontWeight.SemiBold, maxLines = 1)
             T(ind?.unit?.ifEmpty { ind.short } ?: "", (r.value * 0.075f).coerceIn(9f, 22f).sp, Color(0xFFB4BCCB), maxLines = 1)
+            if (ind != null && ind.unit.isNotEmpty()) T(ind.short, (r.value * 0.055f).coerceIn(8f, 16f).sp, Color(0xFF8E95AB), maxLines = 1)
         }
-        if (ind != null) T(ind.short, (r.value * 0.06f).coerceIn(8f, 18f).sp, Color(0xFF8E95AB), maxLines = 1,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = r * 0.13f))
+        // the small scale in the gap at the bottom: fuel left on the left gauge, coolant on the right, with its icon
+        extra?.let { f ->
+            val low = if (left) f < 0.12f else f > 0.85f
+            val col = if (low) (if (left) C.Orange else C.Red) else Color(0xFFE2E6EE)
+            Row(Modifier.align(Alignment.BottomCenter).padding(bottom = r * 0.07f), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (left) Lucide.Fuel else Lucide.Thermometer, null, tint = col, modifier = Modifier.size((r.value * 0.07f).coerceIn(10f, 18f).dp))
+                Spacer(Modifier.width(4.dp))
+                Box(Modifier.width(r * 0.22f).height((r.value * 0.022f).coerceIn(3f, 6f).dp).clip(RoundedCornerShape(50)).background(Color(0x2EFFFFFF))) {
+                    Box(Modifier.fillMaxHeight().fillMaxWidth(f.coerceIn(0.02f, 1f)).clip(RoundedCornerShape(50)).background(col))
+                }
+            }
+        }
     }
 }
 
@@ -379,60 +508,113 @@ private fun fuelShare(ctx: MetricCtx): Float? {
     return ctx.trip.fuelLeftL?.takeIf { tank > 0 }?.let { (it / tank).toFloat().coerceIn(0f, 1f) }
 }
 
-/** A turn hint as shown: the navigator's arrow picture, or our own arrow turned by [angle] (a ring for a roundabout). */
-private class Shown(val title: String, val text: String, val icon: android.graphics.Bitmap?, val angle: Float?, val round: Boolean)
-
-/** The next turn: its arrow, the distance big, what to do and the street under it. */
+/** 2GIS's warnings in a row: the speed limit sign, a barrier (or speed bump) ahead, a camera, the traffic light. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TurnHint(h: Shown, accent: Color, m: Modifier) {
-    Row(
-        m.clip(RoundedCornerShape(14.dp)).background(Color(0xE6080B14)).border(1.dp, accent.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val icon = remember(h.icon) { h.icon?.asImageBitmap() }
-        if (icon != null) {
-            // the navigators' arrows are glyphs: drawn white, whatever colour the app gave them
-            Image(icon, null, Modifier.size(40.dp), colorFilter = ColorFilter.tint(Color.White, BlendMode.SrcIn))
-            Spacer(Modifier.width(10.dp))
-        } else if (h.angle != null || h.round) {
-            Canvas(Modifier.size(40.dp)) { drawTurn(h.angle ?: 0f, h.round, accent) }
-            Spacer(Modifier.width(10.dp))
-        }
-        Column {
-            if (h.title.isNotEmpty()) T(h.title, 20.sp, Color.White, FontWeight.SemiBold, maxLines = 1)
-            if (h.text.isNotEmpty()) T(h.text, 13.sp, Color(0xFFC9CFDB), maxLines = 2)
+private fun DgisAlerts(i: kg.forester.sg.service.DgisDashboard.Info, accent: Color, m: Modifier) {
+    val barrier = i.barrierDescription.ifEmpty { if (i.barrierIcon.isNotEmpty()) "Препятствие" else "" }
+    val camera = i.cameraType.takeIf { it.isNotEmpty() }?.let { kg.forester.sg.service.DgisDashboard.cameraText(it) }
+    val light = i.lightColor.takeIf { it.isNotEmpty() }
+    if (barrier.isEmpty() && camera == null && light == null && i.speedLimit <= 0.0) return
+    FlowRow(m, horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // the road sign: a red ring, the number black (red over the limit)
+        if (i.speedLimit > 0.0) Box(
+            Modifier.size(38.dp).clip(androidx.compose.foundation.shape.CircleShape).background(Color.White)
+                .border(4.5.dp, Color(0xFFE53935), androidx.compose.foundation.shape.CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { T("%.0f".format(i.speedLimit), 14.sp, if (i.overLimit) Color(0xFFE53935) else Color.Black, FontWeight.Bold, maxLines = 1) }
+        if (barrier.isNotEmpty()) AlertChip(Lucide.Construction, barrier, C.Orange)
+        camera?.let { AlertChip(Lucide.Cctv, it, C.Orange) }
+        light?.let { c ->
+            val col = when (c) { "red" -> Color(0xFFFF5252); "yellow" -> Color(0xFFFFC107); else -> Color(0xFF34D399) }
+            Row(
+                Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xE6080B14)).border(1.dp, col.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // the three lamps, the lit one in its colour
+                listOf("red", "yellow", "green").forEach { l ->
+                    Box(Modifier.padding(horizontal = 1.5.dp).size(9.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(if (l == c) col else Color(0x33FFFFFF)))
+                }
+                if (i.lightCountdown >= 0) { Spacer(Modifier.width(6.dp)); T("${i.lightCountdown} с", 12.sp, Color.White, FontWeight.SemiBold, maxLines = 1) }
+            }
         }
     }
 }
 
-/** A navigator-style arrow: a stem up from the bottom, then bent by [angle] degrees; a ring with an exit for a roundabout. */
-private fun DrawScope.drawTurn(angle: Float, round: Boolean, accent: Color) {
-    val w = size.minDimension
-    val st = Stroke(w * 0.12f, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
-    val c = Offset(size.width / 2, size.height * 0.52f)
-    if (round) {
-        drawCircle(Color.White, w * 0.2f, c, style = Stroke(w * 0.09f))
-        drawLine(Color.White, Offset(c.x, size.height * 0.98f), Offset(c.x, c.y + w * 0.2f), w * 0.1f, StrokeCap.Round)
-        drawLine(accent, Offset(c.x + w * 0.14f, c.y - w * 0.14f), Offset(c.x + w * 0.36f, c.y - w * 0.36f), w * 0.12f, StrokeCap.Round)
-        return
+/** A warning: an icon in its colour and a few words. */
+@Composable
+private fun AlertChip(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, color: Color) {
+    Row(
+        Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xE6080B14)).border(1.dp, color.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = color, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(5.dp))
+        T(text, 12.sp, Color.White, FontWeight.Medium, maxLines = 1)
     }
-    val a = Math.toRadians(angle.toDouble())
-    val len = w * 0.36f
-    val end = Offset(c.x + (len * kotlin.math.sin(a)).toFloat(), c.y - (len * kotlin.math.cos(a)).toFloat())
-    val path = Path().apply {
-        moveTo(c.x, size.height * 0.96f); lineTo(c.x, c.y)
-        if (kotlin.math.abs(angle) >= 179f) { quadraticTo(c.x, c.y - len, c.x - w * 0.25f, c.y - len * 0.3f) } else lineTo(end.x, end.y)
+}
+
+/** A turn hint as shown: the arrow of its [kind] (see Turn), else the navigator's own arrow picture. */
+private class Shown(val title: String, val text: String, val icon: android.graphics.Bitmap?, val kind: String?)
+
+/** The arrow of a manoeuvre kind, Lucide's: a corner for a turn, a diagonal for a slight one, a hook for a U-turn. */
+private fun turnIcon(kind: String?): androidx.compose.ui.graphics.vector.ImageVector? = when (kind) {
+    kg.forester.sg.service.Turn.STRAIGHT -> Lucide.ArrowUp
+    "slight_left" -> Lucide.ArrowUpLeft
+    "slight_right" -> Lucide.ArrowUpRight
+    "left" -> Lucide.CornerUpLeft
+    "right" -> Lucide.CornerUpRight
+    "sharp_left" -> Lucide.CornerLeftDown
+    "sharp_right" -> Lucide.CornerRightDown
+    kg.forester.sg.service.Turn.UTURN_LEFT -> Lucide.Undo2
+    kg.forester.sg.service.Turn.UTURN_RIGHT -> Lucide.Redo2
+    kg.forester.sg.service.Turn.ROUND -> Lucide.RotateCcw
+    kg.forester.sg.service.Turn.FINISH -> Lucide.FlagTriangleRight
+    else -> null
+}
+
+/** What to do, for a manoeuvre 2GIS gives no words for. */
+private fun turnWords(kind: String?): String = when (kind) {
+    kg.forester.sg.service.Turn.STRAIGHT -> "Прямо"
+    "slight_left" -> "Левее"; "slight_right" -> "Правее"
+    "left" -> "Налево"; "right" -> "Направо"
+    "sharp_left" -> "Резко налево"; "sharp_right" -> "Резко направо"
+    kg.forester.sg.service.Turn.UTURN_LEFT, kg.forester.sg.service.Turn.UTURN_RIGHT -> "Разворот"
+    kg.forester.sg.service.Turn.ROUND -> "Круговое движение"
+    kg.forester.sg.service.Turn.FINISH -> "Финиш"
+    else -> ""
+}
+
+/** The next turn: its arrow on an accent disc, the distance big, what to do and the street under it. */
+@Composable
+private fun TurnHint(h: Shown, accent: Color, m: Modifier) {
+    Row(
+        m.clip(RoundedCornerShape(16.dp)).background(Brush.verticalGradient(listOf(Color(0xF00E1424), Color(0xF0080B14))))
+            .border(1.dp, accent.copy(alpha = 0.45f), RoundedCornerShape(16.dp)).padding(start = 8.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val vec = turnIcon(h.kind)
+        val pic = remember(h.icon) { h.icon?.asImageBitmap() }
+        if (vec != null || pic != null) {
+            Box(
+                Modifier.size(46.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                    .background(Brush.radialGradient(listOf(accent, accent.copy(alpha = 0.75f)))),
+                contentAlignment = Alignment.Center,
+            ) {
+                // the navigators' arrows are glyphs: drawn white, whatever colour the app gave them
+                if (vec != null) Icon(vec, null, tint = Color.White, modifier = Modifier.size(30.dp))
+                else Image(pic!!, null, Modifier.size(32.dp), colorFilter = ColorFilter.tint(Color.White, BlendMode.SrcIn))
+            }
+            Spacer(Modifier.width(10.dp))
+        }
+        Column {
+            if (h.title.isNotEmpty()) T(h.title, 22.sp, Color.White, FontWeight.Bold, maxLines = 1)
+            if (h.text.isNotEmpty()) T(h.text, 13.sp, Color(0xFFC9CFDB), maxLines = 2)
+        }
     }
-    drawPath(path, Color.White, style = st)
-    // the head at the end of the bent part
-    val tip = if (kotlin.math.abs(angle) >= 179f) Offset(c.x - w * 0.25f, c.y - len * 0.3f) else end
-    val dir = if (kotlin.math.abs(angle) >= 179f) Math.PI else a
-    val hl = w * 0.2f
-    fun wing(side: Double) = Offset(
-        tip.x - (hl * kotlin.math.sin(dir + side)).toFloat(), tip.y + (hl * kotlin.math.cos(dir + side)).toFloat(),
-    )
-    drawPath(Path().apply { moveTo(tip.x, tip.y); lineTo(wing(0.5).x, wing(0.5).y); lineTo(wing(-0.5).x, wing(-0.5).y); close() }, accent)
 }
 
 @Composable
@@ -504,9 +686,14 @@ fun NavClusterEditor(style: String, onChange: (String) -> Unit, onClose: () -> U
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     T("Приближение:", 13.sp, C.Sub, modifier = Modifier.padding(top = 10.dp))
-                    listOf(15.0 to "Далеко", 16.0 to "Средне", 16.5 to "Близко", 17.5 to "Очень близко").forEach { (z, l) ->
+                    listOf(15.0 to "Далеко", 16.0 to "Средне", 16.5 to "Близко", 17.5 to "Очень близко", 18.5 to "Максимально").forEach { (z, l) ->
                         Chip(l, cfg.zoom == z, { set(cfg.copy(zoom = z)) })
                     }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    T("Карта 2ГИС:", 13.sp, C.Sub, modifier = Modifier.padding(top = 10.dp))
+                    Chip("Сверху", !cfg.tilt, { set(cfg.copy(tilt = false)) })
+                    Chip("3D-наклон", cfg.tilt, { set(cfg.copy(tilt = true)) })
                 }
                 T("Подсказки навигатора", 13.sp, C.Sub, FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -514,9 +701,9 @@ fun NavClusterEditor(style: String, onChange: (String) -> Unit, onClose: () -> U
                     Chip("Скрыть", !cfg.hints, { set(cfg.copy(hints = false)) })
                 }
                 T(
-                    "Стрелка поворота, расстояние и улица берутся из уведомления навигатора, пока он ведёт по маршруту " +
-                        "(Google Карты, 2ГИС и другие, которые пишут манёвр в уведомление). Саму карту навигатора другое " +
-                        "приложение показать не может, поэтому карта здесь своя.", 12.sp, C.Sub,
+                    "Пока 2ГИС ведёт по маршруту, на приборке его карта с маршрутом, манёвры, камеры, шлагбаумы и ограничения: " +
+                        "он сам отдаёт их приборкам. С Яндексом, Google Картами и другими стрелка, расстояние и улица берутся из " +
+                        "уведомления навигатора, а карта своя: свою они наружу не отдают.", 12.sp, C.Sub,
                 )
                 var allowed by remember { mutableStateOf(MediaSessions.allowed(ctx)) }
                 if (!allowed) Chip("Разрешить доступ к уведомлениям", false, {

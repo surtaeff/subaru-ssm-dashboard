@@ -19,6 +19,8 @@ data class GpsFix(
     val bearing: Float? = null,
     val lat: Double? = null,
     val lon: Double? = null,
+    /** Signal of the 4 strongest satellites in the fix, mean C/N0 dB-Hz (Dragy qualifies its runs on it); null unknown. */
+    val cn0: Float? = null,
 )
 
 data class BatteryState(
@@ -182,13 +184,14 @@ class Settings(ctx: Context) {
 
     /**
      * Diagnostic adapter: "auto" (find it), "kkl" (USB KKL cable or OpenPort 1.3), "op2" (Tactrix OpenPort 2.0 /
-     * clone), "elm_usb", "elm_bt", "elm_wifi" (ELM327 by USB, Bluetooth or Wi-Fi).
+     * clone), "elm_usb", "elm_bt", "elm_wifi" (ELM327 by USB, Bluetooth or Wi-Fi), "canable", "mt_bt" (a Multitronics
+     * trip computer on Bluetooth).
      */
     var adapter: String
         get() = p.getString("adapter", "auto")!!
         set(v) = p.edit().putString("adapter", v).apply()
 
-    /** Paired Bluetooth OBD adapter (ELM327) used when [adapter] is "elm_bt". */
+    /** Paired Bluetooth adapter used when [adapter] is "elm_bt" or "mt_bt" (an ELM327 or a Multitronics). */
     var btAddress: String
         get() = p.getString("btAddress", "")!!
         set(v) = p.edit().putString("btAddress", v).apply()

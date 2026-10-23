@@ -69,7 +69,8 @@ private fun runPicture(run: PerfRun, m: Measured, keys: List<String>): Bitmap {
         val v = run.results[k] ?: continue
         if (y > h - 120) break
         c.drawText(resultShort(k), 48f, y, paint(C.Sub, 32f))
-        val trap = run.results[k.replace("m", "v")]?.takeIf { k.endsWith("m") && k != "18m" }?.let { "  %.0f км/ч".format(it) } ?: ""
+        val trap = run.results[k.replace("m", "v")]?.takeIf { k.endsWith("m") && k != "18m" }?.let { "  %.0f км/ч".format(it) }
+            ?: run.results[k + PerfCalc.DIST]?.let { "  %.1f м".format(it) } ?: ""
         c.drawText("%.2f с".format(v) + trap, 230f, y, paint(if (run.clean(k)) C.Text else C.Orange, 38f, true))
         corrected(run, k)?.let { c.drawText("SAE %.2f".format(it), 230f, y + 30f, paint(C.Sub, 22f)) }
         y += 68f

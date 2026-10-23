@@ -35,9 +35,14 @@ data class PerfRun(
     val source: String = "",
     /** The road's grade over the run, %, from the GPS altitude. */
     val slope: Float? = null,
+    /** The [PerfCalc.ALGO] it was counted by. */
+    val algo: Int = PerfCalc.ALGO,
 ) {
     /** The result counts in comparisons: timed with the pedal down, on the flat, without gaps. */
     fun clean(key: String) = flags[key].isNullOrEmpty()
+
+    /** A braking test (see [PerfCalc.braking]), not an acceleration. */
+    val braking get() = PerfCalc.BRAKE in results
 }
 
 /**
@@ -113,12 +118,17 @@ object Perf {
     private var lapAway = false
     private var lapClosest = Double.MAX_VALUE
     private var lapClosestMs = 0L
+    private var brakeHighMs = 0L
+    private var brakeStopMs = 0L
+    private var brakeFromMs = 0L
 
     init {
         Repo.perf.value = Repo.perf.value.copy(
             runs = load(), lap = LapState(lineSet = Repo.settings.lapLine.isNotEmpty(), laps = loadLaps()),
             intervals = Interval.list(Repo.settings.perfIntervals), spool = SpoolState(tests = Spool.load()),
         )
+        // runs counted by an older version of the counting: again from their samples, off the thread that woke us
+        if (Repo.perf.value.runs.any { it.algo < PerfCalc.ALGO && it.trace != null }) Thread { recompute() }.start()
     }
 
     /** Where the logs of runs and laps are: the demo's apart, so they never mix with the car's. */
@@ -164,6 +174,13 @@ object Perf {
             if (startMs != 0L) finish(now)
         } else stillSince = 0L
         val armed = running && stillSince != 0L && now - stillSince > 1000
+        // braking: from 100 km/h or more to a stop within ten seconds, counted 1.5 s after the stop (GPS comes late)
+        if (v >= PerfCalc.BRAKE_FROM) { brakeHighMs = now; brakeStopMs = 0L }
+        else if (v < 0.5f && brakeHighMs != 0L) {
+            if (now - brakeHighMs < 10_000) { brakeFromMs = brakeHighMs; brakeStopMs = now }
+            brakeHighMs = 0L
+        }
+        if (brakeStopMs != 0L && now - brakeStopMs >= 1500) { brakeStopMs = 0L; braked(brakeFromMs, now, e) }
         if (startMs == 0L && lastV < 0.5f && v >= 0.5f && running) begin(cross(0.5f), true, e, gps)
         // rolling: the pedal floored on the move
         if (startMs == 0L && floored && v >= 10f) begin(now, false, e, gps)
@@ -238,13 +255,33 @@ object Perf {
         }
     }
 
+    /**
+     * A hard stop from [PerfCalc.BRAKE_FROM] km/h (last there at [fromMs]): kept as a run of its own, timed and with the
+     * distance, if it was braking (see [PerfCalc.braking]) and not just a stop.
+     */
+    private fun braked(fromMs: Long, now: Long, e: EcuSnapshot) {
+        val tr = TraceBuffer.cut(fromMs - 2000, now, Repo.settings.speedK.toFloat()) ?: return
+        val m = PerfCalc.measure(tr, emptyList())
+        val h = m.hits.firstOrNull { it.key == PerfCalc.BRAKE } ?: return
+        val demo = Repo.settings.demo
+        val name = "$now.txt"
+        val trace = runCatching { traceFile(name, demo).also { it.parentFile?.mkdirs() }.writeText(tr.encode()); name }.getOrNull()
+        val log = PerfLog.save(dir(demo), "Торможение", fromMs - 2000, now)
+        val s = Repo.settings
+        val c = RunCond(e.intakeC, e.atmKpa, e.coolantC, Repo.guard.value.iam, s.perfLabel.trim(), s.perfNote.trim())
+        keep(describe(tr, m, PerfRun(now, emptyMap(), m.speed.v.maxOrNull()?.toFloat() ?: 0f, null, log, demo, trace, false, cond = c)))
+        if (!demo) Alerts.raise("run", "Торможение со ста: %.2f секунды, %.0f метров".format(h.sec, h.dist ?: 0.0), Alerts.Level.INFO, 0L)
+    }
+
     /** [base] with the results, flags, peak G, speed source and grade of the counted run [m]. */
     private fun describe(tr: RunTrace, m: Measured, base: PerfRun): PerfRun {
         val flags = m.hits.associate { it.key to PerfCalc.flags(tr, m, it) }.filterValues { it.isNotEmpty() }
         val a = m.start; val b = m.end
-        val slope = if (a != null && b != null) PerfCalc.slope(tr, m.speed, a, b) else null
+        // a braking is too short for the GPS altitude alone: the road coming up to it too, as its flag takes it
+        val slope = if (a == null || b == null) null
+            else if (m.braking) PerfCalc.slope(tr, m.speed, a - 5, b, minM = 100.0) else PerfCalc.slope(tr, m.speed, a, b)
         return base.copy(results = m.results(), flags = flags, peakG = PerfCalc.peakG(m)?.toFloat(), source = m.speed.source,
-            slope = slope?.toFloat(), standing = m.launch != null)
+            slope = slope?.toFloat(), standing = m.launch != null, algo = PerfCalc.ALGO)
     }
 
     /** Puts [run] first; the oldest past [KEEP] go, with their logs. */
@@ -416,7 +453,7 @@ object Perf {
                 .put("lb", c.label).put("nt", c.note)
             arr.put(JSONObject().put("t", r.timeMs).put("r", res).put("v", r.maxSpeed.toDouble()).put("hp", r.peakHp?.toDouble()).put("log", r.log)
                 .put("tr", r.trace).put("st", r.standing).put("f", fl).put("c", cond).put("g", r.peakG?.toDouble()).put("src", r.source)
-                .put("sl", r.slope?.toDouble()))
+                .put("sl", r.slope?.toDouble()).put("av", r.algo))
         }
         Repo.settings.perfRuns = arr.toString()
     }
@@ -435,7 +472,7 @@ object Perf {
                 trace = o.optString("tr").ifEmpty { null }, standing = o.optBoolean("st", true),
                 flags = f?.keys()?.asSequence()?.associateWith { f.getString(it).split(',').filter(String::isNotEmpty) } ?: emptyMap(),
                 cond = c?.let { RunCond(it.int("iat"), it.fl("baro"), it.int("ect"), it.fl("iam"), it.optString("lb"), it.optString("nt")) } ?: RunCond(),
-                peakG = o.fl("g"), source = o.optString("src"), slope = o.fl("sl"))
+                peakG = o.fl("g"), source = o.optString("src"), slope = o.fl("sl"), algo = o.optInt("av", 1))
         }
     }.getOrDefault(emptyList())
 

@@ -16,8 +16,11 @@ data class EcuPt(
     val gas get() = pedal ?: thr
 }
 
-/** One GPS fix of a run: [t] as for [EcuPt] (when it came), Doppler speed km/h, accuracy m, altitude m. */
-data class GpsPt(val t: Int, val kmh: Float, val acc: Float, val alt: Float? = null)
+/**
+ * One GPS fix of a run: [t] as for [EcuPt] (when it was taken), Doppler speed km/h, accuracy m, altitude m, satellites in
+ * the fix and the mean C/N0 of the 4 strongest (dB-Hz).
+ */
+data class GpsPt(val t: Int, val kmh: Float, val acc: Float, val alt: Float? = null, val sats: Int? = null, val cn0: Float? = null)
 
 /**
  * The raw samples of a run, kept with it so its times can be counted again on other intervals (a GPS meter keeps
@@ -36,7 +39,7 @@ class RunTrace(val startMs: Long, val k: Float, val ecu: List<EcuPt>, val gps: L
         fun f(v: Float?) = v?.let { String.format(Locale.US, "%.1f", it) } ?: "-"
         append("trace 1 $startMs ${String.format(Locale.US, "%.4f", k)}\n")
         for (p in ecu) append("e ${p.t} ${f(p.kmh)} ${p.rpm ?: "-"} ${f(p.boost)} ${f(p.pedal)} ${f(p.thr)} ${p.gear ?: "-"}\n")
-        for (p in gps) append("g ${p.t} ${f(p.kmh)} ${f(p.acc)} ${f(p.alt)}\n")
+        for (p in gps) append("g ${p.t} ${f(p.kmh)} ${f(p.acc)} ${f(p.alt)} ${p.sats ?: "-"} ${f(p.cn0)}\n")
     }
 
     companion object {
@@ -51,7 +54,7 @@ class RunTrace(val startMs: Long, val k: Float, val ecu: List<EcuPt>, val gps: L
                 fun int(i: Int) = c.getOrNull(i)?.toIntOrNull()
                 when (c[0]) {
                     "e" -> ecu += EcuPt(c[1].toInt(), c[2].toFloat(), int(3), fl(4), fl(5), fl(6), int(7))
-                    "g" -> gps += GpsPt(c[1].toInt(), c[2].toFloat(), c[3].toFloat(), fl(4))
+                    "g" -> gps += GpsPt(c[1].toInt(), c[2].toFloat(), c[3].toFloat(), fl(4), int(5), fl(6))
                 }
             }
             RunTrace(head[2].toLong(), head[3].toFloat(), ecu, gps)
@@ -75,13 +78,20 @@ object TraceBuffer {
     fun record(e: EcuSnapshot, fix: GpsFix?, gear: Int?, now: Long) {
         val kmh = e.speedKmh
         if (kmh != null) ecu.addLast(E(now, EcuPt(0, kmh.toFloat(), e.rpm, e.gaugeKpa, e.pedalPct, e.throttlePct, gear)))
-        // a new fix only (the same one comes with every ECU sample); the network's position has no speed
-        if (fix != null && fix.timeMs != lastFix && fix.accuracyM < 50f) {
-            lastFix = fix.timeMs
-            gps.addLast(G(fix.timeMs, GpsPt(0, fix.speedKmh, fix.accuracyM, fix.altitudeM.toFloat())))
-        }
+        if (fix != null) fix(fix)
         while (ecu.isNotEmpty() && now - ecu.first().ms > 150_000L) ecu.removeFirst()
         while (gps.isNotEmpty() && now - gps.first().ms > 150_000L) gps.removeFirst()
+    }
+
+    /**
+     * A GPS fix, straight from the receiver (every one, also those the screens skip) or with an ECU sample: a newer one
+     * only, so the same fix coming both ways is kept once. The network's position (no speed) is left out.
+     */
+    @Synchronized
+    fun fix(fix: GpsFix) {
+        if (fix.timeMs <= lastFix || fix.accuracyM >= 50f) return
+        lastFix = fix.timeMs
+        gps.addLast(G(fix.timeMs, GpsPt(0, fix.speedKmh, fix.accuracyM, fix.altitudeM.toFloat(), fix.satellites.takeIf { it > 0 }, fix.cn0)))
     }
 
     /** The samples from [fromMs] to [toMs], the time counted from [fromMs]; null with too little to count. */

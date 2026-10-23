@@ -81,6 +81,83 @@ object RomRaiderXml {
         return Defs(params, ext, version)
     }
 
+    /**
+     * The bundled base ([json], assets/romraider_ssm.json) back as a RomRaider logger.xml: the same parameters, switches
+     * and extended parameters this app reads, each with its Russian name in a comment, for the driver to copy what
+     * needs fixing into a file of their own (a parameter under the base's id replaces it). Read back it is the base.
+     */
+    fun exportBase(json: String): String {
+        val o = org.json.JSONObject(json)
+        val sb = StringBuilder()
+        fun esc(v: String) = v.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+        fun comment(v: String) = v.replace("--", "—")
+        fun hex(a: Int) = "0x%06X".format(a)
+        fun addr(a: Int, len: Int, bit: Int) =
+            "<address" + (if (len > 1) " length=\"$len\"" else "") + (if (bit >= 0) " bit=\"$bit\"" else "") + ">${hex(a)}</address>"
+        fun convs(c: org.json.JSONArray, pad: String) {
+            sb.append("$pad<conversions>\n")
+            for (k in 0 until c.length()) {
+                val cv = c.getJSONArray(k)
+                sb.append("$pad  <conversion units=\"${esc(cv.getString(0))}\" expr=\"${esc(cv.getString(1))}\" format=\"${esc(cv.getString(2))}\"" +
+                    cv.getString(3).takeIf { it.isNotEmpty() }?.let { " storagetype=\"${esc(it)}\"" }.orEmpty() + " />\n")
+            }
+            sb.append("$pad</conversions>\n")
+        }
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        sb.append("<!-- База параметров SSM, по которой работает CarPulse: ${comment(o.optString("source"))}.\n")
+        sb.append("     Это копия для справки, приложение её не читает. Чтобы поправить адрес или формулу, скопируйте parameter\n")
+        sb.append("     или ecuparam в свой .xml в папке defs (уровнем выше): параметр с тем же id заменит базовый. -->\n")
+        sb.append("<logger version=\"CarPulse base\">\n<protocols>\n<protocol id=\"SSM\">\n<parameters>\n")
+        val ps = o.getJSONArray("params")
+        for (i in 0 until ps.length()) {
+            val p = ps.getJSONObject(i)
+            p.optString("ru").takeIf { it.isNotEmpty() }?.let { sb.append("  <!-- ${comment(it)} -->\n") }
+            sb.append("  <parameter id=\"${esc(p.getString("id"))}\" name=\"${esc(p.getString("n"))}\"")
+            p.optString("d").takeIf { it.isNotEmpty() }?.let { sb.append(" desc=\"${esc(it)}\"") }
+            sb.append(" target=\"${p.getInt("t")}\"")
+            if (p.has("b")) sb.append(" ecubyteindex=\"${p.getInt("b")}\" ecubit=\"${p.getInt("cb")}\"")
+            sb.append(">\n")
+            p.optJSONArray("a")?.let { a -> sb.append("    ${addr(a.getInt(0), a.getInt(1), a.getInt(2))}\n") }
+            p.optJSONArray("aa")?.let { aa -> for (k in 0 until aa.length()) aa.getJSONArray(k).let { x -> sb.append("    ${addr(x.getInt(0), x.getInt(1), -1)}\n") } }
+            p.optJSONArray("dep")?.takeIf { it.length() > 0 }?.let { d ->
+                sb.append("    <depends>\n")
+                for (k in 0 until d.length()) sb.append("      <ref parameter=\"${esc(d.getString(k))}\" />\n")
+                sb.append("    </depends>\n")
+            }
+            convs(p.getJSONArray("c"), "    ")
+            sb.append("  </parameter>\n")
+        }
+        sb.append("</parameters>\n<switches>\n")
+        val ss = o.getJSONArray("switches")
+        for (i in 0 until ss.length()) {
+            val p = ss.getJSONObject(i)
+            p.optString("ru").takeIf { it.isNotEmpty() }?.let { sb.append("  <!-- ${comment(it)} -->\n") }
+            sb.append("  <switch id=\"${esc(p.getString("id"))}\" name=\"${esc(p.getString("n"))}\" byte=\"${hex(p.getInt("a"))}\" bit=\"${p.getInt("bit")}\"" +
+                " target=\"${p.getInt("t")}\"" + (if (p.has("b")) " ecubyteindex=\"${p.getInt("b")}\"" else "") + " />\n")
+        }
+        sb.append("</switches>\n<ecuparams>\n")
+        val es = o.getJSONArray("ecuparams")
+        for (i in 0 until es.length()) {
+            val p = es.getJSONObject(i)
+            p.optString("ru").takeIf { it.isNotEmpty() }?.let { sb.append("  <!-- ${comment(it)} -->\n") }
+            sb.append("  <ecuparam id=\"${esc(p.getString("id"))}\" name=\"${esc(p.getString("n"))}\"")
+            p.optString("d").takeIf { it.isNotEmpty() }?.let { sb.append(" desc=\"${esc(it)}\"") }
+            sb.append(" target=\"${p.getInt("t")}\">\n")
+            // the ROMs with the same address in one <ecu>, as RomRaider writes them
+            val r = p.getJSONObject("r")
+            val byAddr = LinkedHashMap<String, MutableList<String>>()
+            for (rom in r.keys()) {
+                val a = r.getJSONArray(rom)
+                byAddr.getOrPut(addr(a.getInt(0), a.getInt(1), a.getInt(2))) { ArrayList() } += rom
+            }
+            for ((a, roms) in byAddr) sb.append("    <ecu id=\"${roms.joinToString(",")}\">\n      $a\n    </ecu>\n")
+            convs(p.getJSONArray("c"), "    ")
+            sb.append("  </ecuparam>\n")
+        }
+        sb.append("</ecuparams>\n</protocol>\n</protocols>\n</logger>\n")
+        return sb.toString()
+    }
+
     /** [text] without what can't stand inside another element: the BOM, the declaration, the DOCTYPE (lines kept). */
     private fun body(text: String): String {
         var s = text.removePrefix("\uFEFF")

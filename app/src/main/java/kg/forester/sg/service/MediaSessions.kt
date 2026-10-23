@@ -41,6 +41,29 @@ object MediaSessions {
         ctx.getSystemService(MediaSessionManager::class.java).getActiveSessions(ComponentName(ctx, MediaListener::class.java))
     }.getOrNull().orEmpty()
 
+    /**
+     * The app of a Bluetooth module: Android's own stack (com.android.bluetooth), FYT's com.syu.bt, and the head units'
+     * own Bluetooth apps (a package with a "bt" part, gocsdk…).
+     */
+    fun isBt(pkg: String): Boolean = "bluetooth" in pkg || "gocsdk" in pkg || "a2dp" in pkg ||
+        pkg.split('.').any { it == "bt" || it.startsWith("bt") && it.length <= 8 || it.endsWith("bt") && it.length <= 6 }
+
+    private var btSeen = ""
+
+    /**
+     * The phone's music over Bluetooth, as a media session. Units with two modules (TS18 and others: one for the
+     * phone and music, the other for OBD dongles) have Android's own stack on the OBD one: the session that plays or
+     * shows a track wins, then a head unit's own Bluetooth app before Android's.
+     */
+    fun btController(ctx: Context): MediaController? {
+        val bt = sessions(ctx).filter { isBt(it.packageName) }
+        bt.joinToString(",") { it.packageName }.let { if (it != btSeen) { btSeen = it; kg.forester.sg.ssm.SsmTrace.log("bt sessions: ${it.ifEmpty { "none" }}", keep = true) } }
+        fun system(c: MediaController) = c.packageName == "com.android.bluetooth" || c.packageName == "com.google.android.bluetooth"
+        return bt.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+            ?: bt.firstOrNull { !it.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE).isNullOrBlank() }
+            ?: bt.firstOrNull { !system(it) } ?: bt.firstOrNull()
+    }
+
     /** The session of the player [pkg], if it has one now (the app was started at least once). */
     fun controllerOf(ctx: Context, pkg: String): MediaController? = sessions(ctx).firstOrNull { it.packageName == pkg }
 
@@ -70,7 +93,7 @@ object MediaSessions {
     fun playingApp(ctx: Context): Pair<String, String>? {
         val c = sessions(ctx).firstOrNull {
             it.playbackState?.state == PlaybackState.STATE_PLAYING && it.packageName != ctx.packageName &&
-                !it.packageName.contains("bluetooth") && !it.packageName.startsWith("com.syu.")
+                !isBt(it.packageName) && !it.packageName.startsWith("com.syu.")
         } ?: return null
         val pm = ctx.packageManager
         val name = runCatching { pm.getApplicationLabel(pm.getApplicationInfo(c.packageName, 0)).toString() }.getOrDefault(c.packageName)

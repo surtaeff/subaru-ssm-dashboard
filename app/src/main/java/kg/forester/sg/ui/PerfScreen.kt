@@ -58,16 +58,21 @@ import com.composables.icons.lucide.Trash2
 import kg.forester.sg.data.Repo
 import kg.forester.sg.service.Motion
 import kg.forester.sg.service.Perf
+import kg.forester.sg.service.PerfCalc
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 private fun runTitle(r: kg.forester.sg.service.PerfRun) = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault()).format(Date(r.timeMs)) +
-    (if (r.maxSpeed > 0) "  ·  до %.0f км/ч".format(r.maxSpeed) else "") + (if (!r.standing) "  ·  на ходу" else "") +
+    (if (r.maxSpeed > 0) "  ·  ${if (r.braking) "с" else "до"} %.0f км/ч".format(r.maxSpeed) else "") +
+    (if (r.braking) "  ·  торможение" else if (!r.standing) "  ·  на ходу" else "") +
     (r.cond.label.takeIf { it.isNotEmpty() }?.let { "  ·  «$it»" } ?: "") + if (r.demo) "  ·  демо" else ""
 
 private fun runLine(r: kg.forester.sg.service.PerfRun, keys: List<String>) =
-    keys.mapNotNull { k -> r.results[k]?.let { "${resultShort(k)} %.2f".format(it) + if (r.clean(k)) "" else "⚠" } }.joinToString("   ")
+    keys.mapNotNull { k ->
+        r.results[k]?.let { "${resultShort(k)} %.2f".format(it) + (r.results[k + PerfCalc.DIST]?.let { d -> " · %.1f м".format(d) } ?: "") +
+            if (r.clean(k)) "" else "⚠" }
+    }.joinToString("   ")
 
 private fun lapTime(sec: Float) = "%d:%05.2f".format((sec / 60).toInt(), sec % 60)
 

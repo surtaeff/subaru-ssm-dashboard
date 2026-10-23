@@ -9,7 +9,7 @@ import kotlin.math.sin
 
 /**
  * Made-up but plausible ECU/TCU data for the demo mode (Настройки → «Демо-данные»): a 140-second loop of
- * idle, a flat-out run to ~120 km/h (0–100 in about 10 s, so «Замеры» shows it), a sharp lift, cruise, braking to a stop and a minute at a red light (long
+ * idle, a flat-out run to ~120 km/h (0–100 in about 10 s, so «Замеры» shows it), a sharp lift, cruise, a hard stop (~0.95 g, so «Замеры» shows the braking 100–0) and a minute at a red light (long
  * enough for «Мониторинг → Проверка» to take its idle sample, with the values of a healthy warm EJ).
  * Nothing is written to trips.
  */
@@ -23,7 +23,7 @@ object Demo {
         t < 8 -> 0.0
         t < 26 -> 125 * (1 - Math.exp(-(t - 8) / 6))
         t < 60 -> 118 + 3 * sin((t - 26) / 5)
-        t < 75 -> 118 * (1 - (t - 60) / 15)
+        t < 63.5 -> 118 * (1 - (t - 60) / 3.5)
         else -> 0.0
     }
 

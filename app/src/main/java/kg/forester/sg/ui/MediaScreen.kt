@@ -886,11 +886,11 @@ private fun rememberCover(art: Bitmap?, artist: String, title: String): Bitmap? 
     return art ?: found
 }
 
-private fun btSession(ctx: Context): String? =
-    listOf("com.android.bluetooth", "com.google.android.bluetooth", "com.syu.bt").firstOrNull { MediaSessions.controllerOf(ctx, it) != null }
+/** The Bluetooth music session's app (see [MediaSessions.btController]: on two-module units not Android's own). */
+private fun btSession(ctx: Context): String? = MediaSessions.btController(ctx)?.packageName
 
 private fun btControl(ctx: Context, block: (android.media.session.MediaController.TransportControls) -> Unit) {
-    btSession(ctx)?.let { MediaSessions.controllerOf(ctx, it)?.transportControls?.let(block) }
+    MediaSessions.btController(ctx)?.transportControls?.let(block)
 }
 
 // --- other player apps --------------------------------------------------------------------------------

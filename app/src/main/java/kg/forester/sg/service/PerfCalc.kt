@@ -51,8 +51,11 @@ class SpeedSeries(val t: DoubleArray, val v: DoubleArray, val source: String, va
     }
 }
 
-/** One timed interval: [sec] long, from [from] to [to] (s on the trace); [trap] is the speed at a distance mark. */
-data class Hit(val key: String, val sec: Double, val from: Double, val to: Double, val trap: Double? = null)
+/**
+ * One timed interval: [sec] long, from [from] to [to] (s on the trace); [trap] is the speed at a distance mark, [dist]
+ * the metres a braking took.
+ */
+data class Hit(val key: String, val sec: Double, val from: Double, val to: Double, val trap: Double? = null, val dist: Double? = null)
 
 /** A gear change: from the rpm peak to the trough after it (what the G drop lasts), at [kmh]. */
 data class Shift(val from: Double, val to: Double, val kmh: Double, val rpmFrom: Int, val rpmTo: Int) {
@@ -64,13 +67,20 @@ data class GPt(val t: Double, val kmh: Double, val g: Double)
 
 /** A run counted: the speed used, the moment of the start from a standstill (null: rolling), the intervals, the shifts. */
 class Measured(val speed: SpeedSeries, val launch: Double?, val hits: List<Hit>, val shifts: List<Shift>) {
-    /** The results as kept with a run: interval → seconds, and the speed at 201/402 m as "201v"/"402v". */
+    /**
+     * The results as kept with a run: interval → seconds, the trap speed at 201/402 m as "201v"/"402v", the braking
+     * distance as "100-0d".
+     */
     fun results(): Map<String, Float> = LinkedHashMap<String, Float>().also { m ->
         for (h in hits) {
             m[h.key] = h.sec.toFloat()
             h.trap?.let { m[h.key.replace("m", "v")] = it.toFloat() }
+            h.dist?.let { m[h.key + PerfCalc.DIST] = it.toFloat() }
         }
     }
+
+    /** A braking from [PerfCalc.BRAKE_FROM] to a stop, nothing else: no launch, no interval timed. */
+    val braking: Boolean get() = launch == null && hits.isNotEmpty() && hits.all { it.key == PerfCalc.BRAKE }
 
     /** Where the timed part of the run ends. */
     val end: Double? get() = hits.maxOfOrNull { it.to }
@@ -95,16 +105,35 @@ data class SpoolResult(val rpm0: Int?, val rpm1: Int?, val rpmTarget: Int?, val 
  * interpolated between samples, never by counting samples.
  */
 object PerfCalc {
+    /**
+     * The version of the counting kept with each run: kept runs counted by an older one are counted again from their
+     * samples. 2: distances timed as on a drag strip (roll-out, 66 ft trap), the line crossed at a steady acceleration.
+     */
+    const val ALGO = 2
+
     /** Distances from a standstill: 60 ft, 1/8 and 1/4 mile. */
     val DISTANCES = listOf(18.288 to "18m", 201.168 to "201m", 402.336 to "402m")
 
     /**
      * Roll-out: a drag strip's clock starts when the front tyre leaves the staging beam, about one foot after the car
-     * moves, and GPS meters (Dragy) time 0–60 / 0–100 so by default: 0.2–0.3 s less than from the first movement.
-     * The standing intervals are kept both ways: "0-100" from the first movement, "0-100r" from one foot on.
+     * moves: 0.2–0.4 s less than from the first movement. Dragy times its distances (60 ft, 1/8, 1/4 mile) so, from one
+     * foot to the mark plus one foot, and so are the distances here. Its 0–60 / 0–100 run from the first movement
+     * (0.8 km/h), as "0-100" here; "0-100r" is the same from one foot on, as US magazines time 0–60 mph.
      */
     const val ROLLOUT_M = 0.3048
     const val ROLLOUT = "r"
+
+    /** Trap speed: the average over the last 66 ft before the line, as a drag strip's timing beams take it. */
+    const val TRAP_M = 20.1168
+
+    /**
+     * Braking from 100 km/h to a stop (Dragy and Multitronics time it too): the time and the distance ("100-0d"). A
+     * stop counts as a test with 0.5 g or more on average (under 5.7 s); an ordinary stop takes twice as long.
+     */
+    const val BRAKE_FROM = 100
+    const val BRAKE = "100-0"
+    const val DIST = "d"
+    const val BRAKE_MAX_SEC = 5.7
 
     /** A standing interval timed with the roll-out ("0-100r"). */
     fun isRollout(key: String) = key.startsWith("0-") && key.endsWith(ROLLOUT)
@@ -154,7 +183,8 @@ object PerfCalc {
         val g = tr.gps.filter { it.acc <= 15f && it.kmh >= 30f }
         if (g.size < 5 || tr.ecu.size < 5) return null
         var best = Double.MAX_VALUE; var bestK = 0.0
-        for (lag in 0..1500 step 50) {
+        // GPS fixes are stamped when they were taken (the Doppler speed is still a little behind), ECU samples when they came
+        for (lag in -300..1500 step 50) {
             var ge = 0.0; var ee = 0.0; var n = 0
             val pairs = g.mapNotNull { p -> ecuAt(tr.ecu, (p.t - lag).toDouble())?.takeIf { it >= 25 }?.let { p.kmh.toDouble() to it } }
             for ((a, b) in pairs) { ge += a * b; ee += b * b; n++ }
@@ -225,7 +255,11 @@ object PerfCalc {
         return null
     }
 
-    /** When the distance from [launch] (speed integrated) reaches [m], and the speed there. */
+    /**
+     * When the distance from [launch] (speed integrated) reaches [m], and the speed there. Within the last step the
+     * acceleration is taken as steady (the distance grows as v₀t + at²/2, as Dragy finishes a distance), not the speed:
+     * with a few samples a second a steady speed puts the line late.
+     */
     fun distance(s: SpeedSeries, launch: Double, m: Double): Pair<Double, Double>? {
         var d = 0.0; var pt = launch; var pv = 0.0
         for (k in 0 until s.size) {
@@ -233,12 +267,29 @@ object PerfCalc {
             val dt = s.t[k] - pt
             val seg = (pv + s.v[k]) / 2 / 3.6 * dt
             if (seg > 0 && d + seg >= m) {
-                val f = (m - d) / seg
-                return (pt + f * dt) to (pv + f * (s.v[k] - pv))
+                val v0 = pv / 3.6
+                val a = (s.v[k] - pv) / 3.6 / dt
+                val rem = m - d
+                val x = if (abs(a) < 1e-9) rem / v0 else (-v0 + sqrt((v0 * v0 + 2 * a * rem).coerceAtLeast(0.0))) / a
+                val tx = x.coerceIn(0.0, dt)
+                return (pt + tx) to (v0 + a * tx) * 3.6
             }
             d += seg; pt = s.t[k]; pv = s.v[k]
         }
         return null
+    }
+
+    /**
+     * A distance as a drag strip times it: from one foot of roll-out to [m] plus that foot, and the trap speed over
+     * the last 66 ft ([TRAP_M]) before the line; 60 ft has no trap. Null when the trace ends before the line.
+     */
+    fun dragDistance(s: SpeedSeries, launch: Double, m: Double, key: String): Hit? {
+        val from = distance(s, launch, ROLLOUT_M)?.first ?: return null
+        val (to, _) = distance(s, launch, m + ROLLOUT_M) ?: return null
+        val trap = if (m > 2 * TRAP_M) distance(s, launch, m + ROLLOUT_M - TRAP_M)?.first?.let { t0 ->
+            (to - t0).takeIf { it > 0 }?.let { TRAP_M / it * 3.6 }
+        } else null
+        return Hit(key, to - from, from, to, trap)
     }
 
     fun measure(tr: RunTrace, intervals: List<Interval>): Measured {
@@ -255,8 +306,42 @@ object PerfCalc {
                 }
             } else rolling(s, iv)?.let { hits += it }
         }
-        if (launch != null) for ((m, key) in DISTANCES) distance(s, launch, m)?.let { (t, v) -> hits += Hit(key, t - launch, launch, t, v) }
-        return Measured(s, launch, hits, shifts(tr, s))
+        if (launch != null) for ((m, key) in DISTANCES) dragDistance(s, launch, m, key)?.let { hits += it }
+        braking(s)?.let { hits += it }
+        // the rpm falling while braking is the gearbox shifting down, not a shift of a run
+        val brakingOnly = launch == null && hits.isNotEmpty() && hits.all { it.key == BRAKE }
+        return Measured(s, launch, hits, if (brakingOnly) emptyList() else shifts(tr, s))
+    }
+
+    /**
+     * A braking to a stop: from the last time the speed fell through [from] (the braking starts above it, as a GPS
+     * meter's 100–0) to the speed falling through 0.8 km/h, both between samples, and the distance driven between
+     * them. Null without a fall through [from] that ends standing, or slower than [BRAKE_MAX_SEC].
+     */
+    fun braking(s: SpeedSeries, from: Int = BRAKE_FROM): Hit? {
+        val top = from.toDouble()
+        val stop = 0.8
+        var down: Double? = null
+        for (k in 1 until s.size) {
+            if (s.v[k] > top) { down = null; continue }
+            if (s.v[k - 1] > top) down = s.t[k - 1] + (s.v[k - 1] - top) / (s.v[k - 1] - s.v[k]) * (s.t[k] - s.t[k - 1])
+            val d0 = down ?: continue
+            if (s.v[k - 1] > stop && s.v[k] <= stop) {
+                val end = s.t[k - 1] + (s.v[k - 1] - stop) / (s.v[k - 1] - s.v[k]) * (s.t[k] - s.t[k - 1])
+                if (end - d0 > BRAKE_MAX_SEC || end <= d0) return null
+                // the distance: the speed straight between the samples, from the fall through [from] to the stop
+                var dist = 0.0
+                var pt = d0; var pv = top
+                for (q in 1..k) {
+                    if (s.t[q] <= d0) continue
+                    val t = minOf(s.t[q], end); val v = if (s.t[q] <= end) s.v[q] else stop
+                    dist += (pv + v) / 2 / 3.6 * (t - pt)
+                    pt = t; pv = v
+                }
+                return Hit(BRAKE, end - d0, d0, end, dist = dist)
+            }
+        }
+        return null
     }
 
     // ---- the acceleration graph
@@ -319,10 +404,12 @@ object PerfCalc {
         return out
     }
 
+    /** The highest G of a run; of a braking the deepest (below zero). */
     fun peakG(m: Measured): Double? {
         val a = m.start ?: return null
         val b = m.end ?: return null
-        return gCurve(m.speed, a, b).maxOfOrNull { it.g }
+        val g = gCurve(m.speed, a, b)
+        return if (m.braking) g.minOfOrNull { it.g } else g.maxOfOrNull { it.g }
     }
 
     // ---- is the run any good
@@ -334,6 +421,17 @@ object PerfCalc {
         const val ZERO = "zero"    // the clock ran with the car standing (a GPS meter's well-known glitch)
         const val GAP = "gap"      // samples missing
         const val SLOPE = "slope"  // not on the flat
+        const val GNSS = "gnss"    // timed on GPS with a weak sky: few satellites or a faint signal
+    }
+
+    /**
+     * Dragy's test of the sky over a run timed on GPS: on average 8 satellites or more with the 4 strongest at 40 dB-Hz,
+     * or 10 and more at 35. True: good, false: weak, null: the receiver tells neither.
+     */
+    fun skyOk(pts: List<GpsPt>): Boolean? {
+        val sats = pts.mapNotNull { it.sats }.takeIf { it.isNotEmpty() }?.average() ?: return null
+        val cn0 = pts.mapNotNull { it.cn0 }.takeIf { it.isNotEmpty() }?.average() ?: return sats >= 8
+        return (sats >= 8 && cn0 >= 40) || (sats >= 10 && cn0 >= 35)
     }
 
     /** Seconds of [tr]'s ECU samples within [from]..[to] (shifts left out) for which [bad] holds. */
@@ -349,8 +447,8 @@ object PerfCalc {
         return sum
     }
 
-    /** The road's grade over [from]..[to] in %, from the GPS altitude against the distance driven; null under 150 m or 4 fixes. */
-    fun slope(tr: RunTrace, s: SpeedSeries, from: Double, to: Double): Double? {
+    /** The road's grade over [from]..[to] in %, from the GPS altitude against the distance driven; null under [minM] or 4 fixes. */
+    fun slope(tr: RunTrace, s: SpeedSeries, from: Double, to: Double, minM: Double = 150.0): Double? {
         val pts = tr.gps.filter { it.alt != null && it.acc <= 20f && it.t / 1000.0 in (from - 0.5)..(to + 0.5) }
         if (pts.size < 4) return null
         // the distance along at each fix, by the speed
@@ -365,7 +463,7 @@ object PerfCalc {
             pt = t
             xs += d
         }
-        if (d < 150) return null
+        if (d < minM) return null
         val n = pts.size
         val mx = xs.sum() / n; val my = pts.sumOf { it.alt!!.toDouble() } / n
         var sxy = 0.0; var sxx = 0.0
@@ -375,15 +473,26 @@ object PerfCalc {
 
     fun flags(tr: RunTrace, m: Measured, h: Hit): List<String> {
         val out = ArrayList<String>()
+        if (h.key == BRAKE) {
+            // no gas to hold; a gap or a grade (uphill stops it shorter) spoils it the same
+            val s = m.speed
+            var gap = 0.0
+            for (k in 1 until s.size) if (s.t[k] > h.from && s.t[k - 1] < h.to) gap = maxOf(gap, s.t[k] - s.t[k - 1])
+            if (gap > 0.6) out += Flag.GAP
+            // 40 m of braking is too short for the GPS altitude: the grade of the road coming up to it as well
+            slope(tr, s, h.from - 5, h.to, minM = 100.0)?.let { if (abs(it) > 1.0) out += Flag.SLOPE }
+            return out
+        }
         val pedal = tr.ecu.any { it.pedal != null }
         val limit = if (pedal) WOT_PEDAL else WOT_THROTTLE
         // a quarter of a second to get the foot down; the lifts of a manual's shifts are left out
         if (tr.ecu.any { it.gas != null } && badTime(tr, h.from + 0.25, h.to, m.shifts) { (it.gas ?: 100f) < limit } > 0.25) out += Flag.WOT
         if (pedal && badTime(tr, h.from + 0.25, h.to, m.shifts) { (it.pedal ?: 0f) >= WOT_PEDAL && (it.thr ?: 100f) < 60f } > 0.3) out += Flag.LIMP
         val s = m.speed
-        if (m.launch != null && h.from == m.launch) {
+        // a standing interval or distance (with the roll-out it starts a foot on): the stops counted from the launch
+        if (m.launch != null && (h.key.startsWith("0-") || DISTANCES.any { it.second == h.key })) {
             var still = 0.0
-            val first = (0 until s.size).firstOrNull { s.t[it] > h.from && s.v[it] >= 0.5 }
+            val first = (0 until s.size).firstOrNull { s.t[it] > m.launch && s.v[it] >= 0.5 }
             if (first != null) for (k in first until s.size - 1) if (s.t[k] < h.to && s.v[k] < 0.5) still += s.t[k + 1] - s.t[k]
             if (still > 0.3) out += Flag.ZERO
         }
@@ -391,6 +500,7 @@ object PerfCalc {
         for (k in 1 until s.size) if (s.t[k] > h.from && s.t[k - 1] < h.to) gap = maxOf(gap, s.t[k] - s.t[k - 1])
         if (gap > 0.6) out += Flag.GAP
         slope(tr, s, h.from, h.to)?.let { if (abs(it) > 1.0) out += Flag.SLOPE }
+        if (s.gps && skyOk(tr.gps.filter { it.t / 1000.0 in h.from..h.to }) == false) out += Flag.GNSS
         return out
     }
 

@@ -594,7 +594,7 @@ fun LinkIcon(size: Dp) {
         found.startsWith("Bluetooth") -> "bt"
         found.startsWith("USB") -> "usb"
         s.adapter == "elm_wifi" -> "wifi"
-        s.adapter == "elm_bt" -> "bt"
+        s.adapter == "elm_bt" || s.adapter == "mt_bt" -> "bt"
         else -> "usb"
     }
     val icon = when (via) {

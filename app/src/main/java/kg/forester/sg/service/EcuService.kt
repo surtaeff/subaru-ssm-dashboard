@@ -129,6 +129,8 @@ class EcuService : Service() {
         super.onCreate()
         Repo.init(this)
         SsmTrace.init(this)
+        // the open folder for own RomRaider files, there from the first start for a file manager to find
+        Thread { kg.forester.sg.data.EcuDefs.prepareFolder(this) }.start()
         Alerts.init(this)
         Motion.start(this)
         Tpms.start(this)
@@ -234,6 +236,7 @@ class EcuService : Service() {
             val kind = s.adapter
             when (kind) {
                 "elm_bt" -> { bluetoothSession(s.btAddress, s.btName); delay(3000); continue }
+                "mt_bt" -> { bluetoothSession(s.btAddress, s.btName, multitronics = true); delay(3000); continue }
                 "elm_wifi" -> { wifiSession(explicit = true); delay(3000); continue }
             }
             val all = adapterProber.findAllDrivers(usb) + unknownSerial(usb, adapterProber.findAllDrivers(usb))
@@ -481,18 +484,43 @@ class EcuService : Service() {
         Repo.link.value = LinkState.NO_CABLE
     }
 
-    /** Bluetooth OBD adapter (ELM327 and clones) over the serial port profile. Returns false if it did not connect. */
+    /**
+     * A Bluetooth adapter over the serial port profile: an ELM327 (and clones), or a Multitronics trip computer
+     * ([multitronics], or tried when the device does not answer as an ELM327). Returns false if it did not connect.
+     */
     @SuppressLint("MissingPermission")
-    private suspend fun bluetoothSession(addr: String, label: String, quiet: Boolean = false): Boolean {
+    private suspend fun bluetoothSession(addr: String, label: String, quiet: Boolean = false, multitronics: Boolean = false): Boolean {
+        val name = label.ifEmpty { addr }
+        if (multitronics) {
+            val sock = btSocket(addr, label, quiet) ?: return false
+            if (!multitronicsSession(sock, name)) {
+                Repo.link.value = LinkState.ERROR
+                Repo.linkMessage.value = "$name не отвечает как Multitronics"
+            }
+            return true
+        }
+        val sock = btSocket(addr, label, quiet) ?: return false
+        Repo.adapterFound.value = "Bluetooth $name → ELM327"
+        if (elmSession(Elm327(sock.inputStream, sock.outputStream, sock), "Bluetooth")) return true
+        // not an ELM327: perhaps a Multitronics box (on a new connection: the ELM's reset went to it as noise)
+        SsmTrace.log("$name: not an ELM327, trying Multitronics")
+        val again = btSocket(addr, label, quiet = true) ?: return true
+        multitronicsSession(again, name)
+        return true
+    }
+
+    /** A serial port profile connection to the paired device [addr]; null (with the reason on screen) if none. */
+    @SuppressLint("MissingPermission")
+    private fun btSocket(addr: String, label: String, quiet: Boolean): android.bluetooth.BluetoothSocket? {
         if (addr.isEmpty()) {
             Repo.link.value = LinkState.NO_CABLE
             Repo.linkMessage.value = "Выберите Bluetooth-адаптер: Настройки → «Авто и адаптер»"
-            return false
+            return null
         }
         if (!btAllowed()) {
             Repo.link.value = LinkState.NO_PERMISSION
             Repo.linkMessage.value = "Нет разрешения на Bluetooth (Настройки → «Авто и адаптер»)"
-            return false
+            return null
         }
         val bt = (getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
         if (bt == null || !bt.isEnabled) {
@@ -500,7 +528,7 @@ class EcuService : Service() {
                 Repo.link.value = LinkState.NO_CABLE
                 Repo.linkMessage.value = "Bluetooth выключен"
             }
-            return false
+            return null
         }
         val name = label.ifEmpty { addr }
         if (!quiet) Repo.link.value = LinkState.CONNECTING
@@ -517,11 +545,67 @@ class EcuService : Service() {
                     Repo.link.value = LinkState.NO_CABLE
                     Repo.linkMessage.value = "Адаптер $name не отвечает (включено зажигание?)"
                 }
-                return false
+                return null
             }
-        Repo.adapterFound.value = "Bluetooth $name → ELM327"
-        elmSession(Elm327(sock.inputStream, sock.outputStream, sock), "Bluetooth")
-        return true
+        return sock
+    }
+
+    /**
+     * A Multitronics trip computer (MPC-800) on Bluetooth: it reads the car itself, we ask it for what it read, about
+     * five times a second. False if it did not answer as one (the socket is closed either way).
+     */
+    private suspend fun multitronicsSession(sock: android.bluetooth.BluetoothSocket, name: String): Boolean {
+        val box = kg.forester.sg.ssm.MultitronicsBox(sock.inputStream, sock.outputStream)
+        val mt = kg.forester.sg.ssm.Multitronics
+        try {
+            Repo.link.value = LinkState.CONNECTING
+            Repo.linkMessage.value = "Подключение к $name (Multitronics)…"
+            // its app asks once a second; a box still busy with the noise of an ELM's reset gets a few tries
+            val info = (0 until 4).firstNotNullOfOrNull { runCatching { box.request(mt.IDENTIFY, 1200) }.getOrNull()?.let { mt.info(it) } }
+                ?: return false
+            SsmTrace.log("Multitronics: ${info.model}, «${info.version}», build ${info.build}")
+            // the build its app 02.10.2026 is made for: another may lay the values out otherwise
+            if (info.build != 83) SsmTrace.log("Multitronics: build ${info.build}, the values are read as for 83")
+            runCatching { box.request(mt.clock(), 600) }
+            Repo.adapterFound.value = "Bluetooth $name → Multitronics ${info.model}"
+            ecuWatch.clear(); tcuWatch.clear()
+            Repo.obdMode.value = false
+            Repo.ecuInit.value = null; Repo.ecuInitRaw.value = null
+            Repo.tcuStatus.value = "АКПП: нет (данные Multitronics)"
+            mt.active = true
+            val seen = HashSet<String>()
+            var failures = 0
+            while (scope.isActive && failures < 5 && !Repo.settings.demo && Repo.settings.adapter.let { it == "mt_bt" || it == "auto" || it == "elm_bt" }) {
+                val now = System.currentTimeMillis()
+                val f = box.request(mt.STATUS, 1000)?.takeIf { mt.isStatus(it) }
+                if (f == null) { failures++; tracker.tick(now); continue }
+                failures = 0
+                val v = mt.values(f, seen)
+                mt.publish(v)
+                Repo.link.value = LinkState.CONNECTED
+                Repo.linkMessage.value = "Multitronics ${info.model} · ${info.version}" + mt.protocol(f).takeIf { it > 0 }?.let { " · протокол $it" }.orEmpty()
+                val params = mt.params(v)
+                if (Repo.rrAvailable.value != params) Repo.rrAvailable.value = params
+                Repo.rrPolled.value = params
+                Repo.rrValues.value = mt.extras(v)
+                Repo.pollAddresses.value = v.size
+                onSnapshot(mt.snapshot(v, now, Repo.settings.tankL), now)
+                delay((200 - (System.currentTimeMillis() - now)).coerceAtLeast(0))
+            }
+            Repo.link.value = LinkState.NO_ECU
+            Repo.linkMessage.value = "Multitronics не отвечает"
+            return true
+        } catch (e: Exception) {
+            SsmTrace.log("Multitronics: $e")
+            Repo.link.value = LinkState.ERROR
+            Repo.linkMessage.value = "Связь с Multitronics потеряна"
+            return true
+        } finally {
+            mt.reset()
+            Repo.rrAvailable.value = emptyList(); Repo.rrPolled.value = emptyList(); Repo.rrValues.value = emptyMap()
+            logger?.close(); logger = null
+            runCatching { sock.close() }
+        }
     }
 
     private fun btAllowed() = Build.VERSION.SDK_INT < 31 ||
@@ -648,6 +732,9 @@ class EcuService : Service() {
         var busIdx = 0
         var lineMode = 0
         var silentRounds = 0
+        // the K-line OBD try (its init pulses the line with breaks): when it last ran, and whether this round heard an echo
+        var obdTriedMs = 0L
+        var echo = false
         var transport: SsmTransport? = null
         var transportKline = true
         // demo switched on: leave the car (the demo loop takes over)
@@ -686,7 +773,17 @@ class EcuService : Service() {
                     busIdx % buses.size == 0
                 }
                 if (roundDone) silentRounds++
-                if (roundDone && obd != null && (silentRounds == 1 || silentRounds % 3 == 0)) {
+                val kl = transport as? kg.forester.sg.ssm.KLineTransport
+                if (kl?.heardEcho == true) echo = true
+                // the K-line OBD init (fast and 5-baud, the line pulsed with breaks) only on a live K-line: the cable heard its
+                // own SSM requests back (no echo: the ignition off, or not a K-line at all but a head unit's own USB-serial
+                // chip, which pulses hung the USB of some units), never for a Subaru that has spoken SSM through this app
+                // (its silence is the ignition off), and at most every two minutes
+                val obdOk = kl == null || (echo && Repo.settings.lastRomId.isEmpty() && System.currentTimeMillis() - obdTriedMs > 120_000)
+                if (roundDone) { kl?.heardEcho = false; if (kl != null && !obdOk) SsmTrace.log("K-line OBD try skipped: echo $echo, SSM car ${Repo.settings.lastRomId.isNotEmpty()}") }
+                if (roundDone && obd != null && obdOk && (silentRounds == 1 || silentRounds % 3 == 0)) {
+                    if (kl != null) obdTriedMs = System.currentTimeMillis()
+                    echo = false
                     // the OBD link sets the adapter up its own way; SSM starts afresh after it
                     transport.close()
                     transport = null
@@ -1269,6 +1366,8 @@ class EcuService : Service() {
         /** Brings the list up to date with the ticks and the own addresses; true when it changed. */
         fun refresh(): Boolean {
             // own addresses or definition files added or edited while connected, or another logger profile: the list of what this unit has changes
+            // (a file put into the open folder is noticed here, every few seconds)
+            kg.forester.sg.data.EcuDefs.stamp(this@EcuService)
             val newProfile = !tcu && profile != Repo.settings.loggerProfile
             if (custom != Repo.customVersion.value || defsSeen != Repo.defsVersion.value || newProfile) {
                 if (newProfile) {
@@ -1469,21 +1568,31 @@ class EcuService : Service() {
 
     @Volatile private var lastGpsFixMs = 0L
     @Volatile private var gpsSats = 0
+    @Volatile private var gpsCn0: Float? = null
     @Volatile private var gpsStartedMs = 0L
+    private var gpsShownMs = 0L
 
     private val gpsListener = object : LocationListener {
         override fun onLocationChanged(l: Location) {
-            lastGpsFixMs = System.currentTimeMillis()
+            val now = System.currentTimeMillis()
+            lastGpsFixMs = now
             Repo.gpsStatus.value = ""
-            Repo.gps.value = GpsFix(
+            // the time the fix was taken, not when it got here: the main thread hands it over 50–300 ms late, unevenly,
+            // and the run timer counts between fixes
+            val age = (android.os.SystemClock.elapsedRealtimeNanos() - l.elapsedRealtimeNanos) / 1_000_000
+            val fix = GpsFix(
                 speedKmh = if (l.hasSpeed()) l.speed * 3.6f else 0f,
                 altitudeM = l.altitude,
                 accuracyM = if (l.hasAccuracy()) l.accuracy else 99f,
                 satellites = (l.extras?.getInt("satellites") ?: 0).takeIf { it > 0 } ?: gpsSats,
-                timeMs = System.currentTimeMillis(),
+                timeMs = now - age.coerceIn(0L, 3000L),
                 bearing = if (l.hasBearing()) l.bearing else null,
-                lat = l.latitude, lon = l.longitude,
+                lat = l.latitude, lon = l.longitude, cn0 = gpsCn0,
             )
+            // every fix to the run timer; the screens a couple of times a second (a 10 Hz receiver would redraw them
+            // ten times a second)
+            if (Repo.settings.feature("perf")) TraceBuffer.fix(fix)
+            if (now - gpsShownMs >= 450) { gpsShownMs = now; Repo.gps.value = fix }
         }
 
         @Deprecated("Deprecated in Java")
@@ -1511,6 +1620,8 @@ class EcuService : Service() {
     private val gnssCallback = object : android.location.GnssStatus.Callback() {
         override fun onSatelliteStatusChanged(status: android.location.GnssStatus) {
             gpsSats = (0 until status.satelliteCount).count { status.usedInFix(it) }
+            gpsCn0 = (0 until status.satelliteCount).filter { status.usedInFix(it) }.map { status.getCn0DbHz(it) }
+                .sortedDescending().take(4).takeIf { it.size == 4 }?.average()?.toFloat()
             Repo.gnssSats.value = gpsSats to status.satelliteCount
             if (System.currentTimeMillis() - lastGpsFixMs > 5000) {
                 Repo.gpsStatus.value = "ищу спутники: видно ${status.satelliteCount}, в решении $gpsSats"
@@ -1529,7 +1640,8 @@ class EcuService : Service() {
         runCatching { lm.removeUpdates(netListener) }
         runCatching { lm.unregisterGnssStatusCallback(gnssCallback) }
         runCatching {
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, gpsListener, Looper.getMainLooper())
+            // as often as the receiver gives (most 1 Hz, some 5–10 Hz): the run timer goes by GPS from 4 Hz on
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 100L, 0f, gpsListener, Looper.getMainLooper())
         }.onFailure { SsmTrace.log("gps: $it") }
         runCatching { lm.registerGnssStatusCallback(gnssCallback, android.os.Handler(Looper.getMainLooper())) }
         if (lm.allProviders.contains(LocationManager.NETWORK_PROVIDER)) runCatching {
@@ -1651,7 +1763,8 @@ class EcuService : Service() {
         const val ACTION_RECONNECT = "kg.forester.sg.RECONNECT_ADAPTER"
         val exitRequested = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
         /** Paired Bluetooth devices worth trying in "Auto". */
-        private val OBD_NAMES = listOf("OBD", "ELM", "V-LINK", "VLINK", "KONNWEI", "VGATE", "ICAR", "OBDLINK", "CARISTA", "VEEPEAK")
+        private val OBD_NAMES = listOf("OBD", "ELM", "V-LINK", "VLINK", "KONNWEI", "VGATE", "ICAR", "OBDLINK", "CARISTA", "VEEPEAK",
+            "MPC", "MULTITRONICS")
 
         fun start(ctx: Context, action: String? = null) {
             val i = Intent(ctx, EcuService::class.java).setAction(action)

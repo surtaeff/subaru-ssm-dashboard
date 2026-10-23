@@ -11,7 +11,8 @@ import org.json.JSONObject
  * The values sit in RAM at the addresses the RomRaider logger knows for the ROM (IAM, A/F Learning #1/#2 A–D).
  * The FLKC table follows IAM: 0x14 bytes on in a 32-bit ECU (floats, every second one), 2 bytes on in a 16-bit
  * one (a byte per cell); RomRaider finds it the same way. The axes (airflow limits, RPM rows, load columns) are
- * in the ROM, at the addresses of assets/learning_axes.json (from SubaruDefs, see tools/romraider/build_learning.py).
+ * in the ROM, at the addresses of assets/learning_axes.json (from SubaruDefs, see tools/romraider/build_learning.py),
+ * or of the driver's own ECUFlash definition for the ROM ([EcuFlashDefs], first: a custom ROM may have them moved).
  */
 object LearnedValues {
     data class Result(
@@ -58,7 +59,8 @@ object LearnedValues {
         }
     }
 
-    internal data class Axis(val addr: Int, val count: Int, val storage: String, val mul: Double) {
+    /** [auto]: the count is not known, [count] values are read and the rising ones at the start kept. */
+    internal data class Axis(val addr: Int, val count: Int, val storage: String, val mul: Double, val auto: Boolean = false) {
         val size get() = when (storage) { "float" -> 4; "uint16" -> 2; else -> 1 }
         val addresses get() = IntArray(count * size) { addr + it }
         fun values(b: ByteArray): List<Double> = List(count) { i ->
@@ -100,11 +102,25 @@ object LearnedValues {
         RomRaider.available(ctx, init, false).any { it.id == "E31" || it.id == "E1" }
 
     /** Reads everything over [client] (blocking, a few seconds over an ELM327); throws with a message for the driver. */
-    fun read(ctx: Context, client: SsmClient, init: EcuInit): Result = read(
-        client, init,
-        RomRaider.available(ctx, init, false).filter { it.kind == RrParam.Kind.EXT }.associateBy { it.id },
-        axesFor(ctx, init.romId),
-    )
+    fun read(ctx: Context, client: SsmClient, init: EcuInit): Result {
+        val params = RomRaider.available(ctx, init, false).filter { it.kind == RrParam.Kind.EXT }.associateBy { it.id }
+        val own = kg.forester.sg.data.EcuDefs.romAxes(ctx)[init.romId.uppercase()]
+        return read(client, init, params, own?.let { ownAxes(it, if ("E31" in params) 32 else 16) } ?: axesFor(ctx, init.romId))
+    }
+
+    /**
+     * The axes of the driver's own ECUFlash file, what it leaves to its base filled in as the bases have it: floats on a
+     * 32-bit ECU, on a 16-bit one 16-bit numbers with SubaruDefs' multipliers; without a count, read up to 8.
+     */
+    internal fun ownAxes(r: EcuFlashDefs.Rom, ecuBits: Int): Axes {
+        val bits = if (r.bits != 0) r.bits else ecuBits
+        fun axis(a: EcuFlashDefs.Axis?, mul16: Double): Axis? = a?.let {
+            val storage = it.storage ?: if (bits == 32) "float" else "uint16"
+            val mul = it.mul ?: if (storage == "float") 1.0 else mul16
+            Axis(it.addr, it.count ?: 8, storage, mul, auto = it.count == null)
+        }
+        return Axes(r.cal, bits, axis(r.af, 0.004577637), axis(r.rpm, 0.1953125), axis(r.load, 6.103515625e-05))
+    }
 
     /** [params]: the ROM's extended parameters by id; [ax]: its axes, null when unknown. */
     internal fun read(client: SsmClient, init: EcuInit, params: Map<String, RrParam>, ax: Axes?): Result {
@@ -124,10 +140,13 @@ object LearnedValues {
             .let { found -> listOfNotNull(found.firstOrNull { it[0] != "E62" }, found.firstOrNull { it[0] == "E62" }) }
             .map { ids -> ids.map { value(it) } }
 
-        fun readAxis(a: Axis?): List<Double>? = a?.let { client.read(it.addresses)?.let(it::values) }
-        val afLimits = readAxis(ax?.af)
-        val rpmLimits = readAxis(ax?.rpm)
-        val loadLimits = readAxis(ax?.load)
+        // an axis without its count: the rising run at its start, within what such an axis can be
+        fun readAxis(a: Axis?, hi: Double): List<Double>? = a?.let { x ->
+            client.read(x.addresses)?.let(x::values)?.let { v -> if (!x.auto) v else EcuFlashDefs.risingRun(v, 0.0, hi)?.let { v.take(it) } }
+        }
+        val afLimits = readAxis(ax?.af, 1000.0)
+        val rpmLimits = readAxis(ax?.rpm, 12000.0)
+        val loadLimits = readAxis(ax?.load, 10.0)
 
         var flkc: List<List<Double>>? = null
         if (rpmLimits != null && loadLimits != null) {

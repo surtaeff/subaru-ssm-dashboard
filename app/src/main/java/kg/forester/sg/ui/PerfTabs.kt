@@ -73,14 +73,15 @@ import java.util.Locale
 
 // ---- names and texts of the results
 
-/** The keys of the results shown, in order: the intervals, then 60 ft, 201 and 402 m. */
-fun resultKeys(intervals: List<Interval>) = intervals.map { it.key } + PerfCalc.DISTANCES.map { it.second }
+/** The keys of the results shown, in order: the intervals, then 60 ft, 201 and 402 m, then the braking 100–0. */
+fun resultKeys(intervals: List<Interval>) = intervals.map { it.key } + PerfCalc.DISTANCES.map { it.second } + PerfCalc.BRAKE
 
 /** "0-100" → "0–100 км/ч", "402m" → "402 м (1/4 мили)". */
 fun resultName(key: String) = when (key) {
     "18m" -> "60 футов (18 м)"
     "201m" -> "201 м (1/8 мили)"
     "402m" -> "402 м (1/4 мили)"
+    PerfCalc.BRAKE -> "Торможение 100–0 км/ч"
     else -> key.replace("-", "–") + " км/ч"
 }
 
@@ -98,6 +99,7 @@ fun flagText(flag: String, run: PerfRun?) = when (flag) {
     PerfCalc.Flag.ZERO -> "время шло, когда машина стояла"
     PerfCalc.Flag.GAP -> "пропуски данных"
     PerfCalc.Flag.SLOPE -> run?.slope?.let { "уклон %+.1f %%".format(it) } ?: "уклон"
+    PerfCalc.Flag.GNSS -> "слабый сигнал GPS"
     else -> flag
 }
 
@@ -115,9 +117,9 @@ fun condLine(run: PerfRun): String {
     ).joinToString(" · ")
 }
 
-/** The run's result in standard air (SAE J1349), null without the intake temperature or the barometer. */
+/** The run's result in standard air (SAE J1349), null without the intake temperature or the barometer, or for a braking. */
 fun corrected(run: PerfRun, key: String): Float? =
-    run.results[key]?.let { PerfCalc.corrected(it.toDouble(), run.cond.iatC?.toDouble(), run.cond.baroKpa?.toDouble())?.toFloat() }
+    run.results[key]?.takeIf { key != PerfCalc.BRAKE }?.let { PerfCalc.corrected(it.toDouble(), run.cond.iatC?.toDouble(), run.cond.baroKpa?.toDouble())?.toFloat() }
 
 // ---- layout
 
@@ -178,19 +180,22 @@ fun RunGraph(m: Measured, bySpeed: Boolean, modifier: Modifier) {
     val g = remember(m) { PerfCalc.gCurve(m.speed, a - 0.3, b + 0.3) }
     if (g.size < 2) { Box(modifier, contentAlignment = Alignment.Center) { T("Слишком мало замеров для графика", 13.sp, C.Sub) }; return }
     val violet = C.Violet
+    // a braking goes below zero, down to a g or more
+    val braking = m.braking
     Canvas(modifier) {
-        val gMax = maxOf(0.5, g.maxOf { it.g } * 1.2)
-        val gMin = minOf(0.0, g.minOf { it.g }).coerceAtLeast(-0.4)
+        // a braking's top line (0.2 g) kept inside the graph, its label off the panel's title
+        val gMax = if (braking) maxOf(0.3, g.maxOf { it.g } * 1.2) else maxOf(0.5, g.maxOf { it.g } * 1.2)
+        val gMin = if (braking) minOf(-0.5, g.minOf { it.g } * 1.2).coerceAtLeast(-2.0) else minOf(0.0, g.minOf { it.g }).coerceAtLeast(-0.4)
         val vMax = maxOf(1.0, g.maxOf { it.kmh } * 1.05)
         val t0 = a - 0.3; val t1 = b + 0.3
         fun x(p: Double, kmh: Double) = (if (bySpeed) kmh / vMax else (p - t0) / (t1 - t0)).toFloat() * size.width
         fun yg(v: Double) = (size.height - (v - gMin) / (gMax - gMin) * size.height).toFloat()
         // the grid: every 0.2 g
-        var lv = 0.0
+        var lv = if (braking) kotlin.math.ceil(gMin / 0.2) * 0.2 else 0.0
         while (lv <= gMax) {
-            drawLine(C.Border, Offset(0f, yg(lv)), Offset(size.width, yg(lv)), if (lv == 0.0) 2f else 1f)
+            drawLine(C.Border, Offset(0f, yg(lv)), Offset(size.width, yg(lv)), if (kotlin.math.abs(lv) < 1e-6) 2f else 1f)
             // not on top of the time axis at the bottom
-            if (yg(lv) < size.height - 26f) label("%.1f g".format(lv), 4f, yg(lv) - 4f, C.Sub, 20f)
+            if (yg(lv) < size.height - 26f) label("%.1f g".format(if (kotlin.math.abs(lv) < 1e-6) 0.0 else lv), 4f, yg(lv) - 4f, C.Sub, 20f)
             lv += 0.2
         }
         // shift labels in rows by their real width: shifts close together and the «0.6 g» of the grid at the left

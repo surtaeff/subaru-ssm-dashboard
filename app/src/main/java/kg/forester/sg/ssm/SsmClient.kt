@@ -253,8 +253,15 @@ abstract class KLineTransport : SsmTransport {
             }
         }
         SsmTrace.log("timeout, got ${all.size} bytes: ${all.toHex(" ")}")
+        if (all.size >= packet.size && all.copyOf(packet.size).contentEquals(packet)) heardEcho = true
         return null
     }
+
+    /**
+     * Our own request came back off the line since the last [heardEcho] = false: the cable sits on a K-line with 12 V on
+     * it (the ignition on). A head unit's own USB-serial chip, or the line with the ignition off, gives nothing back.
+     */
+    @Volatile var heardEcho = false
 
     private fun stripEcho(all: ByteArray, packet: ByteArray): ByteArray? {
         if (all.size < packet.size) return null

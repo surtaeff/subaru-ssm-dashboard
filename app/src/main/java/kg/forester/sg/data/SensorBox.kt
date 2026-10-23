@@ -585,6 +585,7 @@ object SensorBox {
         val box = if (!enabled.value && !Repo.demoOn.value) emptyList()
             else slots.value.filter { it.role == role }.mapNotNull { s -> readings.value[s.input]?.value?.let { it to s.unit } }
         return pickRole(box, CanChannels.roleValues(role)) ?: CanEcu.role(role)?.let { it to CanEcu.roleUnit(role) }
+            ?: kg.forester.sg.ssm.Multitronics.role(role)?.let { it to kg.forester.sg.ssm.Multitronics.roleUnit(role) }
     }
 
     /** Some input or CAN channel is set to [role] (it may have no value right now). */

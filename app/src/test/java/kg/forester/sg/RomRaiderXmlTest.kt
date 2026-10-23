@@ -178,4 +178,19 @@ class RomRaiderXmlTest {
         assertEquals("changed: ${st.std.take(10)} ${st.ext.keys.take(10)}", 0, st.added + st.replaced)
         assertEquals(d.size, st.same)
     }
+
+    @Test
+    fun theBaseExportedReadsBackAsTheBase() {
+        val json = java.io.File("src/main/assets/romraider_ssm.json").readText()
+        val xml = RomRaiderXml.exportBase(json)
+        val defs = RomRaiderXml.parse(xml)
+        val (std, rom) = RomRaider.parseBase(json)
+        assertEquals(std.size, defs.params.size)
+        assertEquals(rom.values.flatten().map { it.id }.toSet().size, defs.ext.size)
+        // laid over the base, nothing is added or changed: the copy is the base itself
+        val st = RomRaiderXml.merge(std, rom, listOf("base.xml" to defs)).stats.single()
+        assertEquals(0, st.added)
+        assertEquals(0, st.replaced)
+        assertTrue(xml.contains("<!-- Нагрузка двигателя (относительная) -->"))
+    }
 }

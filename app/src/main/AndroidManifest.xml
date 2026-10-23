@@ -52,6 +52,11 @@
         <intent>
             <action android:name="android.media.browse.MediaBrowserService" />
         </intent>
+        <!-- 2GIS's service for dashboards: its manoeuvres, cameras and its map for «Приборка с картой» -->
+        <package android:name="ru.dublgis.dgismobile" />
+        <intent>
+            <action android:name="ru.dublgis.api.ACTION_BIND_DASHBOARD_INFORMATION_SERVICE" />
+        </intent>
         <!-- map apps the mini-map can open -->
         <intent>
             <action android:name="android.intent.action.VIEW" />

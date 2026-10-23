@@ -50,6 +50,7 @@ import kg.forester.sg.ssm.SsmTrace
 private val adapters = listOf(
     "auto" to "Авто", "kkl" to "KKL-кабель", "op2" to "OpenPort 2.0",
     "elm_usb" to "ELM327 USB", "elm_bt" to "ELM327 Bluetooth", "elm_wifi" to "ELM327 Wi-Fi", "canable" to "CANable (Link)",
+    "mt_bt" to "Multitronics Bluetooth",
 )
 
 private fun adapterNote(k: String) = when (k) {
@@ -64,6 +65,10 @@ private fun adapterNote(k: String) = when (k) {
         "Если SSM не отвечает — стандартный OBD-II."
     "elm_bt" -> "Bluetooth-свисток ELM327. SSM по CAN (SH 2009+); K-Line только у оригинальных ELM327 v1.4+, многие " +
         "клоны не умеют. Если SSM не отвечает — стандартный OBD-II. Данные обновляются примерно раз в секунду."
+    "mt_bt" -> "Экспериментально. Бортовой компьютер Multitronics MPC-800 с Bluetooth: он сам читает машину по своему протоколу, " +
+        "приложение берёт у него скорость, обороты, температуры, напряжение, расход и остальное, что он отдаёт (около 5 раз в секунду). " +
+        "Коды ошибок, IAM и проверки по заводским таблицам при этом недоступны. Его собственное приложение в это время должно быть " +
+        "отключено: Bluetooth-связь у коробки одна. В «Авто» коробка узнаётся сама, если сопряжённое устройство не ответило как ELM327."
     "elm_wifi" -> "Wi-Fi ELM327: подключите магнитолу к сети адаптера (WiFi_OBDII, V-LINK…), адрес почти всегда " +
         "192.168.0.10:35000. Если SSM не отвечает — стандартный OBD-II."
     else -> "Простой USB KKL (VAG-COM 409.1, CH340/FTDI), K+CAN Commander или Tactrix OpenPort 1.3. Только K-Line."
@@ -229,7 +234,7 @@ fun CarAdapterSettings() {
             }
             Spacer(Modifier.height(6.dp))
             T(adapterNote(adapter), 12.sp, C.Sub)
-            if (adapter == "elm_bt" || adapter == "auto") {
+            if (adapter == "elm_bt" || adapter == "mt_bt" || adapter == "auto") {
                 Spacer(Modifier.height(10.dp))
                 if (adapter == "auto") T("Bluetooth-адаптер (не обязательно: в «Авто» подойдёт любой сопряжённый OBD/ELM/V-LINK)", 12.sp, C.Sub)
                 BluetoothPicker()
@@ -241,7 +246,8 @@ fun CarAdapterSettings() {
             Spacer(Modifier.height(14.dp))
             // the CANable's own settings: picked, or found on USB in «Авто» (a Subaru owner never sees them)
             if (adapter == "canable" || (adapter == "auto" && "CANable" in found)) CanablePanel()
-            if (adapter != "canable") {
+            // the bus is the box's business
+            if (adapter != "canable" && adapter != "mt_bt") {
                 val multiBus = adapter != "kkl"
                 T("Шина", 15.sp, if (multiBus) C.Text else C.Sub)
                 Spacer(Modifier.height(6.dp))

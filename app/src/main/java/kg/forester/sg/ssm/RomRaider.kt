@@ -230,7 +230,7 @@ object RomRaider {
 
     /** The base with the driver's own RomRaider files over it (see [RomRaiderXml.merge]); read again when they change. */
     fun load(ctx: Context): List<RrParam> {
-        val stamp = kg.forester.sg.data.EcuDefs.stamp
+        val stamp = kg.forester.sg.data.EcuDefs.stamp(ctx)
         all?.takeIf { loaded == stamp }?.let { return it }
         synchronized(this) {
             all?.takeIf { loaded == stamp }?.let { return it }
@@ -243,7 +243,8 @@ object RomRaider {
                 if (k < 0) u else kg.forester.sg.data.EcuDefs.Loaded(u.entry, u.defs, null, m.stats[k])
             }
             userFiles.forEach { u ->
-                SsmTrace.log("own definitions ${u.entry.name}: " + (u.error ?: u.stats!!.let { "added ${it.added}, replaced ${it.replaced}, same ${it.same}" }))
+                SsmTrace.log("own definitions ${u.entry.name}: " + (u.error ?: u.rom?.let { "ECUFlash axes for ${it.ecuId}" }
+                    ?: u.stats?.let { "added ${it.added}, replaced ${it.replaced}, same ${it.same}" }.orEmpty()))
             }
             byRom = m.byRom
             loaded = stamp

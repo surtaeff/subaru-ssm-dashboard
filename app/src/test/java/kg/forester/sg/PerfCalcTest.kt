@@ -83,9 +83,21 @@ class PerfCalcTest {
     fun distancesAndTrapSpeed() {
         val m = PerfCalc.measure(trace(20.0, ::standing), emptyList())
         val r = m.results()
-        assertEquals(sqrt(2 * 402.336 / 4), r["402m"]!!.toDouble(), 0.03)
-        assertEquals(4 * sqrt(2 * 402.336 / 4) * 3.6, r["402v"]!!.toDouble(), 0.5)
-        assertEquals(sqrt(2 * 18.288 / 4), r["18m"]!!.toDouble(), 0.03)
+        // as on a drag strip: from one foot of roll-out to the line plus that foot; the trap over the last 66 ft
+        fun at(x: Double) = sqrt(2 * x / 4)
+        val ft = PerfCalc.ROLLOUT_M
+        assertEquals(at(402.336 + ft) - at(ft), r["402m"]!!.toDouble(), 0.02)
+        assertEquals(PerfCalc.TRAP_M / (at(402.336 + ft) - at(402.336 + ft - PerfCalc.TRAP_M)) * 3.6, r["402v"]!!.toDouble(), 0.3)
+        assertEquals(at(18.288 + ft) - at(ft), r["18m"]!!.toDouble(), 0.02)
+        assertNull(r["18v"])
+    }
+
+    @Test
+    fun distanceLineAtSteadyAccelerationWithSparseSamples() {
+        // GPS at 4 Hz: the line is crossed between samples a quarter of a second apart
+        val r = PerfCalc.measure(trace(20.0, ::standing, dtMs = 250), emptyList()).results()
+        val ft = PerfCalc.ROLLOUT_M
+        assertEquals(sqrt(2 * (201.168 + ft) / 4) - sqrt(2 * ft / 4), r["201m"]!!.toDouble(), 0.01)
     }
 
     @Test
@@ -245,5 +257,52 @@ class PerfCalcTest {
         assertEquals(4.0, series(4.0, false).hz, 1e-6)
         assertTrue(series(4.0, false).precisionText().startsWith("ЭБУ ~4 Гц"))
         assertTrue(series(4.0, false).precisionText().endsWith("±0,3 с"))
+    }
+
+    @Test
+    fun brakingFromHundredTimeAndDistance() {
+        // 110 km/h held for 2 s, then 9 m/s² (0.92 g) to a stop; the ECU reads nothing under 3 km/h
+        val v0 = 110 / 3.6
+        fun kmh(t: Double) = if (t < 2) 110.0 else maxOf(0.0, (v0 - 9.0 * (t - 2)) * 3.6).let { if (it < 3) 0.0 else it }
+        val tr = trace(8.0, ::kmh, pedal = { 0f })
+        val m = PerfCalc.measure(tr, Interval.list("0-100,60-100"))
+        val h = m.hits.single { it.key == PerfCalc.BRAKE }
+        // from 100 km/h: 27.78 m/s at 9 m/s² is 3.09 s and 42.9 m (the dead sensor's last 3 km/h cost ~0.06 s)
+        val v = 100 / 3.6
+        assertEquals(v / 9.0, h.sec, 0.12)
+        assertEquals(v * v / 2 / 9.0, h.dist!!, 1.0)
+        assertTrue(m.braking)
+        assertEquals(h.dist!!.toFloat(), m.results()[PerfCalc.BRAKE + PerfCalc.DIST]!!, 1e-4f)
+        assertTrue(PerfCalc.peakG(m)!! < -0.85)
+        // no gas held is no flag for a braking
+        assertTrue(PerfCalc.flags(tr, m, h).isEmpty())
+        // an ordinary stop (2 m/s²) is no test
+        val soft = trace(20.0, { t -> if (t < 2) 110.0 else maxOf(0.0, (v0 - 2.0 * (t - 2)) * 3.6) })
+        assertNull(PerfCalc.measure(soft, emptyList()).hits.firstOrNull { it.key == PerfCalc.BRAKE })
+        // an acceleration run has none
+        assertFalse(PerfCalc.measure(trace(12.0, ::standing), Interval.list("0-100")).braking)
+    }
+
+    @Test
+    fun skyTestAsDragy() {
+        fun pts(sats: Int?, cn0: Float?) = List(10) { GpsPt(it * 100, 50f, 3f, null, sats, cn0) }
+        assertEquals(true, PerfCalc.skyOk(pts(9, 41f)))
+        assertEquals(true, PerfCalc.skyOk(pts(11, 36f)))
+        assertEquals(false, PerfCalc.skyOk(pts(9, 36f)))
+        assertEquals(false, PerfCalc.skyOk(pts(6, 45f)))
+        assertNull(PerfCalc.skyOk(pts(null, null)))
+    }
+
+    @Test
+    fun traceKeepsSkyAndReadsOldFormat() {
+        val tr = RunTrace(1000L, 1.02f, listOf(EcuPt(0, 10f, 2000)), listOf(GpsPt(50, 11f, 3f, 200f, 12, 41.5f)))
+        val back = RunTrace.decode(tr.encode())!!
+        assertEquals(12, back.gps[0].sats)
+        assertEquals(41.5f, back.gps[0].cn0!!, 0.01f)
+        // a trace written before the satellites were kept
+        val old = RunTrace.decode("trace 1 1000 1.0000\ne 0 10.0 2000 - - - -\ng 50 11.0 3.0 200.0\n")!!
+        assertNull(old.gps[0].sats)
+        assertNull(old.gps[0].cn0)
+        assertEquals(200f, old.gps[0].alt!!, 0.01f)
     }
 }

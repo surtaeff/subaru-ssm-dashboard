@@ -376,7 +376,7 @@ object Fyt {
 
     private fun btFallback(key: Int, session: (MediaController.TransportControls) -> Unit) {
         val ctx = app ?: return
-        val c = listOf("com.syu.bt", "com.android.bluetooth", "com.google.android.bluetooth").firstNotNullOfOrNull { MediaSessions.controllerOf(ctx, it) }
+        val c = MediaSessions.controllerOf(ctx, "com.syu.bt") ?: MediaSessions.btController(ctx)
         if (c != null) { Log.i(TAG, "bt: no reaction, via the session of ${c.packageName}"); session(c.transportControls); return }
         // the key goes to the app that played last: not when that is the app's own player, it would start instead
         if (LocalMusic.state.value.queue.isNotEmpty()) { Log.i(TAG, "bt: no reaction, own player would take the key"); return }

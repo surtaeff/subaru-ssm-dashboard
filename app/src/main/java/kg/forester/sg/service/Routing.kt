@@ -14,6 +14,15 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+/** The kinds of manoeuvre the cluster draws an arrow for (and "left", "right", "slight_left"… as they read). */
+object Turn {
+    const val STRAIGHT = "straight"
+    const val ROUND = "round"
+    const val FINISH = "finish"
+    const val UTURN_LEFT = "uturn_left"
+    const val UTURN_RIGHT = "uturn_right"
+}
+
 /** A place to drive to: a search result or one of the recent ones. */
 data class Place(val name: String, val address: String, val lat: Double, val lon: Double) {
     fun format() = listOf(name, address, lat, lon).joinToString("\t") { it.toString().replace('\t', ' ').replace('\n', ' ') }
@@ -268,12 +277,13 @@ object Routing {
         }
     }
 
-    /** The arrow of [s]: degrees from straight ahead (right positive), null for a roundabout or the end. */
-    fun angle(s: RouteStep): Float? = when {
-        s.type == "arrive" || s.type.startsWith("roundabout") || s.type == "rotary" -> null
+    /** The kind of [s] as [Turn] names them, for the cluster's arrow. */
+    fun kind(s: RouteStep): String? = when {
+        s.type == "arrive" -> Turn.FINISH
+        s.type.startsWith("roundabout") || s.type == "rotary" -> Turn.ROUND
         else -> when (s.modifier) {
-            "right" -> 90f; "left" -> -90f; "slight right" -> 40f; "slight left" -> -40f
-            "sharp right" -> 135f; "sharp left" -> -135f; "uturn" -> 180f; else -> 0f
+            "right" -> "right"; "left" -> "left"; "slight right" -> "slight_right"; "slight left" -> "slight_left"
+            "sharp right" -> "sharp_right"; "sharp left" -> "sharp_left"; "uturn" -> Turn.UTURN_LEFT; else -> Turn.STRAIGHT
         }
     }
 

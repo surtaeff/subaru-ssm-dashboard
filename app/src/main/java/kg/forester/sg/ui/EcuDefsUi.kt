@@ -95,10 +95,18 @@ fun EcuDefsBlock() {
     T("Свои определения RomRaider (logger.xml)", 15.sp)
     T("Для ЭБУ, которых нет в базе или где она ошибается: старые JECS, 16-битные, SF5 со своими формулами, прошивки без " +
         "прямого адреса давления (наддув упирается в 1,53 бар). Подойдёт logger.xml от RomRaider целиком или кусок с parameter " +
-        "и ecuparam. Параметр с номером из базы заменяет её. Номера RomRaider (E51, P90, E39…) приложение само берёт для " +
+        "и ecuparam. Определение прошивки ECUFlash (.xml с <rom>) задаёт оси таблицы «Обучение» для своего ECU ID, в том числе у " +
+        "кастомной прошивки со сдвинутыми таблицами. Параметр с номером из базы заменяет её. Номера RomRaider (E51, P90, E39…) приложение само берёт для " +
         "давления, IAM и откатов, своим номерам назначьте роль. Новые параметры отметьте на «Датчиках».", 11.sp, C.Sub)
     Spacer(Modifier.height(6.dp))
     Chip("Загрузить файл", false, { pick.launch(arrayOf("text/xml", "application/xml", "*/*")) }, Lucide.Upload)
+    // the open folder: files put there by a file manager apply by themselves
+    val folder = remember { EcuDefs.folder(ctx)?.absolutePath?.replace(Regex("^/storage/emulated/0"), "")?.trimStart('/') }
+    if (folder != null) {
+        Spacer(Modifier.height(4.dp))
+        T("Или положите .xml в папку $folder (через любой файловый менеджер): файлы оттуда читаются сами, по порядку имён. " +
+            "Вся база приложения в том же формате лежит там же в base/carpulse_base.xml: копируйте из неё то, что надо поправить", 11.sp, C.Sub)
+    }
     if (msg.isNotEmpty()) { Spacer(Modifier.height(4.dp)); T(msg, 12.sp, if (bad) C.Red else C.Green) }
     files.forEach { f ->
         val st = f.stats
@@ -108,8 +116,15 @@ fun EcuDefsBlock() {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
-                T(f.entry.name, 14.sp, maxLines = 1)
-                if (st == null) T("Не читается: ${f.error}", 12.sp, C.Red)
+                T(f.entry.name + if (f.entry.inFolder) "  ·  из папки" else "", 14.sp, maxLines = 1)
+                val r = f.rom
+                if (r != null) {
+                    // an ECUFlash ROM definition: the axes of «Обучение»
+                    T("ECUFlash ${r.cal}, ECU ID ${r.ecuId}: оси обучения " + listOfNotNull(r.af?.let { "A/F" }, r.rpm?.let { "обороты" },
+                        r.load?.let { "нагрузка" }).joinToString(", "), 12.sp, C.Sub)
+                    if (rom != null) T(if (rom == r.ecuId) "Это ROM подключённого ЭБУ" else "К ROM $rom не относится", 12.sp,
+                        if (rom == r.ecuId) C.Green else C.Orange)
+                } else if (st == null) T("Не читается: ${f.error}", 12.sp, C.Red)
                 else {
                     T(listOfNotNull(
                         "добавлено ${st.added}", "заменено ${st.replaced}",
