@@ -1,7 +1,7 @@
 {
- "tag": "v0.9-beta23",
- "name": "0.9-beta23",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta23/subaru-ssm-dashboard.apk",
+ "tag": "v0.9-beta24",
+ "name": "0.9-beta24",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta24/subaru-ssm-dashboard.apk",
  "size": 128350992,
- "notes": "Приборка с картой ведёт по 2ГИС (его карта, манёвры, камеры, ограничения), подсказки Яндекса, замеры как у Dragy и торможение 100–0, Multitronics MPC-800, папка своих определений RomRaider. Исправлены зависания и перезагрузки на магнитолах с K-line кабелем."
+ "notes": "Исправлена связь через Tactrix OpenPort 2.0 на машинах с K-Line (ответ ЭБУ не узнавался). KKL-кабель сам переподключается, если ЭБУ замолк при живой линии."
 }
