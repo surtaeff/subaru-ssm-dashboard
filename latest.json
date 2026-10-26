@@ -1,7 +1,7 @@
 {
- "tag": "v0.9-beta24",
- "name": "0.9-beta24",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta24/subaru-ssm-dashboard.apk",
- "size": 128350992,
- "notes": "Исправлена связь через Tactrix OpenPort 2.0 на машинах с K-Line (ответ ЭБУ не узнавался). KKL-кабель сам переподключается, если ЭБУ замолк при живой линии."
+ "tag": "v0.9-beta25",
+ "name": "0.9-beta25",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta25/subaru-ssm-dashboard.apk",
+ "size": 128350996,
+ "notes": "После сна магнитолы приложение не открывает себя повторно (куски виджетов лаунчера Teyes поверх приборов). В журнал пишется диагностика подсказок Яндекс Навигатора."
 }
