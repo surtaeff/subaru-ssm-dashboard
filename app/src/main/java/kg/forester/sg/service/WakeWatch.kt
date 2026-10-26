@@ -65,6 +65,9 @@ class WakeWatch(private val ctx: Context, private val onWake: (String) -> Unit) 
             "com.fyt.boot.ACCON", "com.glsx.boot.ACCON", "android.intent.action.ACC_ON",
         )
 
+        /** Set by [MainActivity] between onResume and onPause. */
+        @Volatile var appOnScreen = false
+
         /** Brings the dashboard up after a wake if the driver asked for it (needs «поверх других приложений»). */
         fun openApp(ctx: Context) {
             if (!Repo.settings.autostartApp) return
@@ -72,6 +75,10 @@ class WakeWatch(private val ctx: Context, private val onWake: (String) -> Unit) 
                 SsmTrace.log("wake: no overlay permission, the app can't open itself")
                 return
             }
+            // already in front: starting it again only races the Teyes launcher waking at the same moment, after
+            // which bits of the launcher's widgets could stay drawn over the dashboard until a restart
+            if (appOnScreen) { SsmTrace.log("wake: the app is already on screen"); return }
+            SsmTrace.log("wake: opening the app")
             runCatching {
                 ctx.startActivity(
                     Intent(ctx, MainActivity::class.java)

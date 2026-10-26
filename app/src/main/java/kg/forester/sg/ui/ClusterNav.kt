@@ -234,6 +234,8 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
     val progress by Routing.progress.collectAsState()
     // 2GIS's dashboard service while the card is on screen (not in the settings preview)
     if (interactive) DisposableEffect(Unit) {
+        // without it no navigator's turn hint ever reaches the card (Yandex has no other way out)
+        if (!kg.forester.sg.service.MediaSessions.allowed(ctx)) kg.forester.sg.ssm.SsmTrace.log("nav hint: no notification access")
         kg.forester.sg.service.DgisDashboard.start(ctx)
         onDispose { kg.forester.sg.service.DgisDashboard.stop() }
     }

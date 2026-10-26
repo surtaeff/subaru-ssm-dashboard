@@ -208,6 +208,16 @@ class MainActivity : ComponentActivity() {
         EcuService.start(this)
     }
 
+    override fun onResume() {
+        super.onResume()
+        kg.forester.sg.service.WakeWatch.appOnScreen = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        kg.forester.sg.service.WakeWatch.appOnScreen = false
+    }
+
     // with background work off, the service (polling, logging) stops once the app leaves the screen
     override fun onStop() {
         super.onStop()

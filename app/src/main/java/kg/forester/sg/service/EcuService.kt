@@ -120,6 +120,8 @@ class EcuService : Service() {
         WakeWatch(this) {
             scope.launch(Dispatchers.Main) {
                 runCatching { startGps() }
+                // the head unit's launcher comes up on the same wake: let it settle before covering it
+                delay(3000)
                 WakeWatch.openApp(this@EcuService)
             }
         }
