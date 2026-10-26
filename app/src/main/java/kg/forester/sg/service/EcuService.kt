@@ -735,6 +735,9 @@ class EcuService : Service() {
         // the K-line OBD try (its init pulses the line with breaks): when it last ran, and whether this round heard an echo
         var obdTriedMs = 0L
         var echo = false
+        // the ECU answered in this session, and the current silent round heard our echo: see the reopen below
+        var ecuSpoke = false
+        var roundEcho = false
         var transport: SsmTransport? = null
         var transportKline = true
         // demo switched on: leave the car (the demo loop takes over)
@@ -774,7 +777,16 @@ class EcuService : Service() {
                 }
                 if (roundDone) silentRounds++
                 val kl = transport as? kg.forester.sg.ssm.KLineTransport
-                if (kl?.heardEcho == true) echo = true
+                if (kl?.heardEcho == true) { echo = true; roundEcho = true }
+                // a KKL cable echoing on a live line, the ECU that spoke a minute ago silent to every request: on a
+                // Legacy BP with an FTDI cable it stayed so for minutes and answered at once after the cable was
+                // plugged in again. Do the same once: close the USB device, the caller opens it afresh.
+                if (roundDone && klineOnly && ecuSpoke && roundEcho) {
+                    SsmTrace.log("ECU silent while the cable echoes: reopening the cable")
+                    Repo.linkMessage.value = "ЭБУ молчит, переподключаю кабель…"
+                    return
+                }
+                if (roundDone) roundEcho = false
                 // the K-line OBD init (fast and 5-baud, the line pulsed with breaks) only on a live K-line: the cable heard its
                 // own SSM requests back (no echo: the ignition off, or not a K-line at all but a head unit's own USB-serial
                 // chip, which pulses hung the USB of some units), never for a Subaru that has spoken SSM through this app
@@ -797,6 +809,7 @@ class EcuService : Service() {
                 continue
             }
             silentRounds = 0
+            ecuSpoke = true
             Repo.obdMode.value = false
             // with the sensors the driver says this ECU has although its list leaves them out (old JECS)
             val capsSeen = Repo.capsVersion.value

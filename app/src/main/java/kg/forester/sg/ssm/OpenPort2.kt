@@ -12,7 +12,8 @@ import java.util.concurrent.TimeUnit
  * The adapter speaks a line-oriented ASCII protocol: "ato…" opens a channel, "att…" transmits,
  * "atf…" installs a receive filter, every command ends with a sequence number that the reply
  * ("aro <seq>" / "are <err> <seq>") echoes back. Received bus frames arrive in the same stream as
- * binary records: 'a' 'r' <protocol digit> <len> <RxStatus> <timestamp:4> <data…>.
+ * binary records: 'a' 'r' <protocol digit> <len> <RxStatus> <timestamp:4> <data…> on CAN, without the timestamp
+ * on the K-line.
  * Wire format from the reverse-engineered vendor DLL, see github.com/roffe/libj2534_openport2.
  */
 class OpenPort2(private val port: UsbSerialPort) {
@@ -22,6 +23,8 @@ class OpenPort2(private val port: UsbSerialPort) {
     private var len = 0
     private val replies = LinkedBlockingQueue<String>()
     private var seq = 0
+    /** K-line record headers written to the log so far this session (their layout is learned from users' logs). */
+    private var rawLogged = 0
     @Volatile var ioError: Exception? = null
         private set
 
@@ -86,7 +89,7 @@ class OpenPort2(private val port: UsbSerialPort) {
 
     // ---- stream parser (runs on the USB reader thread) ----
 
-    private fun feed(data: ByteArray) {
+    internal fun feed(data: ByteArray) {
         synchronized(parseLock) {
             if (len + data.size > buf.size) buf = buf.copyOf(maxOf(buf.size * 2, len + data.size))
             data.copyInto(buf, len)
@@ -107,10 +110,20 @@ class OpenPort2(private val port: UsbSerialPort) {
                 if (i + 3 >= len) { pos = i; break }
                 val n = buf[i + 3].toInt() and 0xFF
                 if (i + 4 + n > len) { pos = i; break }
-                if (n >= 5) {
+                if (n >= 1) {
                     val status = buf[i + 4].toInt() and 0xFF
-                    val payload = buf.copyOfRange(i + 9, i + 4 + n)
-                    runCatching { onFrame?.invoke(c - '0', status, payload) }
+                    // K-line records carry no timestamp: <RxStatus> <data…> (firmware 1.17, a GD's ROM ID came back
+                    // without the first 4 bytes of every record when they were taken for one). A start/end
+                    // indication with a timestamp alone (n = 5) carries no data.
+                    val kline = c - '0' == ISO9141
+                    if (kline && rawLogged < 12) { rawLogged++; SsmTrace.log("op2 rx record proto 3 status %02X len %d".format(status, n)) }
+                    val payload = when {
+                        kline && n == 5 && status and 0xC0 != 0 -> null
+                        kline -> buf.copyOfRange(i + 5, i + 4 + n)
+                        n >= 5 -> buf.copyOfRange(i + 9, i + 4 + n)
+                        else -> null
+                    }
+                    if (payload != null) runCatching { onFrame?.invoke(c - '0', status, payload) }
                 }
                 pos = i + 4 + n
             } else {
