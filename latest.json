@@ -1,7 +1,7 @@
 {
- "tag": "v0.9-beta26",
- "name": "0.9-beta26",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta26/subaru-ssm-dashboard.apk",
+ "tag": "v0.9-beta27",
+ "name": "0.9-beta27",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta27/subaru-ssm-dashboard.apk",
  "size": 128350992,
- "notes": "Если ЭБУ замолкает по KKL-кабелю, приложение само сбрасывает линию, как при перетыкании кабеля. OpenPort пишет в журнал напряжение на разъёме OBD. Температура масла на других марках из параметров OBDb."
+ "notes": "Голосовой ассистент больше не зависает с надписью «выключено»: модель распознавания качается с процентами и при обрыве связи сама пробует снова."
 }
