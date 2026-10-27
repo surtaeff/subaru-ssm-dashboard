@@ -141,7 +141,8 @@ fun VoiceSettings() {
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(8.dp))
-                Box(Modifier.width(120.dp)) { ActionButton("Сказать", typed.isNotBlank()) { Voice.rehearse(ctx, typed.trim()) } }
+                // the grey example looks typed in, so with the field empty the button says the example instead of greying out
+                Box(Modifier.width(120.dp)) { ActionButton("Сказать", true) { Voice.rehearse(ctx, typed.trim().ifEmpty { "какая температура масла" }) } }
             }
             T("Как будто сказали «${Voice.wakeWord(ctx)}, …»: шар покажет фразу, ассистент ответит и выполнит", 11.sp, C.Sub)
             Spacer(Modifier.height(12.dp))
