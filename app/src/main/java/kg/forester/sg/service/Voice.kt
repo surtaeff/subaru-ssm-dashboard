@@ -111,8 +111,15 @@ object Voice {
         scope.launch {
             runCatching {
                 if (!modelReady(app)) download(app)
+                // switched off while the model was coming
+                if (!enabled(app)) { starting.set(false); status.value = "выключено"; return@launch }
                 LibVosk.setLogLevel(LogLevel.WARNINGS)
-                val m = model ?: Model(File(app.filesDir, MODEL_DIR).absolutePath).also { model = it }
+                val dir = File(app.filesDir, MODEL_DIR)
+                // a folder left half-unpacked by an older version: fetch it again instead of failing on every start
+                val m = model ?: runCatching { Model(dir.absolutePath) }.getOrElse {
+                    dir.deleteRecursively()
+                    throw IllegalStateException("модель повреждена, скачаю её заново", it)
+                }.also { model = it }
                 val rec = Recognizer(m, 16000f)
                 val myGen = ++gen
                 running = true
@@ -122,7 +129,7 @@ object Voice {
             }.onFailure {
                 starting.set(false)
                 android.util.Log.e("Voice", "start failed", it)
-                status.value = "ошибка: ${it.message}"
+                status.value = if (enabled(app)) "ошибка: ${it.message}" else "выключено"
                 service = null
             }
         }
@@ -134,7 +141,8 @@ object Voice {
         val t = service
         service = null
         runCatching { t?.join(3000) }
-        status.value = "выключено"
+        // a start still fetching the model goes on and shows its own progress; only an assistant really off says so
+        if (!starting.get()) status.value = "выключено"
     }
 
     /**
@@ -150,26 +158,59 @@ object Voice {
         }
     }
 
+    /**
+     * With timeouts: on a head unit with a weak connection a plain openStream could hang for good, and the assistant
+     * stayed "starting" forever, so neither the switch nor the watchdog could start it again.
+     */
     private fun download(ctx: Context) {
         status.value = "скачиваю модель распознавания (45 МБ)…"
         android.util.Log.i("Voice", "downloading model")
         val tmp = File(ctx.cacheDir, "vosk.zip")
-        URL(MODEL_URL).openStream().use { inp -> tmp.outputStream().use { inp.copyTo(it) } }
+        val con = URL(MODEL_URL).openConnection().apply { connectTimeout = 20_000; readTimeout = 30_000 }
+        val total = con.contentLengthLong
+        try {
+            con.getInputStream().use { inp ->
+                tmp.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var got = 0L
+                    var shown = -1
+                    while (true) {
+                        val n = inp.read(buf)
+                        if (n < 0) break
+                        if (!enabled(ctx)) throw java.io.IOException("выключено")
+                        out.write(buf, 0, n)
+                        got += n
+                        val pct = if (total > 0) (got * 100 / total).toInt() else -1
+                        if (pct != shown) {
+                            shown = pct
+                            status.value = if (pct >= 0) "скачиваю модель распознавания: $pct %" else "скачиваю модель распознавания: ${got / 1_000_000} МБ"
+                        }
+                    }
+                    if (total > 0 && got != total) error("модель скачалась не до конца, попробую ещё раз")
+                }
+            }
+        } catch (e: java.io.IOException) {
+            tmp.delete()
+            throw java.io.IOException("не удалось скачать модель (${e.message ?: "нет связи"}), попробую ещё раз через полминуты", e)
+        }
         status.value = "распаковываю модель…"
-        val out = File(ctx.filesDir, MODEL_DIR).apply { deleteRecursively(); mkdirs() }
+        // unpacked aside and moved in at the end: a half-unpacked folder would look like a ready model
+        val part = File(ctx.filesDir, "$MODEL_DIR.part").apply { deleteRecursively(); mkdirs() }
         ZipInputStream(tmp.inputStream()).use { zip ->
             var e = zip.nextEntry
             while (e != null) {
                 // strip the top-level "vosk-model-small-ru-0.22/" folder
                 val rel = e.name.substringAfter('/', "")
                 if (rel.isNotEmpty()) {
-                    val f = File(out, rel)
+                    val f = File(part, rel)
                     if (e.isDirectory) f.mkdirs() else { f.parentFile?.mkdirs(); f.outputStream().use { zip.copyTo(it) } }
                 }
                 e = zip.nextEntry
             }
         }
         tmp.delete()
+        val out = File(ctx.filesDir, MODEL_DIR).apply { deleteRecursively() }
+        if (!part.renameTo(out)) error("не удалось распаковать модель")
     }
 
     /**
