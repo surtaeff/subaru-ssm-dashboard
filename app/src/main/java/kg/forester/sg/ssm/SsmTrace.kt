@@ -62,6 +62,15 @@ object SsmTrace {
 
     fun log(dir: String, b: ByteArray, len: Int = b.size) = log("$dir ${b.copyOf(len).toHex(" ")}")
 
+    /** The last [n] polling lines copied into the main log: what the ECU was asked just before it fell silent. */
+    @Synchronized
+    fun keepPollTail(n: Int) {
+        if (pollRing.isEmpty()) return
+        val tail = pollRing.takeLast(n)
+        log("--- the last ${tail.size} polling lines ---", keep = true)
+        tail.forEach { log("  $it", keep = true) }
+    }
+
     @Synchronized
     fun clear() {
         runCatching { w?.close() }

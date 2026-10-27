@@ -59,6 +59,9 @@ abstract class KLineTransport : SsmTransport {
 
     protected abstract fun writeRaw(packet: ByteArray)
 
+    /** Holds the K-line low for [ms] (the serial chip's break); false when this cable cannot. */
+    open fun holdLineLow(ms: Long): Boolean = false
+
     // ---- the line as a whole
     private val stream = java.io.ByteArrayOutputStream()
     /** Our request on its way: its echo is ours, any other request is someone else's. */
@@ -331,6 +334,12 @@ class KklTransport(private val port: UsbSerialPort, private val openPort13: Bool
     }
 
     override fun writeRaw(packet: ByteArray) = port.write(packet, 1000)
+
+    override fun holdLineLow(ms: Long): Boolean = runCatching {
+        port.setBreak(true)
+        try { Thread.sleep(ms) } finally { port.setBreak(false) }
+        true
+    }.onFailure { SsmTrace.log("break: $it") }.getOrDefault(false)
 
     /** Stops reading; the port itself is closed by whoever opened it. */
     override fun close() {

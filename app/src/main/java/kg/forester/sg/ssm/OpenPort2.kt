@@ -53,7 +53,16 @@ class OpenPort2(private val port: UsbSerialPort) {
         replies.clear()
         firmware = command("ati").substringAfter(':', "").trim()
         command("ata") // close channels left open by another program
+        // the battery on OBD pin 16 as the adapter sees it: without it the K-line and CAN stay dead (no echo either)
+        runCatching { command("atr 16").trim().split(' ').getOrNull(2)?.toIntOrNull() }.getOrNull()?.let { mv ->
+            vbatt = mv
+            SsmTrace.log("OpenPort: OBD pin 16 at %.1f V".format(mv / 1000f))
+        }
     }
+
+    /** Millivolts on OBD pin 16 read at [open], or -1. */
+    var vbatt = -1
+        private set
 
     fun close() {
         runCatching { command("ata", timeoutMs = 600) }

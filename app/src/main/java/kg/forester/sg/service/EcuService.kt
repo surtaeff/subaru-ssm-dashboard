@@ -740,6 +740,8 @@ class EcuService : Service() {
         // the ECU answered in this session, and the current silent round heard our echo: see the reopen below
         var ecuSpoke = false
         var roundEcho = false
+        // the K-line already held low once for that silent ECU: the next silent round reopens the cable
+        var lineHeldLow = false
         var transport: SsmTransport? = null
         var transportKline = true
         // demo switched on: leave the car (the demo loop takes over)
@@ -782,7 +784,20 @@ class EcuService : Service() {
                 if (kl?.heardEcho == true) { echo = true; roundEcho = true }
                 // a KKL cable echoing on a live line, the ECU that spoke a minute ago silent to every request: on a
                 // Legacy BP with an FTDI cable it stayed so for minutes and answered at once after the cable was
-                // plugged in again. Do the same once: close the USB device, the caller opens it afresh.
+                // plugged in again. Reopening the USB device alone did not wake it (beta24 logs): the re-plug also leaves the
+                // K-line low for seconds (TxD of an unpowered chip at 0), which seems to be what resets the ECU's serial
+                // port. So hold the line low the same way first, then, if it is still silent, reopen the cable.
+                if (roundDone && klineOnly && ecuSpoke && roundEcho && !lineHeldLow) {
+                    lineHeldLow = true
+                    Repo.linkMessage.value = "ЭБУ молчит, сбрасываю K-линию…"
+                    if (kl?.holdLineLow(2500) == true) {
+                        SsmTrace.log("ECU silent while the cable echoes: K-line held low 2.5 s")
+                        roundEcho = false
+                        kl.heardEcho = false
+                        delay(500)
+                        continue
+                    }
+                }
                 if (roundDone && klineOnly && ecuSpoke && roundEcho) {
                     SsmTrace.log("ECU silent while the cable echoes: reopening the cable")
                     Repo.linkMessage.value = "ЭБУ молчит, переподключаю кабель…"
@@ -812,6 +827,7 @@ class EcuService : Service() {
             }
             silentRounds = 0
             ecuSpoke = true
+            lineHeldLow = false
             Repo.obdMode.value = false
             // with the sensors the driver says this ECU has although its list leaves them out (old JECS)
             val capsSeen = Repo.capsVersion.value
@@ -980,6 +996,7 @@ class EcuService : Service() {
                 logger?.close(); logger = null
                 continue
             }
+            SsmTrace.keepPollTail(12)
             SsmTrace.log("ECU silent, polling stopped")
             Repo.link.value = LinkState.NO_ECU
             Repo.linkMessage.value = "Связь с ЭБУ потеряна"

@@ -73,6 +73,13 @@ class EngineGuard {
 
     private var avail: List<RrParam>? = null
     private var roles = emptyMap<String, RrParam>()
+    /**
+     * Another make whose unit has no PID 5C (VW and others keep the oil in their own mode 22 ids): the oil temperature
+     * signals of its OBDb set, all asked, the first that answers wins (which id a car has depends on the engine).
+     */
+    private var oilObdb = emptyList<RrParam>()
+    private val oilName = Regex("\\boil temp", RegexOption.IGNORE_CASE)
+    private val notOil = Regex("centrifug|transm|gear|start|limit|thresh|correct|exceed|warn|target|specified|switch", RegexOption.IGNORE_CASE)
     private var lastMs = 0L
     private var engineOnSince = 0L
     private var oilEst: Float? = null
@@ -138,7 +145,12 @@ class EngineGuard {
             pick("camExL", "Z3")?.let { "camExL" to it },
             pick("camExR", "Z4")?.let { "camExR" to it },
         ).toMap() + CustomParam.STAND_IN.mapNotNull { r -> pick(r)?.let { r to it } }
-        Repo.internalWatch.value = roles.values.map { it.id }.toSet()
+        // «Engine oil temperature» first, then «Oil temperature», then the rest (measured, pulse sensor, calculated…)
+        oilObdb = if (roles["oil"] != null) emptyList() else list
+            .filter { it.id.startsWith(kg.forester.sg.ssm.Obdb.PREFIX) && it.units == "°C" && oilName.containsMatchIn(it.name) && !notOil.containsMatchIn(it.name) }
+            .sortedBy { p -> val n = p.name.trim().lowercase(); if (n == "engine oil temperature") 0 else if (n == "oil temperature") 1 else 2 }
+            .take(6)
+        Repo.internalWatch.value = (roles.values.map { it.id } + oilObdb.map { it.id }).toSet()
     }
 
     fun role(name: String): RrParam? = roles[name]
@@ -368,7 +380,7 @@ class EngineGuard {
         // --- oil temperature and cold engine
         val c = e.coolantC
         // a real sensor: the ECU's own (FA/FB, another car's OBD PID 5C) or one on the SensorBox or a CAN channel
-        val oilEcu = v("oil") ?: kg.forester.sg.data.SensorBox.role("oil")
+        val oilEcu = v("oil") ?: oilObdb.firstNotNullOfOrNull { rr[it.id] }?.toFloat() ?: kg.forester.sg.data.SensorBox.role("oil")
         e.mafGs?.let { m -> mafAvg += (m - mafAvg) * (dt / 180f).coerceAtMost(1f) }
         // the estimate is the EJ's (its gap over the coolant, its warm-up): another car shows the oil only from a sensor
         val estimate = !kg.forester.sg.data.CarKind.other.value
