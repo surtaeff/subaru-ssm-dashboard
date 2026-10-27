@@ -1,7 +1,7 @@
 {
- "tag": "v0.9-beta28",
- "name": "0.9-beta28",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta28/subaru-ssm-dashboard.apk",
+ "tag": "v0.9-beta29",
+ "name": "0.9-beta29",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta29/subaru-ssm-dashboard.apk",
  "size": 128350992,
- "notes": "Голосовой ассистент больше не зависает с надписью «выключено»: модель распознавания качается с процентами и при обрыве связи сама пробует снова. Кнопка «Сказать» работает и с пустым полем."
+ "notes": "Модель распознавания для голосового ассистента теперь качается с GitHub: у некоторых операторов старый сервер недоступен, и загрузка всё время обрывалась."
 }
