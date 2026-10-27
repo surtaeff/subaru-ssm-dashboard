@@ -30,7 +30,11 @@ enum class VoiceTarget { HOME, DRIVE, FUEL, GEARBOX, BATTERY, DTC, MEDIA }
  * Always listening; reacts to "<wake word> <command>" or the wake word followed by a command within a few seconds.
  */
 object Voice {
-    private const val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
+    // our GitHub copy first: alphacephei.com sits on Hetzner, which some Russian operators block (timeouts on every try)
+    private val MODEL_URLS = listOf(
+        "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/voice-model/vosk-model-small-ru-0.22.zip",
+        "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip",
+    )
     private const val MODEL_DIR = "vosk-ru"
 
     val status = MutableStateFlow("выключено")
@@ -166,33 +170,20 @@ object Voice {
         status.value = "скачиваю модель распознавания (45 МБ)…"
         android.util.Log.i("Voice", "downloading model")
         val tmp = File(ctx.cacheDir, "vosk.zip")
-        val con = URL(MODEL_URL).openConnection().apply { connectTimeout = 20_000; readTimeout = 30_000 }
-        val total = con.contentLengthLong
-        try {
-            con.getInputStream().use { inp ->
-                tmp.outputStream().use { out ->
-                    val buf = ByteArray(64 * 1024)
-                    var got = 0L
-                    var shown = -1
-                    while (true) {
-                        val n = inp.read(buf)
-                        if (n < 0) break
-                        if (!enabled(ctx)) throw java.io.IOException("выключено")
-                        out.write(buf, 0, n)
-                        got += n
-                        val pct = if (total > 0) (got * 100 / total).toInt() else -1
-                        if (pct != shown) {
-                            shown = pct
-                            status.value = if (pct >= 0) "скачиваю модель распознавания: $pct %" else "скачиваю модель распознавания: ${got / 1_000_000} МБ"
-                        }
-                    }
-                    if (total > 0 && got != total) error("модель скачалась не до конца, попробую ещё раз")
-                }
+        var failure: java.io.IOException? = null
+        for (url in MODEL_URLS) {
+            try {
+                fetch(ctx, url, tmp)
+                failure = null
+                break
+            } catch (e: java.io.IOException) {
+                android.util.Log.w("Voice", "model download from $url failed: $e")
+                tmp.delete()
+                if (!enabled(ctx)) throw e
+                failure = e
             }
-        } catch (e: java.io.IOException) {
-            tmp.delete()
-            throw java.io.IOException("не удалось скачать модель (${e.message ?: "нет связи"}), попробую ещё раз через полминуты", e)
         }
+        failure?.let { throw java.io.IOException("не удалось скачать модель (${it.message ?: "нет связи"}), попробую ещё раз через полминуты", it) }
         status.value = "распаковываю модель…"
         // unpacked aside and moved in at the end: a half-unpacked folder would look like a ready model
         val part = File(ctx.filesDir, "$MODEL_DIR.part").apply { deleteRecursively(); mkdirs() }
@@ -211,6 +202,32 @@ object Voice {
         tmp.delete()
         val out = File(ctx.filesDir, MODEL_DIR).apply { deleteRecursively() }
         if (!part.renameTo(out)) error("не удалось распаковать модель")
+    }
+
+    /** One source into [tmp]; any failure (no connection, a cut-off file) is an IOException, so the next source is tried. */
+    private fun fetch(ctx: Context, url: String, tmp: File) {
+        val con = URL(url).openConnection().apply { connectTimeout = 20_000; readTimeout = 30_000 }
+        val total = con.contentLengthLong
+        con.getInputStream().use { inp ->
+            tmp.outputStream().use { out ->
+                val buf = ByteArray(64 * 1024)
+                var got = 0L
+                var shown = -1
+                while (true) {
+                    val n = inp.read(buf)
+                    if (n < 0) break
+                    if (!enabled(ctx)) throw java.io.IOException("выключено")
+                    out.write(buf, 0, n)
+                    got += n
+                    val pct = if (total > 0) (got * 100 / total).toInt() else -1
+                    if (pct != shown) {
+                        shown = pct
+                        status.value = if (pct >= 0) "скачиваю модель распознавания: $pct %" else "скачиваю модель распознавания: ${got / 1_000_000} МБ"
+                    }
+                }
+                if (total > 0 && got != total) throw java.io.IOException("модель скачалась не до конца")
+            }
+        }
     }
 
     /**
