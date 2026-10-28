@@ -1,7 +1,7 @@
 {
- "tag": "v0.9-beta29",
- "name": "0.9-beta29",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta29/subaru-ssm-dashboard.apk",
- "size": 128350992,
- "notes": "Модель распознавания для голосового ассистента теперь качается с GitHub: у некоторых операторов старый сервер недоступен, и загрузка всё время обрывалась."
+ "tag": "v0.9-beta30",
+ "name": "0.9-beta30",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta30/subaru-ssm-dashboard.apk",
+ "size": 128383760,
+ "notes": "Свои голосовые команды, звук Bluetooth после CarPlay и на Microntek, радио FYT больше не теряет сохранённые станции."
 }
