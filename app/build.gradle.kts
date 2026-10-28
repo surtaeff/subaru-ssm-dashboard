@@ -12,8 +12,8 @@ android {
         applicationId = "kg.forester.sg"
         minSdk = 25
         targetSdk = 34
-        versionCode = 38
-        versionName = "0.9-beta30"
+        versionCode = 39
+        versionName = "0.9-beta31"
         // head units and phones are ARM; the x86 copies of the native speech libraries only made the APK bigger
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }

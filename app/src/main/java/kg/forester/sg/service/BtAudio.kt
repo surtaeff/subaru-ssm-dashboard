@@ -28,10 +28,35 @@ import kg.forester.sg.ssm.SsmTrace
 object BtAudio {
     private const val TAG = "BtAudio"
 
-    fun microntek(ctx: Context): Boolean = mtc ?: listOf("android.microntek.service", "com.microntek.bluetooth", "android.microntek.mtcser")
-        .any { runCatching { ctx.packageManager.getPackageInfo(it, 0); true }.getOrDefault(false) }
+    fun microntek(ctx: Context): Boolean = mtc ?: (listOf("android.microntek.service", "com.microntek.bluetooth", "android.microntek.mtcser")
+        .any { runCatching { ctx.packageManager.getPackageInfo(it, 0); true }.getOrDefault(false) } ||
+        launchable(ctx).any { it.activityInfo.packageName.contains("microntek") })
         .also { mtc = it }
     private var mtc: Boolean? = null
+
+    private fun launchable(ctx: Context): List<android.content.pm.ResolveInfo> = runCatching {
+        ctx.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+    }.getOrDefault(emptyList())
+
+    /**
+     * The head unit's own Bluetooth music screen: on Microntek its BT chip plays only while that app has the music
+     * page open (it unmutes the chip; the channel alone stays silent). A launcher entry of a Bluetooth package of the
+     * unit, the one named like music first ("BT музыка", "Музыка BT", "BT Music").
+     */
+    private fun stockBtMusic(ctx: Context): android.content.ComponentName? {
+        val pm = ctx.packageManager
+        val bt = launchable(ctx).filter { r ->
+            val p = r.activityInfo.packageName
+            p != ctx.packageName && (MediaSessions.isBt(p) || "btmusic" in p) && ("microntek" in p || "mtc" in p || p.startsWith("com.android.") || "btmusic" in p)
+        }
+        fun label(r: android.content.pm.ResolveInfo) = runCatching { r.loadLabel(pm).toString().lowercase() }.getOrDefault("")
+        val pick = bt.firstOrNull { "btmusic" in it.activityInfo.packageName || "music" in it.activityInfo.name.lowercase() }
+            ?: bt.firstOrNull { label(it).let { l -> "муз" in l || "music" in l } }
+            ?: bt.firstOrNull { "microntek" in it.activityInfo.packageName }
+        return pick?.let { android.content.ComponentName(it.activityInfo.packageName, it.activityInfo.name) }
+    }
+
+    private var stockOpenedAt = 0L
 
     /** The Bluetooth mode was picked (the player screen, a voice command): the head unit's sound goes to the phone. */
     fun enter(ctx: Context) {
@@ -41,7 +66,22 @@ object BtAudio {
             // the stock music and radio close on this, as when the stock Bluetooth app opens; the BT app itself stays
             runCatching { ctx.sendBroadcast(Intent("com.microntek.bootcheck").putExtra("class", "com.microntek.bluetooth")) }
             runCatching { am.setParameters("av_channel_enter=gsm_bt") }
-            SsmTrace.log("bt: microntek channel gsm_bt", keep = true)
+            SsmTrace.log("bt: microntek channel gsm_bt; launchers: " + launchable(ctx).map { it.activityInfo.packageName + "/" + it.activityInfo.name }
+                .filter { "microntek" in it || "bt" in it.lowercase() || "blue" in it.lowercase() || "music" in it.lowercase() }.joinToString(", "), keep = true)
+            // the stock BT music screen opened for a moment, then back to us: what drivers did by hand to get sound
+            val now = SystemClock.elapsedRealtime()
+            val stock = stockBtMusic(ctx)
+            if (stock != null && now - stockOpenedAt > 60_000) {
+                stockOpenedAt = now
+                SsmTrace.log("bt: open ${stock.flattenToShortString()} for a moment", keep = true)
+                runCatching { ctx.startActivity(Intent(Intent.ACTION_MAIN).setComponent(stock).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                val back = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+                    ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    runCatching { am.setParameters("av_channel_enter=gsm_bt") }
+                    back?.let { b -> runCatching { ctx.startActivity(b) } }
+                }, 1800)
+            }
         }
         connect(ctx)
         kick(ctx, force = true)

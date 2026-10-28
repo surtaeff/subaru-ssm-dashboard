@@ -646,7 +646,9 @@ object Voice {
         val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val v = (if (percent) Math.round(max * n / 100f) else n).coerceIn(0, max)
+        val before = am.getStreamVolume(AudioManager.STREAM_MUSIC)
         am.setStreamVolume(AudioManager.STREAM_MUSIC, v, AudioManager.FLAG_SHOW_UI)
+        volumeTrace("set $n${if (percent) "%" else ""}", before, am)
         say("Громкость $v")
     }
 
@@ -728,6 +730,20 @@ object Voice {
         if (am.getStreamVolume(AudioManager.STREAM_MUSIC) == before) {
             repeat(kotlin.math.abs(steps)) { am.adjustSuggestedStreamVolume(dir, AudioManager.USE_DEFAULT_STREAM_TYPE, AudioManager.FLAG_SHOW_UI) }
         }
+        volumeTrace("step $steps", before, am)
+    }
+
+    /**
+     * Android's music volume was changed (no FYT sound module): which unit and what the stream did, for the log.
+     * Units that keep the volume in their own processor (FYT without the module, Microntek) move the stream and not the sound.
+     */
+    private fun volumeTrace(what: String, before: Int, am: AudioManager) {
+        kg.forester.sg.ssm.SsmTrace.log(
+            "voice volume $what: android stream $before → ${am.getStreamVolume(AudioManager.STREAM_MUSIC)}/${am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}, " +
+                "fyt=${Fyt.present(app)} sound=${Fyt.soundReady()} fytVol=${Fyt.volume.value} microntek=${BtAudio.microntek(app)} " +
+                "music=${am.isMusicActive} ${android.os.Build.MANUFACTURER}/${android.os.Build.MODEL}/${android.os.Build.HARDWARE}",
+            keep = true,
+        )
     }
 
     /** The head unit's own music, radio or Bluetooth audio is what plays now. */

@@ -476,6 +476,9 @@ object Fyt {
      * there (not an FYT unit, service not bound yet). Command 0 with -1 / -2 = one step up / down, -3 / -4 = mute
      * on / off; -6 shows the volume bar.
      */
+    /** The sound module is bound: volume and mute go to the MCU, not to Android's stream. */
+    fun soundReady() = sound != null
+
     fun volumeStep(steps: Int): Boolean {
         val m = sound ?: return false
         repeat(kotlin.math.abs(steps)) { cmd(m, 0, intArrayOf(if (steps > 0) -1 else -2)) }
