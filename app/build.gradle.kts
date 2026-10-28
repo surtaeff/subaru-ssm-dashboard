@@ -12,8 +12,8 @@ android {
         applicationId = "kg.forester.sg"
         minSdk = 25
         targetSdk = 34
-        versionCode = 39
-        versionName = "0.9-beta31"
+        versionCode = 40
+        versionName = "0.9-beta32"
         // head units and phones are ARM; the x86 copies of the native speech libraries only made the APK bigger
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
@@ -85,6 +85,8 @@ dependencies {
     implementation(files("libs/sherpa-onnx-1.13.8-arm.aar"))
     // unpacking the downloaded voice (.tar.bz2)
     implementation("org.apache.commons:commons-compress:1.21")
+    // the QR code of the Telegram group in Настройки, Связь (encoder only, no camera)
+    implementation("com.google.zxing:core:3.5.3")
     testImplementation("junit:junit:4.13.2")
     // the real org.json in unit tests (Android's is a stub there): the SensorBox catalogue is parsed with it
     testImplementation("org.json:json:20240303")

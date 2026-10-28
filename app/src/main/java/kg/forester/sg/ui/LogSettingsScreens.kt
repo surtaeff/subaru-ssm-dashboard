@@ -221,6 +221,7 @@ fun SettingsScreen() {
             Chip("Функции", tab == 4, { tab = 4 }, Lucide.ToggleRight)
             Chip("Доп датчики", tab == 5, { tab = 5 }, Lucide.Cpu)
             Chip("Цветной экран", tab == 6, { tab = 6 }, Lucide.Monitor)
+            Chip("Связь", tab == 7, { tab = 7 }, Lucide.MessageCircle)
         }
         Spacer(Modifier.height(10.dp))
         Box(Modifier.weight(1f)) {
@@ -231,6 +232,7 @@ fun SettingsScreen() {
                 4 -> FeatureSettings()
                 5 -> ExtraSensorSettings()
                 6 -> UsbScreenSettings()
+                7 -> ContactSettings()
                 else -> VoiceSettings()
             }
         }

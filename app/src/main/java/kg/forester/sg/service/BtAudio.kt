@@ -132,8 +132,49 @@ object BtAudio {
     @Volatile private var browsed: MediaController? = null
     private var browser: MediaBrowser? = null
 
+    /** A track a head unit announced in a broadcast (Microntek and others without a media session); blank if none. */
+    data class Announced(val title: String = "", val artist: String = "", val playing: Boolean? = null)
+    val announced = kotlinx.coroutines.flow.MutableStateFlow(Announced())
+    private var listening = false
+    private var heard = 0
+
+    /**
+     * Microntek gives the phone's track to no media session. Players and some head-unit Bluetooth apps announce it in
+     * broadcasts ("com.android.music.metachanged" and the like): taken from there when they do, and the first ones
+     * that come go to the log, to see what a unit sends.
+     */
+    private fun listenAnnouncements(ctx: Context) {
+        if (listening) return
+        listening = true
+        val f = android.content.IntentFilter().apply {
+            listOf(
+                "com.android.music.metachanged", "com.android.music.playstatechanged", "com.android.music.musicservicecommand",
+                "com.microntek.music.report", "com.microntek.bt.report", "com.microntek.btmusic.report", "com.microntek.musicinfo",
+            ).forEach { addAction(it) }
+        }
+        val r = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                val x = i.extras
+                if (heard < 30) {
+                    heard++
+                    SsmTrace.log("bt: broadcast ${i.action} " + (x?.keySet()?.joinToString(",") { k -> "$k=${x.get(k)}".take(60) } ?: ""), keep = true)
+                }
+                if (x == null) return
+                fun str(vararg k: String) = k.firstNotNullOfOrNull { x.getString(it)?.takeIf { v -> v.isNotBlank() } }
+                val title = str("track", "title", "music_title", "song", "name") ?: return
+                val playing = listOf("playing", "isPlaying", "isplaying").firstOrNull { x.containsKey(it) }?.let { x.getBoolean(it) }
+                announced.value = Announced(title, str("artist", "music_artist", "singer").orEmpty(), playing)
+            }
+        }
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 33) ctx.applicationContext.registerReceiver(r, f, Context.RECEIVER_EXPORTED)
+            else ctx.applicationContext.registerReceiver(r, f)
+        }
+    }
+
     /** Connects once to the Bluetooth stack's media browser service (com.android.bluetooth's AVRCP controller). */
     fun connect(ctx: Context) {
+        if (microntek(ctx)) listenAnnouncements(ctx)
         if (browser != null || Fyt.present(ctx)) return
         val app = ctx.applicationContext
         val svc = runCatching {

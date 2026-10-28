@@ -6,7 +6,7 @@
 
 Сделано и проверено на **Subaru Forester SG5 2003 (JDM, EJ20 turbo, 4EAT)** с магнитолой **Teyes CC3** (Android 10, 1280×720). Владельцы Forester SG/SH, Impreza, Legacy и других Subaru пользуются и присылают отзывы.
 
-> **[⬇️ Скачать 0.9-beta31](https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta31/carpulse-0.9-beta31.apk)** · [что нового](https://github.com/surtaeff/subaru-ssm-dashboard/releases/tag/v0.9-beta31) · [история версий](docs/changelog-0.9.md) · [руководство (PDF)](docs/manual-ru.pdf)
+> **[⬇️ Скачать 0.9-beta32](https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta32/carpulse-0.9-beta32.apk)** · [что нового](https://github.com/surtaeff/subaru-ssm-dashboard/releases/tag/v0.9-beta32) · [история версий](docs/changelog-0.9.md) · [руководство (PDF)](docs/manual-ru.pdf) · [💬 группа в Telegram](https://t.me/carpulse_app)
 >
 > Ставится поверх любой беты 0.9, данные сохраняются. Дальше обновляться можно прямо в приложении: Настройки → Основные → «Обновление приложения». Версия 0.8 подписана другим ключом: перед установкой удалите её (поездки и заправки удалятся).
 
@@ -24,12 +24,13 @@
 | **Доп датчики на Arduino** | **Цветной USB-экран** |
 | ![Доп датчики](docs/screenshots/sensorbox.png) | ![Цветной экран](docs/screenshots/usbscreen.png) |
 
-## 🆕 Новое в 0.9-beta31
+## 🆕 Новое в 0.9-beta32
 
-Bluetooth на Microntek и диагностика громкости голосом.
+Группа в Telegram и связь прямо из приложения.
 
-- **Bluetooth на Microntek (PX5 и другие):** на части прошивок звук с телефона шёл, только пока открыто родное приложение Bluetooth. Теперь при выборе Bluetooth в Медиа наш плеер сам на секунду открывает его и возвращается обратно, как раньше приходилось делать вручную.
-- **Громкость голосом:** на некоторых магнитолах команды громче, тише и громкость 15 меняли громкость Android, а звук оставался прежним, потому что магнитола держит громкость в своём процессоре. Теперь в журнале видно, какой путь сработал и что ответила магнитола, по нему поправим под ваши модели.
+- **Группа CarPulse в Telegram: [t.me/carpulse_app](https://t.me/carpulse_app).** Вопросы, ошибки, идеи и помощь с подключением в одном месте, там же новости о версиях.
+- **Настройки, Связь:** QR-код группы (наведите камеру телефона), кнопка открыть её на магнитоле и что прислать, если что-то не работает.
+- **Bluetooth на Microntek:** вместо «Включите музыку на телефоне» плеер пишет «Музыка с телефона», когда магнитола не передаёт название трека; кнопки работают. Если магнитола сообщает трек, он покажется.
 
 Все версии и что было раньше: [история версий](docs/changelog-0.9.md), [Releases](https://github.com/surtaeff/subaru-ssm-dashboard/releases).
 

@@ -817,9 +817,13 @@ private fun BluetoothHero(fyt: Boolean) {
     // other head units: the phone's music arrives as the Bluetooth app's media session; on FYT the session (when
     // the unit has one) fills in what the module leaves out: the track, the cover
     var ext by remember { mutableStateOf(PlayerState()) }
+    // Microntek: no session at all, the track only if the unit announces it; the music itself plays all the same
+    val mtc = remember { !fyt && BtAudio.microntek(ctx) }
     LaunchedEffect(fyt) {
         while (true) {
-            ext = BtAudio.controller(ctx)?.let { playerState(it) } ?: PlayerState()
+            val s = BtAudio.controller(ctx)?.let { playerState(it) } ?: PlayerState()
+            val a = BtAudio.announced.value
+            ext = if (mtc && !s.session && a.title.isNotBlank()) s.copy(title = a.title, artist = a.artist, playing = a.playing ?: true) else s
             // the phone plays, nothing sounds: Android's Bluetooth lost the audio focus (CarPlay, another player)
             BtAudio.kick(ctx)
             delay(1000)
@@ -828,9 +832,10 @@ private fun BluetoothHero(fyt: Boolean) {
     val known = if (fyt) m.title.isNotBlank() else ext.title.isNotBlank()
     val title = when {
         fyt -> m.title.ifBlank { ext.title.ifBlank { "Включите музыку на телефоне" } }
+        mtc && !ext.session -> ext.title.ifBlank { "Музыка с телефона" }
         else -> ext.title.ifBlank { if (ext.session) "Нет трека" else "Включите музыку на телефоне" }
     }
-    val artist = if (fyt) (if (known) m.artist else ext.artist) else ext.artist
+    val artist = if (fyt) (if (known) m.artist else ext.artist) else ext.artist.ifBlank { if (mtc && !known) "магнитола не передаёт название трека, кнопки работают" else "" }
     // the module's play state once it has said anything, the session's before that
     val playing = if (fyt && m.updatedMs > 0) m.playing else ext.playing
     val pos = if (fyt && m.posMs > 0) m.posMs else ext.posMs
