@@ -95,6 +95,8 @@ object Fyt {
     /** The phone's music over the unit's Bluetooth on its own ([music] is whichever pushed last). */
     val btMusic = MutableStateFlow(MusicState(source = "bt"))
     val radio = MutableStateFlow(RadioState())
+    /** sys.fyt.radio_type: "1" the MCU's tuner, "3" / "4" one the stock radio app drives (it must be running), "2" none. */
+    @Volatile var radioType = ""
     val appId = MutableStateFlow(0) // current audio source: 1 radio, 3 BT music, 8 music player
     /** Master volume as the MCU reports it (update U_VOL = 2), -1 = unknown. */
     val volume = MutableStateFlow(-1)
@@ -164,7 +166,7 @@ object Fyt {
             val r = radio.value
             radio.value = when (code) {
                 0 -> r.copy(band = v)
-                1 -> withStation(r.copy(freq = v))
+                1 -> withStation(r.copy(freq = freqUnits(v)))
                 // an MCU tuner tells the preset's index, FM ones from 65536 (P1 of the band = 65536); the radio app 1..6
                 3 -> r.copy(preset = if (v >= 65536) (v - 65536) % 6 + 1 else v)
                 else -> r
@@ -248,6 +250,7 @@ object Fyt {
             radioModule = module(tk, M_RADIO)?.also { m -> listOf(0, 1, 3).forEach { register(m, radioCb, it) } }
             // 1 = the MCU's tuner, 3 / 4 = one the radio app drives (it gets our commands passed on), 2 = none
             val type = runCatching { Runtime.getRuntime().exec(arrayOf("getprop", "sys.fyt.radio_type")).inputStream.bufferedReader().readText().trim() }.getOrDefault("?")
+            radioType = type
             trace("bound: main ${main != null}, radio ${radioModule != null}, radio type $type")
             // all the module's updates, not only the known ones: the log tells which code carries what on this unit
             bt = module(tk, M_BT)?.also { m -> (0 until 100).forEach { register(m, btCb, it) } }
@@ -284,6 +287,13 @@ object Fyt {
         }.getOrDefault(emptyMap())
     }
 
+    /** FM in 10 kHz units as everywhere here: some firmwares report kHz or Hz (seen in the CarRadio app's logs). */
+    private fun freqUnits(v: Int) = when (v) {
+        in 87_500..108_000 -> v / 10
+        in 87_500_000..108_000_000 -> v / 10_000
+        else -> v
+    }
+
     private fun withStation(r: RadioState): RadioState {
         val key = if (r.isFm || r.band == -1) String.format(Locale.US, "%.02f", r.freq / 100.0) else r.freq.toString()
         val st = stations[key] ?: return r.copy(name = "", logo = null)
@@ -306,7 +316,8 @@ object Fyt {
 
     fun next() {
         when {
-            appId.value == 1 -> cmd(radioModule, 0)
+            // the radio: through the driver's own stations (by frequency) when there are any, else the tuner's presets
+            appId.value == 1 -> radioStep(true)
             btActive() -> btNext()
             else -> startMusicService("com.syu.music.next")
         }
@@ -314,10 +325,15 @@ object Fyt {
 
     fun prev() {
         when {
-            appId.value == 1 -> cmd(radioModule, 1)
+            appId.value == 1 -> radioStep(false)
             btActive() -> btPrev()
             else -> startMusicService("com.syu.music.prev")
         }
+    }
+
+    private fun radioStep(next: Boolean) {
+        app?.let { FmRadio.load(it) }
+        if (FmRadio.mine.isNotEmpty()) FmRadio.step(next) else cmd(radioModule, if (next) 0 else 1, intArrayOf(0))
     }
 
     // --- Bluetooth music -----------------------------------------------------------------------------
@@ -421,18 +437,38 @@ object Fyt {
             // number): started again, the radio went back to its own last station each time and undid every seek
             // and preset, so the buttons seemed dead
             if (SystemClock.uptimeMillis() - radioLaunchMs < 60_000) { trace("radio: source still ${appId.value}, not starting it again"); return@postDelayed }
-            radioLaunchMs = SystemClock.uptimeMillis()
             trace("radio: source still ${appId.value}, starting the radio's activity")
-            runCatching {
-                ctx.startActivity(Intent().setClassName("com.syu.radio", "com.syu.radio.Launch").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            }
-            cmd(main, 0, intArrayOf(1))
-            handler.postDelayed({
-                ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)?.let {
-                    it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT); runCatching { ctx.startActivity(it) }
-                }
-            }, 900)
+            launchRadioApp(ctx)
         }, 1500)
+    }
+
+    /** The stock radio's activity for a moment (it comes up on its own last station), then our screen back. */
+    private fun launchRadioApp(ctx: Context) {
+        radioLaunchMs = SystemClock.uptimeMillis()
+        runCatching {
+            ctx.startActivity(Intent().setClassName("com.syu.radio", "com.syu.radio.Launch").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+        cmd(main, 0, intArrayOf(1))
+        handler.postDelayed({
+            ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)?.let {
+                it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT); runCatching { ctx.startActivity(it) }
+            }
+        }, 900)
+    }
+
+    /**
+     * The tuner didn't react to a command while the radio is the source. On radio type 3 / 4 ms only passes our
+     * commands on to the stock radio app, and once Android has killed that app they go nowhere until the driver
+     * opens it by hand: that was "the saved stations stopped working". Started again, at most every 20 s;
+     * false when it was started just now (the caller waits for it and sends the command again).
+     */
+    fun wakeRadioApp(): Boolean {
+        val ctx = app ?: return false
+        // the MCU's own tuner needs no app; a frequency it ignores is not a dead app
+        if (radioType == "1" || SystemClock.uptimeMillis() - radioLaunchMs < 20_000) return false
+        trace("radio: no reaction (type $radioType, source ${appId.value}), starting the radio app")
+        launchRadioApp(ctx)
+        return true
     }
 
     /**
@@ -460,19 +496,28 @@ object Fyt {
     fun radioSeek(up: Boolean, ensure: Boolean = true) {
         if (ensure) ensureRadio()
         trace("radio seek ${if (up) "up" else "down"} from ${radio.value.freq} (source ${appId.value}, module ${radioModule != null})")
-        cmd(radioModule, if (up) 5 else 6)
+        cmd(radioModule, if (up) 5 else 6, intArrayOf(0))
     }
     /*
      * The radio module's commands as com.syu.ms takes them (uis7862 build of 2021-11, decompiled): 0 / 1 preset up /
      * down, 5 / 6 seek, 7 [index] a preset (FM ones from 65536), 11 [band] the band (65536..65538 FM1..3, 0/1 AM,
-     * -1 the band key; without the number it is ignored), 13 [1, freq] a frequency. A unit whose tuner the radio app
-     * drives itself (radio type 3/4, newer units) gets them passed on to that app, which must be running.
+     * -1 the band key, -3 / -2 FM / AM on other builds; without the number it is ignored), 13 [mode, freq] a
+     * frequency. A unit whose tuner the radio app drives itself (radio type 3/4, newer units) gets them passed on to
+     * that app, which must be running. Seek and preset up / down go with [0], as the FYT launcher sends them: some
+     * services (UIS8141E) ignore them without a value.
+     *
+     * Command 13 mode 1 converts the frequency by the band limits, which ms learns only when the MCU sends its band
+     * range, often only after the stock radio app asked for it: until then it is dropped without a word. That was
+     * "works every other time, open the stock radio and it works again". Mode 3 sends the MCU packet with the
+     * frequency as it is (FM in 10 kHz units, AM in kHz) and works at once (found by the CarRadio app,
+     * github.com/nikhil914/CarRadio); mode 1 stays as the fallback.
      */
+    val TUNE_MODES = intArrayOf(3, 1)
 
-    /** Straight to [freq] (FM in 10 kHz units, AM in kHz); a tuner that doesn't take it stays where it is. */
-    fun radioTune(freq: Int) {
-        trace("radio tune $freq from ${radio.value.freq} (source ${appId.value})")
-        cmd(radioModule, 13, intArrayOf(1, freq))
+    /** Straight to [freq] (FM in 10 kHz units, AM in kHz) by command 13 [mode]; a tuner that doesn't take it stays. */
+    fun radioTune(freq: Int, mode: Int = 3) {
+        trace("radio tune $freq mode $mode from ${radio.value.freq} (source ${appId.value})")
+        cmd(radioModule, 13, intArrayOf(mode, freq))
     }
 
     /** The tuner's preset [p] (1..6) of the band that plays. */
@@ -485,7 +530,7 @@ object Fyt {
     fun radioPreset(next: Boolean, ensure: Boolean = true) {
         if (ensure) ensureRadio()
         trace("radio preset ${if (next) "next" else "prev"} from ${radio.value.preset} (source ${appId.value}, module ${radioModule != null})")
-        cmd(radioModule, if (next) 0 else 1)
+        cmd(radioModule, if (next) 0 else 1, intArrayOf(0))
     }
     /** To [band] (65536..65538 FM1..3, 0 AM), or the next one like the band key (-1). */
     fun radioBand(band: Int = -1) {

@@ -78,6 +78,9 @@ data class VoiceCommand(
     val text: String = "",
 )
 
+/** The driver's own phrase and what it does: one or more ordinary commands, ";" between them. */
+data class OwnCommand(val phrase: String, val action: String)
+
 /** A number said at some position: its value, the index after it, and whether it was an ordinal ("третья"). */
 data class SpokenNumber(val value: Int, val start: Int, val end: Int, val ordinal: Boolean)
 
@@ -930,6 +933,194 @@ object Commands {
         return dp[b.length]
     }
 
+    // --- the driver's own phrases ----------------------------------------------------------------
+
+    /**
+     * The own command [said] calls for, with its steps ready to run: the whole phrase said (words close enough for
+     * the recogniser's spelling), else all of its words inside a longer command ("ну давай едем в гараж" for "едем
+     * в гараж"); the longest wins. A "*" in the phrase takes any words ("покажи клип *"), and they replace the "*"
+     * in the steps ("включи на ютубе *").
+     */
+    fun ownFor(said: String, own: List<OwnCommand>): Pair<OwnCommand, List<String>>? {
+        val s = normalize(said).split(' ').filter { it.isNotBlank() }
+        if (s.isEmpty()) return null
+        return own.mapNotNull { o ->
+            // normalize() drops punctuation, so the "*" passes it as a word of its own
+            val p = normalize(o.phrase.replace("*", " qstarq ")).split(' ').filter { it.isNotBlank() }.map { if (it == "qstarq") "*" else it }
+            val star = p.indexOf("*")
+            when {
+                p.isEmpty() || steps(o.action).isEmpty() -> null
+                star >= 0 -> {
+                    val pre = p.take(star); val post = p.drop(star + 1).filter { it != "*" }
+                    val fits = s.size > pre.size + post.size && pre.indices.all { close(s[it], pre[it]) } &&
+                        post.indices.all { close(s[s.size - post.size + it], post[it]) }
+                    if (!fits || pre.size + post.size == 0) null
+                    else Triple(o, 2 * (pre.size + post.size) + 1, s.subList(pre.size, s.size - post.size).joinToString(" "))
+                }
+                p.size == s.size && p.indices.all { close(s[it], p[it]) } -> Triple(o, 2 * p.size + 1, "")
+                // one short word alone would fire inside any command
+                (p.size >= 2 || p[0].length >= 5) && p.all { w -> s.any { close(it, w) } } -> Triple(o, 2 * p.size, "")
+                else -> null
+            }
+        }.maxByOrNull { it.second }?.let { (o, _, words) -> o to steps(o.action).map { it.replace("*", words).trim() } }
+    }
+
+    private val APP_NAMES = mapOf(
+        "ru.yandex.yandexnavi" to "Яндекс Навигатор", "ru.yandex.yandexmaps" to "Яндекс Карты", "com.google.android.apps.maps" to "Google Карты",
+        "ru.dublgis.dgismobile" to "2ГИС", "com.waze" to "Waze", "net.osmand.plus" to "OsmAnd", "app.organicmaps" to "Organic Maps",
+        "com.navitel" to "Навител", "com.sygic.aura" to "Sygic", "ru.yandex.music" to "Яндекс Музыка", "com.spotify.music" to "Spotify",
+        "com.uma.musicvk" to "VK Музыка", "com.google.android.apps.youtube.music" to "YouTube Music", "com.google.android.youtube" to "YouTube",
+    )
+
+    private val SCREEN_NAMES = mapOf(
+        "HOME" to "главный экран", "DRIVE" to "динамика", "FUEL" to "расход", "GEARBOX" to "АКПП", "BATTERY" to "АКБ",
+        "DTC" to "ошибки", "MEDIA" to "медиа",
+    )
+
+    private val VALUE_NAMES = mapOf(
+        "COOLANT" to "температура двигателя", "OIL" to "температура масла", "OILP" to "давление масла", "OUTSIDE" to "температура на улице",
+        "INTAKE" to "температура впуска", "ATF" to "температура АКПП", "FUEL" to "остаток топлива", "RANGE" to "запас хода",
+        "CONSUMPTION" to "расход", "BATTERY" to "напряжение", "SPEED" to "скорость", "RPM" to "обороты", "BOOST" to "наддув",
+        "DTC" to "ошибки", "TRIP" to "пробег за поездку", "TIME" to "время", "VOLUME" to "громкость",
+    )
+
+    /** How the assistant took [c], in a few words for the own commands editor ("YouTube: поиск «король и шут»"). */
+    fun describe(c: VoiceCommand): String {
+        val q = c.query?.let { "«$it»" }.orEmpty()
+        val inApp = c.app?.let { " в ${APP_NAMES[it] ?: it}" }.orEmpty()
+        return when (c.intent) {
+            VoiceIntent.PLAY_QUERY -> if (c.app == "com.google.android.youtube") "YouTube: поиск $q" else "включить музыку $q$inApp"
+            VoiceIntent.MEDIA_APP -> "открыть ${c.app?.let { APP_NAMES[it] ?: it } ?: "плеер"}"
+            VoiceIntent.PLAY -> "играть"
+            VoiceIntent.PAUSE -> "пауза"
+            VoiceIntent.NEXT, VoiceIntent.DISLIKE -> "следующий трек"
+            VoiceIntent.PREV -> "предыдущий трек"
+            VoiceIntent.RESTART -> "трек сначала"
+            VoiceIntent.REWIND -> "назад на ${c.number ?: 15} с"
+            VoiceIntent.FORWARD -> "вперёд на ${c.number ?: 15} с"
+            VoiceIntent.SHUFFLE_ON -> "перемешать"
+            VoiceIntent.SHUFFLE_OFF -> "по порядку"
+            VoiceIntent.REPEAT_ON -> "повтор"
+            VoiceIntent.REPEAT_OFF -> "без повтора"
+            VoiceIntent.LIKE -> "нравится"
+            VoiceIntent.WHAT_PLAYING -> "сказать, что играет"
+            VoiceIntent.SOURCE_BT -> "музыка по Bluetooth"
+            VoiceIntent.SOURCE_USB -> "музыка с флешки"
+            VoiceIntent.VOLUME_UP -> "громче"
+            VoiceIntent.VOLUME_DOWN -> "тише"
+            VoiceIntent.VOLUME_SET -> "громкость ${c.number}${if (c.percent) "%" else ""}"
+            VoiceIntent.MUTE -> "без звука"
+            VoiceIntent.UNMUTE -> "вернуть звук"
+            VoiceIntent.RADIO -> "радио"
+            VoiceIntent.RADIO_FREQ -> "радио ${c.freq} МГц"
+            VoiceIntent.RADIO_PRESET -> "радио, станция ${c.number}"
+            VoiceIntent.RADIO_NAME -> "радио $q"
+            VoiceIntent.RADIO_NEXT -> "следующая станция"
+            VoiceIntent.RADIO_PREV -> "предыдущая станция"
+            VoiceIntent.RADIO_SEEK -> "поиск станции"
+            VoiceIntent.RADIO_BAND -> "диапазон ${c.target ?: "следующий"}"
+            VoiceIntent.NAV_ROUTE -> if (c.query == null) "маршрут, спросит куда" else "маршрут: ${c.query}${c.via?.let { " через $it" }.orEmpty()}$inApp"
+            VoiceIntent.NAV_SEARCH -> "найти на карте $q$inApp"
+            VoiceIntent.NAV_NEARBY -> "ближайшее: ${c.target ?: c.query}$inApp"
+            VoiceIntent.NAV_HOME -> "маршрут домой$inApp"
+            VoiceIntent.NAV_WORK -> "маршрут на работу$inApp"
+            VoiceIntent.NAV_SAVE_PLACE -> "запомнить ${if (c.target == "home") "дом" else "работу"}"
+            VoiceIntent.NAV_CANCEL -> "отменить маршрут"
+            VoiceIntent.NAV_TRAFFIC -> "показать пробки"
+            VoiceIntent.NAV_ETA -> "сколько ехать"
+            VoiceIntent.NAV_WHERE -> "где я"
+            VoiceIntent.NAV_SOUND_OFF -> "выключить голос навигатора"
+            VoiceIntent.NAV_SOUND_ON -> "включить голос навигатора"
+            VoiceIntent.NAV_OPEN -> "открыть ${c.app?.let { APP_NAMES[it] ?: it } ?: "навигатор"}"
+            VoiceIntent.SCREEN -> "экран: ${SCREEN_NAMES[c.target] ?: c.target}"
+            VoiceIntent.FULL_SCREEN -> if (c.target == "nav") "навигатор на весь экран" else "на весь экран"
+            VoiceIntent.READ_VALUE -> "сказать: ${VALUE_NAMES[c.target] ?: c.target}"
+            VoiceIntent.APP_OPEN -> "открыть приложение $q"
+            VoiceIntent.CANCEL -> "отмена"
+            VoiceIntent.HELP -> "список команд"
+            VoiceIntent.UNSUPPORTED -> "так не умеет"
+        }
+    }
+
+    /** Ready own commands for the editor: a tap fills both fields. */
+    val OWN_TEMPLATES = listOf(
+        Triple("Клип на YouTube", "покажи клип *", "включи на ютубе * клип"),
+        Triple("Песня в Яндекс Музыке", "поставь *", "включи * в яндекс музыке"),
+        Triple("Домой с музыкой", "едем домой", "поехали домой; включи музыку"),
+        Triple("Заправка", "кончается бензин", "найди ближайшую заправку"),
+        Triple("Тихо", "ночной режим", "громкость 5"),
+        Triple("Маршрут по адресу", "едем в гараж", "поехали на Ленина 10"),
+    )
+
+    /** The few pieces shown right under the «Сделать» field; the rest are in «Все команды». */
+    val OWN_POPULAR = listOf(
+        "Маршрут" to "поехали на Ленина 10", "Домой" to "поехали домой", "YouTube" to "включи на ютубе *", "Музыка" to "включи музыку",
+    )
+
+    /**
+     * Everything the assistant can do, as pieces for the «Сделать» field, by group: a tap adds the piece; "*" is what
+     * will be said in the phrase's "*". The self-test checks that every intent, value, screen and place is here.
+     */
+    val OWN_GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
+        "Навигация" to listOf(
+            "Маршрут по адресу" to "поехали на Ленина 10", "Маршрут куда скажу" to "поехали на *", "Через" to "поехали в аэропорт через центр",
+            "Домой" to "поехали домой", "На работу" to "поехали на работу", "Спросить куда" to "поехали",
+            "Найти на карте" to "найди улицу Ленина", "Сколько ехать" to "сколько ехать", "Пробки" to "покажи пробки",
+            "Отменить маршрут" to "отмени маршрут", "Где я" to "где я", "Запомнить дом" to "запомни это место как дом",
+            "Запомнить работу" to "запомни это место как работу", "Голос навигатора выкл" to "выключи звук навигатора",
+            "Голос навигатора вкл" to "включи звук навигатора", "Открыть навигатор" to "открой навигатор",
+            "Навигатор на весь экран" to "навигатор на весь экран", "В 2ГИС" to "поехали домой в 2гис",
+            "В Яндекс Картах" to "открой яндекс карты", "В Google Картах" to "открой гугл карты",
+        ),
+        "Рядом" to listOf(
+            "АЗС" to "найди ближайшую заправку", "Газ" to "найди газовую заправку рядом", "Электрозарядка" to "найди электрозаправку",
+            "Шиномонтаж" to "найди шиномонтаж", "Мойка" to "найди автомойку", "Автосервис" to "найди автосервис",
+            "Дилер Subaru" to "найди дилера субару", "Парковка" to "найди парковку", "Запчасти" to "найди автозапчасти",
+            "Кофе" to "найди кофейню", "Фастфуд" to "найди фастфуд", "Ресторан" to "найди ресторан", "Кафе" to "найди кафе",
+            "Аптека" to "найди аптеку", "Больница" to "найди больницу", "Банкомат" to "найди банкомат", "Банк" to "найди банк",
+            "Продукты" to "найди супермаркет", "Торговый центр" to "найди торговый центр рядом", "Рынок" to "найди рынок",
+            "Туалет" to "найди туалет", "Гостиница" to "найди гостиницу", "Полиция" to "найди полицию", "Почта" to "найди почту",
+            "Мечеть" to "найди мечеть", "Храм" to "найди храм", "Кинотеатр" to "найди кинотеатр",
+        ),
+        "Музыка" to listOf(
+            "Играть" to "включи музыку", "Пауза" to "пауза", "Следующий" to "следующий трек", "Предыдущий" to "предыдущий трек",
+            "Трек сначала" to "с начала", "Назад 30 с" to "назад на 30 секунд", "Вперёд 30 с" to "вперед на 30 секунд",
+            "Перемешать" to "перемешай", "По порядку" to "выключи перемешивание", "Повтор" to "включи повтор",
+            "Без повтора" to "выключи повтор", "Нравится" to "мне нравится", "Не нравится" to "мне не нравится",
+            "Что играет" to "что играет", "Песня" to "включи песню *", "Исполнитель" to "включи исполнителя *",
+            "Альбом" to "включи альбом *", "Плейлист" to "включи плейлист *", "Избранное" to "включи избранное",
+            "Подкаст" to "включи подкаст *", "Яндекс Музыка" to "включи * в яндекс музыке", "Spotify" to "включи * в спотифай",
+            "VK" to "включи * в вк музыке", "YouTube" to "включи на ютубе *", "YouTube Music" to "включи * в ютуб музыке",
+            "Открыть плеер" to "открой яндекс музыку", "Bluetooth" to "включи блютуз", "Флешка" to "включи флешку",
+        ),
+        "Громкость" to listOf(
+            "Громче" to "громче", "Тише" to "тише", "Громкость 15" to "громкость 15", "Громкость 50%" to "громкость 50 процентов",
+            "Без звука" to "выключи звук", "Вернуть звук" to "включи звук",
+        ),
+        "Радио" to listOf(
+            "Радио" to "включи радио", "Частота" to "включи радио 101.7", "Станция №" to "включи третью станцию",
+            "Станция по имени" to "включи радио европа плюс", "Следующая" to "следующая станция", "Предыдущая" to "предыдущая станция",
+            "Поиск станции" to "поиск станции", "FM" to "переключи диапазон на фм", "AM" to "переключи на ам",
+        ),
+        "Значения" to listOf(
+            "Двигатель" to "какая температура двигателя", "Масло" to "какая температура масла", "Давление масла" to "какое давление масла",
+            "На улице" to "какая температура на улице", "Впуск" to "какая температура впуска", "Коробка" to "какая температура коробки",
+            "Бензин" to "сколько бензина", "Запас хода" to "какой запас хода", "Расход" to "какой расход",
+            "Напряжение" to "какое напряжение", "Скорость" to "какая скорость", "Обороты" to "какие обороты", "Наддув" to "какой наддув",
+            "Ошибки" to "есть ошибки", "Пробег" to "сколько проехали", "Время" to "который час", "Громкость" to "какая громкость",
+        ),
+        "Экраны" to listOf(
+            "Главный" to "открой главный экран", "Динамика" to "открой динамику", "Расход" to "открой расход", "АКПП" to "открой коробку",
+            "АКБ" to "открой аккумулятор", "Ошибки" to "покажи ошибки", "Медиа" to "открой медиа", "На весь экран" to "на весь экран",
+        ),
+        "Приложения" to listOf(
+            "Открыть приложение" to "открой телеграм", "Какое скажу" to "открой *",
+        ),
+    )
+
+    /** The ordinary commands an own command runs, in order (";" or a new line between them). */
+    fun steps(action: String): List<String> = action.split(';', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+
     // --- examples and self-test ------------------------------------------------------------------
 
     /** Phrases for the "Команды" panel (after the assistant's name). */
@@ -1112,6 +1303,35 @@ object Commands {
         }
         val wake = listOf("форестер громче", "фарестер громче", "форе стер громче", "форестор громче")
         for (p in wake) if (wakeEnd(p.split(' '), "форестер") != p.split(' ').size - 1) bad += "имя не узнано: «$p»"
+        val own = listOf(
+            OwnCommand("едем в гараж", "поехали на Ленина 10; включи музыку"),
+            OwnCommand("дискотека", "включи радио европа плюс"),
+            OwnCommand("газ", "громче"),
+            OwnCommand("покажи клип *", "включи на ютубе * клип"),
+        )
+        val ownCases = listOf(
+            "едем в гараж" to "едем в гараж", "ну давай едем в гараж" to "едем в гараж", "едим в гараж" to "едем в гараж",
+            "дискотека" to "дискотека", "включи дискотеку" to "дискотека", "газ" to "газ", "газуй домой" to null,
+            "поехали домой" to null, "покажи клип король и шут" to "покажи клип *", "покажи клип" to null,
+        )
+        for ((said, want) in ownCases) {
+            val got = ownFor(said, own)?.first?.phrase
+            if (got != want) bad += "своя команда «$said» → $got (ждали $want)"
+        }
+        if (ownFor("едем в гараж", own)?.second != listOf("поехали на Ленина 10", "включи музыку")) bad += "шаги своей команды: ${ownFor("едем в гараж", own)?.second}"
+        val clip = ownFor("покажи клип король и шут", own)?.second?.singleOrNull()
+        val yt = clip?.let { parse(it) }
+        if (clip != "включи на ютубе король и шут клип" || yt?.intent != VoiceIntent.PLAY_QUERY || yt.app != "com.google.android.youtube")
+            bad += "своя команда со звёздочкой: «$clip» → $yt"
+        // every template and piece must be understood, and together the pieces must show everything the assistant can do
+        val texts = OWN_TEMPLATES.flatMap { steps(it.third) } + OWN_GROUPS.flatMap { g -> g.second.map { it.second } }
+        val got = texts.mapNotNull { t -> parse(t.replace("*", "кино")).also { if (it == null) bad += "подсказка не понята: «$t»" } }
+        val skip = setOf(VoiceIntent.CANCEL, VoiceIntent.HELP, VoiceIntent.UNSUPPORTED)
+        (VoiceIntent.entries - skip - got.map { it.intent }.toSet()).forEach { bad += "нет подсказки для $it" }
+        val values = listOf("COOLANT", "OIL", "OILP", "OUTSIDE", "INTAKE", "ATF", "FUEL", "RANGE", "CONSUMPTION", "BATTERY", "SPEED", "RPM", "BOOST", "DTC", "TRIP", "TIME", "VOLUME")
+        (values - got.filter { it.intent == VoiceIntent.READ_VALUE }.mapNotNull { it.target }.toSet()).forEach { bad += "нет подсказки для значения $it" }
+        (SCREEN_NAMES.keys - got.filter { it.intent == VoiceIntent.SCREEN }.mapNotNull { it.target }.toSet()).forEach { bad += "нет подсказки для экрана $it" }
+        (PLACES.map { it.first } - got.filter { it.intent == VoiceIntent.NAV_NEARBY }.mapNotNull { it.target }.toSet()).forEach { bad += "нет подсказки для места $it" }
         return bad
     }
 }

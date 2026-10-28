@@ -64,6 +64,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.*
 import kg.forester.sg.data.Repo
+import kg.forester.sg.service.FmRadio
 import kg.forester.sg.service.Fyt
 import kg.forester.sg.service.LocalMusic
 import kg.forester.sg.service.RadioLogos
@@ -109,106 +110,25 @@ internal class RadioUi(val fyt: Boolean, internet: Boolean, cc: String, named: M
     var named by mutableStateOf(named)
     var picking by mutableStateOf(false)
     var preview by mutableStateOf<Int?>(null)
-    var tuning by mutableStateOf(false)
     var fmLogo by mutableStateOf<Bitmap?>(null)
     var netLogo by mutableStateOf<Bitmap?>(null)
-    /** The driver's own stations (FM frequency in 10 kHz units → name), in the order they were saved. */
-    var mine by mutableStateOf<List<Pair<Int, String>>>(emptyList())
-    private var sp: android.content.SharedPreferences? = null
-    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Main)
+    /** The driver's own stations (see [FmRadio]: ours, tuned by frequency, not the stock radio's slots). */
+    val mine: List<FmRadio.Station> get() = FmRadio.mine
+    val tuning get() = fyt && FmRadio.tuning
 
-    fun load(prefs: android.content.SharedPreferences) {
-        sp = prefs
-        mine = prefs.getString("mine", "").orEmpty().split(';').mapNotNull { e ->
-            val f = e.substringBefore('|').toIntOrNull() ?: return@mapNotNull null
-            f to e.substringAfter('|', "")
-        }
-    }
+    fun addMine(freq: Int, name: String, band: Int) = FmRadio.add(freq, name, band)
+    fun removeMine(freq: Int) = FmRadio.remove(freq)
 
-    private fun saveMine() { sp?.edit()?.putString("mine", mine.joinToString(";") { "${it.first}|${it.second.replace(";", " ").replace("|", " ")}" })?.apply() }
-    fun addMine(freq: Int, name: String) { if (mine.none { abs(it.first - freq) < 5 }) { mine = mine + (freq to name); saveMine() } }
-    fun removeMine(freq: Int) { mine = mine.filter { it.first != freq }; saveMine() }
+    /** To [target]: exactly in the demo; on FYT by frequency (see [FmRadio.tune]). */
+    fun tune(target: Int) { if (fyt) FmRadio.tune(target) else DemoRadio.set(target) }
 
-    /** To [target]: exactly in the demo; on FYT by seeking towards it, station by station, until it is reached. */
-    fun tune(target: Int) {
-        if (!fyt) { DemoRadio.set(target); return }
-        if (tuning) return
-        tuning = true
-        scope.launch {
-            radioOn()
-            // straight there when the tuner takes a frequency, else station by station
-            val r0 = Fyt.radio.value
-            val tol0 = if (r0.isFm || r0.band == -1) 15 else 9
-            if (abs(r0.freq - target) > tol0) {
-                Fyt.radioTune(target)
-                withTimeoutOrNull(2500) { Fyt.radio.first { abs(it.freq - target) <= tol0 } }?.let { settled(it.freq, 400) }
-            }
-            for (i in 0 until 12) {
-                val cur = Fyt.radio.value.freq
-                val fm = Fyt.radio.value.isFm || Fyt.radio.value.band == -1
-                val tol = if (fm) 15 else 9
-                if (abs(cur - target) <= tol) break
-                val up = target > cur
-                Fyt.radioSeek(up, ensure = false)
-                val first = withTimeoutOrNull(8000) { Fyt.radio.first { it.freq != cur } }?.freq ?: break
-                // the tuner reports the frequencies it passes while seeking; the next seek sent before it stops
-                // cancelled this one, and the tuner went back to where it started
-                val now = settled(first, 900)
-                // past the target, or round the end of the band: stop at this station
-                if ((up && (now >= target - tol || now < cur)) || (!up && (now <= target + tol || now > cur))) break
-            }
-        }.invokeOnCompletion { tuning = false }
-    }
-
-    /** To the tuner's preset [p] (1..6): it only steps a preset up or down, one step at a time once it settles. */
-    fun toPreset(p: Int) {
-        if (!fyt) { DemoRadio.set(DemoRadio.presets[p - 1]); return }
-        if (tuning) return
-        tuning = true
-        scope.launch {
-            radioOn()
-            if (Fyt.radio.value.preset == p) return@launch
-            // the preset itself; a unit that doesn't take that gets it step by step
-            val f0 = Fyt.radio.value.freq
-            Fyt.radioToPreset(p)
-            if (withTimeoutOrNull(2500) { Fyt.radio.first { it.preset == p || it.freq != f0 } } != null) return@launch
-            val cur = Fyt.radio.value.preset.takeIf { it in 1..6 } ?: 1
-            val fwd = (p - cur + 6) % 6
-            repeat(if (fwd <= 3) fwd else 6 - fwd) {
-                val f = Fyt.radio.value.freq
-                Fyt.radioPreset(fwd <= 3, ensure = false)
-                withTimeoutOrNull(3000) { Fyt.radio.first { it.freq != f } }?.let { settled(it.freq, 400) }
-            }
-        }.invokeOnCompletion { tuning = false }
-    }
-
-    /**
-     * Makes the radio the source and waits for it: coming up, it tunes to its own last station, and a seek or
-     * preset sent before that was undone by it.
-     */
-    private suspend fun radioOn() {
-        if (Fyt.appId.value == 1 || Fyt.radioUnconfirmed) return
-        Fyt.ensureRadio()
-        // the source command, and the radio's activity when that alone didn't do (after 1.5 s)
-        withTimeoutOrNull(5000) { Fyt.appId.first { it == 1 } }
-        settled(Fyt.radio.value.freq, 1500)
-    }
-
-    /** The frequency once the tuner has stayed on it for [quietMs], starting from [from] (at most ~15 s). */
-    private suspend fun settled(from: Int, quietMs: Long): Int {
-        var f = from
-        repeat(15_000 / quietMs.toInt()) {
-            f = withTimeoutOrNull(quietMs) { Fyt.radio.first { it.freq != f } }?.freq ?: return f
-        }
-        return f
-    }
+    /** To the tuner's preset [p] (1..6) by its slot. */
+    fun toPreset(p: Int) { if (fyt) FmRadio.toPreset(p) else DemoRadio.set(DemoRadio.presets[p - 1]) }
 
     /** ⏮ ⏭: through the own stations when there are any, else the tuner's presets. */
     fun step(cur: Int, next: Boolean, tunerPreset: (Boolean) -> Unit) {
-        if (mine.isEmpty()) { tunerPreset(next); return }
-        val i = mine.indexOfFirst { abs(it.first - cur) <= 15 }
-        val j = if (i < 0) (if (next) 0 else mine.size - 1) else (i + if (next) 1 else -1 + mine.size) % mine.size
-        tune(mine[j].first)
+        val s = FmRadio.neighbour(cur, next) ?: run { tunerPreset(next); return }
+        tune(s.freq)
     }
 
     val demoFm get() = !fyt && Repo.settings.demo
@@ -224,7 +144,7 @@ internal fun rememberRadioUi(fyt: Boolean): RadioUi {
     val ui = remember {
         val cc = RadioLogos.country(ctx)
         RadioUi(fyt, sp.getBoolean("internet", !(fyt || Repo.settings.demo)) || !(fyt || Repo.settings.demo), cc, RadioLogos.allNamed(ctx, cc))
-            .also { it.load(sp) }
+            .also { FmRadio.load(ctx) }
     }
     val real by Fyt.radio.collectAsState()
     val fake by DemoRadio.state.collectAsState()
@@ -314,7 +234,7 @@ private fun FmHero(ui: RadioUi) {
             }, 19.sp, if (r.name.isBlank() && station == null && p == null) C.Sub else C.Text.copy(alpha = 0.8f), FontWeight.Medium, maxLines = 1)
             if (r.preset > 0) { Spacer(Modifier.height(4.dp)); T("${r.bandText} · пресет ${r.preset}", 13.sp, C.Sub) }
         },
-        middle = { Dial(r, (ui.named.keys.mapNotNull { k -> k.toDoubleOrNull()?.let { (it * 100).toInt() } } + ui.mine.map { it.first }).distinct(), { ui.preview = it }, ui::tune) },
+        middle = { Dial(r, (ui.named.keys.mapNotNull { k -> k.toDoubleOrNull()?.let { (it * 100).toInt() } } + ui.mine.map { it.freq }).distinct(), { ui.preview = it }, ui::tune) },
         controls = {
             Control(Lucide.SkipBack, 60.dp) { ui.step(r.freq, false, ::preset) }
             Control(Lucide.ChevronsLeft, 68.dp) { seek(false) }
@@ -413,14 +333,14 @@ private fun FmPanel(ui: RadioUi) {
     }
     val fm = r.isFm || r.band == -1
     PanelBox(Lucide.Star, "Мои станции", trailing = { if (fyt) Pill("Настройки", Lucide.Settings, height = 38.dp) { Fyt.openRadio() } }) {
-        val saved = ui.mine.any { abs(it.first - r.freq) <= 5 }
+        val saved = ui.mine.any { abs(it.freq - r.freq) <= 5 }
         Column(Modifier.weight(1f).verticalScrollCompat()) {
             MineGrid(ui, r)
             if (fm && r.freq > 0 && !saved) {
                 Spacer(Modifier.height(8.dp))
                 Row(
                     Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(16.dp)).border(1.dp, C.Violet.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
-                        .clickable { ui.addMine(r.freq, r.name.ifBlank { ui.named[r.freqText]?.name.orEmpty() }) }.padding(horizontal = 14.dp),
+                        .clickable { ui.addMine(r.freq, r.name.ifBlank { ui.named[r.freqText]?.name.orEmpty() }, r.band) }.padding(horizontal = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(Lucide.Plus, null, tint = C.Violet, modifier = Modifier.size(20.dp))
@@ -429,15 +349,23 @@ private fun FmPanel(ui: RadioUi) {
                 }
             }
         }
-        // the tuner's own presets, as a row of small buttons
+        // the tuner's own presets, as a row of small buttons: the frequency a slot showed is tuned as such (after
+        // the stock radio's autoscan the slot holds another station), the slot itself only when never seen
         Spacer(Modifier.height(8.dp))
         T("Пресеты тюнера", 12.sp, C.Sub)
         Spacer(Modifier.height(4.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             (1..6).forEach { p ->
                 val f = known[p]?.substringBefore('|')
-                Pill(if (f != null) "P$p $f" else "P$p", null, r.preset == p, 36.dp) { ui.toPreset(p) }
+                Pill(if (f != null) "P$p $f" else "P$p", null, r.preset == p, 36.dp) {
+                    val freq = f?.toDoubleOrNull()?.let { Math.round(it * 100).toInt() }
+                    if (fyt && freq != null) ui.tune(freq) else ui.toPreset(p)
+                }
             }
+            val fresh = known.values.mapNotNull { v -> v?.substringBefore('|')?.toDoubleOrNull()?.let { Math.round(it * 100).toInt() } }
+                .filter { f -> f in 8750..10800 && ui.mine.none { abs(it.freq - f) < 5 } }
+            if (fyt && fresh.isNotEmpty())
+                Pill("В мои станции", Lucide.Plus, false, 36.dp) { FmRadio.import(known.values) }
         }
     }
 }

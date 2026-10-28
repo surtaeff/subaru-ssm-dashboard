@@ -73,6 +73,21 @@ object Voice {
 
     fun restart(ctx: Context) { stop(); start(ctx) }
 
+    /** The driver's own phrases (Настройки, Голос, Свои команды). */
+    val ownList = MutableStateFlow<List<OwnCommand>?>(null)
+
+    fun own(ctx: Context): List<OwnCommand> = ownList.value ?: runCatching {
+        val arr = org.json.JSONArray(prefs(ctx).getString("own", "[]"))
+        (0 until arr.length()).map { arr.getJSONObject(it).let { o -> OwnCommand(o.getString("phrase"), o.getString("action")) } }
+    }.getOrDefault(emptyList()).also { ownList.value = it }
+
+    fun setOwn(ctx: Context, list: List<OwnCommand>) {
+        ownList.value = list
+        val arr = org.json.JSONArray()
+        list.forEach { arr.put(JSONObject().put("phrase", it.phrase).put("action", it.action)) }
+        prefs(ctx).edit().putString("own", arr.toString()).apply()
+    }
+
     /** A command as if it was said (adb test hook, see MainActivity): no microphone or model needed. */
     /**
      * [text] as if it were said after the name: the orb shows it coming word by word, then it is carried out. For
@@ -367,7 +382,13 @@ object Voice {
     /** "Поехали" without a place: the next phrase (within 8 s, no name needed) is where to. */
     private var awaitingDestination = false
 
-    private fun execute(cmd: String) {
+    private fun execute(cmd: String, ownAllowed: Boolean = true) {
+        // the driver's own phrase: its commands one after another, a moment apart for the answers to be said
+        if (ownAllowed && !awaitingDestination) Commands.ownFor(cmd, own(app))?.let { (o, steps) ->
+            android.util.Log.i("Voice", "own: ${o.phrase} → $steps")
+            steps.forEachIndexed { i, step -> main.postDelayed({ execute(step, ownAllowed = false) }, i * 1800L) }
+            return
+        }
         if (awaitingDestination) {
             awaitingDestination = false
             val c = Commands.parse(cmd)
@@ -384,6 +405,10 @@ object Voice {
         android.util.Log.i("Voice", "command: $c")
         run(c)
     }
+
+    /** How the assistant takes [step] (a button's name or an ordinary command), null if not at all: for the own commands editor. */
+    fun describe(step: String): String? =
+        shortcutFor(step)?.let { "кнопка «${it.label}»" } ?: Commands.parse(step)?.let { Commands.describe(it) }
 
     private val OPEN_WORDS = setOf("открой", "запусти", "покажи", "включи")
 
@@ -444,7 +469,7 @@ object Voice {
             )
             VoiceIntent.PLAY_QUERY -> playFromSearch(c)
             VoiceIntent.MEDIA_APP -> c.app?.let { openApp(it) } ?: say("Не нашёл приложение")
-            VoiceIntent.SOURCE_BT -> { Fyt.source(3); say("Bluetooth") }
+            VoiceIntent.SOURCE_BT -> { BtAudio.enter(app); say("Bluetooth") }
             VoiceIntent.SOURCE_USB -> { Fyt.source(8); Fyt.openMusic(); say("Музыка") }
             // --- volume
             VoiceIntent.VOLUME_UP -> volume(c.number ?: 2)
@@ -453,14 +478,38 @@ object Voice {
             VoiceIntent.MUTE, VoiceIntent.UNMUTE -> muteMusic(c.intent == VoiceIntent.MUTE)
             // --- head unit radio
             VoiceIntent.RADIO -> { Fyt.ensureRadio(); go(VoiceTarget.MEDIA, "Радио") }
-            VoiceIntent.RADIO_NEXT -> { Fyt.radioPreset(true); say("Следующая станция") }
-            VoiceIntent.RADIO_PREV -> { Fyt.radioPreset(false); say("Предыдущая станция") }
+            // the driver's own stations (FmRadio) first, tuned by frequency; the stock presets only without them
+            VoiceIntent.RADIO_NEXT, VoiceIntent.RADIO_PREV -> {
+                FmRadio.load(app); FmRadio.step(c.intent == VoiceIntent.RADIO_NEXT)
+                say(if (c.intent == VoiceIntent.RADIO_NEXT) "Следующая станция" else "Предыдущая станция")
+            }
             VoiceIntent.RADIO_SEEK -> { Fyt.radioSeek((c.number ?: 1) > 0); say("Ищу станцию") }
-            VoiceIntent.RADIO_BAND -> { Fyt.radioBand(); say("Диапазон") }
+            VoiceIntent.RADIO_BAND -> { Fyt.radioBand(when (c.target) { "AM" -> 0; "FM" -> 65536; else -> -1 }); say("Диапазон") }
             VoiceIntent.RADIO_FREQ, VoiceIntent.RADIO_PRESET, VoiceIntent.RADIO_NAME -> {
-                // choosing a station directly needs a radio command code we don't have yet
-                Fyt.ensureRadio(); go(VoiceTarget.MEDIA, "Радио")
-                speak("Станцию по номеру пока не умею: скажите «следующая станция»")
+                FmRadio.load(app)
+                val st: FmRadio.Station? = when (c.intent) {
+                    VoiceIntent.RADIO_FREQ -> c.freq?.let { f -> Math.round(f * 100).toInt().takeIf { it in 8750..10800 }?.let { FmRadio.Station(it, "") } }
+                    VoiceIntent.RADIO_PRESET -> c.number?.let { FmRadio.byNumber(it) }
+                    else -> c.query?.let { q ->
+                        FmRadio.byName(q) ?: RadioLogos.allNamed(app, RadioLogos.country(app)).entries
+                            .firstOrNull { it.value.name.lowercase().replace('ё', 'е').contains(q.replace('ё', 'е')) }
+                            ?.let { e -> e.key.toDoubleOrNull()?.let { FmRadio.Station(Math.round(it * 100).toInt(), e.value.name) } }
+                    }
+                }
+                when {
+                    st != null && Fyt.present(app) -> {
+                        FmRadio.tune(st.freq, st.band); go(VoiceTarget.MEDIA, "Радио")
+                        say(st.name.ifBlank { String.format(java.util.Locale.US, "%.1f", st.freq / 100.0) })
+                    }
+                    // a number past the own stations: the stock radio's slot
+                    c.intent == VoiceIntent.RADIO_PRESET && (c.number ?: 0) in 1..6 && Fyt.present(app) -> {
+                        FmRadio.toPreset(c.number!!); go(VoiceTarget.MEDIA, "Радио"); say("Станция ${c.number}")
+                    }
+                    else -> {
+                        Fyt.ensureRadio(); go(VoiceTarget.MEDIA, "Радио")
+                        speak(if (c.intent == VoiceIntent.RADIO_NAME) "Такой станции нет в ваших: сохраните её в Медиа, Радио" else "Не нашёл такую станцию")
+                    }
+                }
             }
             // --- navigation
             VoiceIntent.NAV_ROUTE -> {

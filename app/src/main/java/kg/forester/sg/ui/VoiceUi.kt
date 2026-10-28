@@ -1,6 +1,8 @@
 package kg.forester.sg.ui
 
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.rememberScrollState
 
@@ -150,10 +152,11 @@ fun VoiceSettings() {
         }
         Spacer(Modifier.width(12.dp))
         Panel(Modifier.weight(1f).fillMaxHeight()) {
-            T("Команды", 16.sp, weight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
             val w = Voice.wakeWord(ctx).replaceFirstChar { it.uppercase() }
             Column(Modifier.weight(1f).verticalScroll(androidx.compose.foundation.rememberScrollState()), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                OwnCommands(w)
+                Spacer(Modifier.height(6.dp))
+                T("Команды", 16.sp, weight = FontWeight.SemiBold)
                 (kg.forester.sg.service.Commands.EXAMPLES.map { (cmd, what) -> "«$w, $cmd»" to what } +
                     ("«$w» … пауза … «навигатор»" to "можно и раздельно: после имени есть 6 секунд")).forEach { (cmd, what) ->
                     Column {
@@ -164,6 +167,130 @@ fun VoiceSettings() {
             }
             Spacer(Modifier.height(8.dp))
             T("«Алиса» в Яндекс Навигаторе отвечает на «Слушай, Алиса», когда навигатор на экране (в т.ч. в разделённом режиме).", 12.sp, C.Sub)
+        }
+    }
+}
+
+/**
+ * The driver's own phrases: «когда скажу» → what to do, written as ordinary commands (several with ";"). A step the
+ * assistant doesn't know is marked right away, «Проверить» runs it as if said.
+ */
+@Composable
+private fun OwnCommands(wake: String) {
+    val ctx = LocalContext.current
+    val list by Voice.ownList.collectAsState()
+    val own = list ?: remember { Voice.own(ctx) }
+    var phrase by remember { mutableStateOf("") }
+    var action by remember { mutableStateOf("") }
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = C.Text, unfocusedTextColor = C.Text,
+        focusedBorderColor = C.Purple, unfocusedBorderColor = C.Border,
+    )
+    val cmds = kg.forester.sg.service.Commands
+    T("Свои команды", 16.sp, weight = FontWeight.SemiBold)
+    T("Своя фраза и что сделать: любые команды из списка ниже, несколько через точку с запятой. " +
+        "Приложение называйте в самой команде: на ютубе, в яндекс музыке, в спотифай, в вк, в 2гис. " +
+        "Звёздочка ловит любые слова: покажи клип * → включи на ютубе * клип", 11.sp, C.Sub)
+    own.forEachIndexed { i, o ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                T("«$wake, ${o.phrase}»", 14.sp)
+                T(o.action, 11.sp, C.Sub)
+            }
+            Chip("Проверить", false, { Voice.rehearse(ctx, o.phrase) })
+            Spacer(Modifier.width(6.dp))
+            Chip("Удалить", false, { Voice.setOwn(ctx, own.filterIndexed { k, _ -> k != i }) })
+        }
+    }
+    T("Шаблоны", 13.sp, C.Sub)
+    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        cmds.OWN_TEMPLATES.forEach { (name, p, a) -> Chip(name, false, { phrase = p; action = a }) }
+    }
+    OutlinedTextField(
+        value = phrase, onValueChange = { phrase = it }, singleLine = true,
+        label = { FieldLabel("Когда скажу") }, placeholder = { T("едем в гараж", 13.sp, C.Sub) },
+        colors = fieldColors, modifier = Modifier.fillMaxWidth(),
+    )
+    T("Обычные русские слова: редкие названия распознаватель может не знать, проверьте по строке Услышано слева", 11.sp, C.Sub)
+    OutlinedTextField(
+        value = action, onValueChange = { action = it }, singleLine = true,
+        label = { FieldLabel("Сделать") }, placeholder = { T("поехали на Ленина 10; включи музыку", 13.sp, C.Sub) },
+        colors = fieldColors, modifier = Modifier.fillMaxWidth(),
+    )
+    fun add(piece: String) { action = if (action.isBlank()) piece else action.trimEnd().removeSuffix(";") + "; " + piece }
+    var all by remember { mutableStateOf(false) }
+    T("Добавить в «Сделать»", 13.sp, C.Sub)
+    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        cmds.OWN_POPULAR.forEach { (name, piece) -> Chip(name, false, { add(piece) }) }
+        Chip("Все команды (${cmds.OWN_GROUPS.sumOf { it.second.size }})…", false, { all = true })
+    }
+    if (all) AllCommandsDialog({ all = false }) { add(it); all = false }
+    // each step as the assistant takes it; a "*" stands for what will be said there, checked with a sample word
+    val steps = cmds.steps(action)
+    steps.forEach { step ->
+        val what = Voice.describe(step.replace("*", "кино"))?.replace("кино", "*")
+        if (what != null) T("✓ $step → $what", 12.sp, C.Green) else T("✗ $step → не понимаю, переформулируйте как в списке команд", 12.sp, C.Orange)
+    }
+    if (steps.any { "*" in it } && "*" !in phrase) T("В «Сделать» есть *, а во фразе нет: подставить будет нечего", 12.sp, C.Orange)
+    ActionButton("Добавить", phrase.isNotBlank() && steps.isNotEmpty()) {
+        val p = phrase.trim().lowercase()
+        Voice.setOwn(ctx, own.filterNot { it.phrase == p } + kg.forester.sg.service.OwnCommand(p, action.trim()))
+        phrase = ""; action = ""
+    }
+}
+
+/**
+ * Everything the assistant can do, by group, with a search over the names and the phrases: a tap picks the
+ * phrase for the «Сделать» field.
+ */
+@Composable
+private fun AllCommandsDialog(onClose: () -> Unit, onPick: (String) -> Unit) {
+    var q by remember { mutableStateOf("") }
+    val needle = q.trim().lowercase()
+    val groups = kg.forester.sg.service.Commands.OWN_GROUPS.map { (g, ps) ->
+        g to ps.filter { (n, t) -> needle.isEmpty() || needle in n.lowercase() || needle in t.lowercase() || needle in g.lowercase() }
+    }.filter { it.second.isNotEmpty() }
+    androidx.compose.ui.window.Dialog(onClose, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier.width(900.dp).heightIn(max = 600.dp).clip(RoundedCornerShape(20.dp))
+                .background(C.Card).border(1.dp, C.Border, RoundedCornerShape(20.dp)).padding(20.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                T("Все команды", 20.sp, weight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Chip("Закрыть", false, onClose)
+            }
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = q, onValueChange = { q = it }, singleLine = true,
+                leadingIcon = { Icon(Lucide.Search, null, tint = C.Sub, modifier = Modifier.size(18.dp)) },
+                placeholder = { T("Поиск: заправка, ютуб, громкость…", 13.sp, C.Sub) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = C.Text, unfocusedTextColor = C.Text,
+                    focusedBorderColor = C.Purple, unfocusedBorderColor = C.Border,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (groups.isEmpty()) T("Ничего не нашлось", 13.sp, C.Sub)
+                groups.forEach { (g, ps) ->
+                    T(g, 14.sp, C.Violet, FontWeight.SemiBold)
+                    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ps.forEach { (n, t) ->
+                            Column(
+                                Modifier.clip(RoundedCornerShape(12.dp)).background(C.CardHi).border(1.dp, C.Border, RoundedCornerShape(12.dp))
+                                    .clickable { onPick(t) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                            ) {
+                                T(n, 13.sp, weight = FontWeight.Medium)
+                                T(t, 11.sp, C.Sub)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -90,7 +90,9 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.media3.common.Player
 import com.composables.icons.lucide.*
 import kg.forester.sg.data.Repo
+import android.view.KeyEvent
 import kg.forester.sg.service.AudioFx
+import kg.forester.sg.service.BtAudio
 import kg.forester.sg.service.Fyt
 import kg.forester.sg.service.LocalMusic
 import kg.forester.sg.service.MediaSessions
@@ -125,8 +127,11 @@ fun MediaScreen() {
         mode = s; Repo.settings.mediaSource = s
         // one source at a time, like the head unit's own: the files pause when another one takes over
         if (s != "files" && !(s == "radio" && radio.internet)) LocalMusic.pause()
-        if (fyt) when (s) { "bt" -> Fyt.source(3); "radio" -> if (!radio.internet) Fyt.ensureRadio() }
+        if (s == "bt") BtAudio.enter(ctx) else BtAudio.leave(ctx)
+        if (fyt && s == "radio" && !radio.internet) Fyt.ensureRadio()
     }
+    // opened on Bluetooth: the sound goes to the phone as when it is picked (FYT keeps its source as it is)
+    LaunchedEffect(Unit) { if (mode == "bt" && !fyt) BtAudio.enter(ctx) }
     // another app started playing (Yandex Music from its own screen, a voice command): offer to show it
     var other by remember { mutableStateOf<Pair<String, String>?>(null) }
     LaunchedEffect(Unit) {
@@ -812,7 +817,14 @@ private fun BluetoothHero(fyt: Boolean) {
     // other head units: the phone's music arrives as the Bluetooth app's media session; on FYT the session (when
     // the unit has one) fills in what the module leaves out: the track, the cover
     var ext by remember { mutableStateOf(PlayerState()) }
-    LaunchedEffect(fyt) { while (true) { ext = btSession(ctx)?.let { playerState(ctx, it) } ?: PlayerState(); delay(1000) } }
+    LaunchedEffect(fyt) {
+        while (true) {
+            ext = BtAudio.controller(ctx)?.let { playerState(it) } ?: PlayerState()
+            // the phone plays, nothing sounds: Android's Bluetooth lost the audio focus (CarPlay, another player)
+            BtAudio.kick(ctx)
+            delay(1000)
+        }
+    }
     val known = if (fyt) m.title.isNotBlank() else ext.title.isNotBlank()
     val title = when {
         fyt -> m.title.ifBlank { ext.title.ifBlank { "Включите музыку на телефоне" } }
@@ -826,8 +838,8 @@ private fun BluetoothHero(fyt: Boolean) {
     val track = if (fyt) m.title.ifBlank { ext.title } else ext.title
     val cover = rememberCover((if (fyt) m.art else null) ?: ext.art, artist, track)
     // straight to the BT module: Fyt.next() / prev() go by the source, which is still the old one right after the switch
-    fun prev() { if (fyt) Fyt.btPrev() else btControl(ctx) { it.skipToPrevious() } }
-    fun next() { if (fyt) Fyt.btNext() else btControl(ctx) { it.skipToNext() } }
+    fun prev() { if (fyt) Fyt.btPrev() else BtAudio.control(ctx, KeyEvent.KEYCODE_MEDIA_PREVIOUS) { it.skipToPrevious() } }
+    fun next() { if (fyt) Fyt.btNext() else BtAudio.control(ctx, KeyEvent.KEYCODE_MEDIA_NEXT) { it.skipToNext() } }
     Hero(
         // a track without a cover gets a note, nothing at all the Bluetooth sign
         cover = { GlowCover(cover, if (track.isNotBlank()) Lucide.Music else Lucide.Bluetooth, playing, it) },
@@ -837,7 +849,8 @@ private fun BluetoothHero(fyt: Boolean) {
         controls = {
             Control(Lucide.SkipBack, 68.dp) { prev() }
             Control(if (playing) Lucide.Pause else Lucide.Play, 96.dp, primary = true) {
-                if (fyt) Fyt.btPlay(!playing) else btControl(ctx) { if (ext.playing) it.pause() else it.play() }
+                if (fyt) Fyt.btPlay(!playing)
+                else BtAudio.control(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) { if (ext.playing) it.pause() else it.play() }
             }
             Control(Lucide.SkipForward, 68.dp) { next() }
         },
@@ -886,13 +899,6 @@ private fun rememberCover(art: Bitmap?, artist: String, title: String): Bitmap? 
     return art ?: found
 }
 
-/** The Bluetooth music session's app (see [MediaSessions.btController]: on two-module units not Android's own). */
-private fun btSession(ctx: Context): String? = MediaSessions.btController(ctx)?.packageName
-
-private fun btControl(ctx: Context, block: (android.media.session.MediaController.TransportControls) -> Unit) {
-    MediaSessions.btController(ctx)?.transportControls?.let(block)
-}
-
 // --- other player apps --------------------------------------------------------------------------------
 
 /** What another player's media session shows: track, cover, position, play state. */
@@ -901,8 +907,10 @@ internal data class PlayerState(
     val posMs: Long = 0, val totalMs: Long = 0, val playing: Boolean = false, val session: Boolean = false,
 )
 
-internal fun playerState(ctx: Context, pkg: String): PlayerState {
-    val c = MediaSessions.controllerOf(ctx, pkg) ?: return PlayerState()
+internal fun playerState(ctx: Context, pkg: String): PlayerState =
+    MediaSessions.controllerOf(ctx, pkg)?.let { playerState(it) } ?: PlayerState()
+
+internal fun playerState(c: android.media.session.MediaController): PlayerState {
     val md = c.metadata
     val st = c.playbackState
     val playing = st?.state == android.media.session.PlaybackState.STATE_PLAYING
