@@ -1,7 +1,7 @@
 {
- "tag": "v0.9-beta30",
- "name": "0.9-beta30",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta30/subaru-ssm-dashboard.apk",
+ "tag": "v0.9-beta31",
+ "name": "0.9-beta31",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta31/subaru-ssm-dashboard.apk",
  "size": 128383760,
- "notes": "Свои голосовые команды, звук Bluetooth после CarPlay и на Microntek, радио FYT больше не теряет сохранённые станции."
+ "notes": "Bluetooth на Microntek: звук с телефона включается из нашего плеера. Громкость голосом теперь видна в журнале."
 }
