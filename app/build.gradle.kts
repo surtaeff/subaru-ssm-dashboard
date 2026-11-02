@@ -1,3 +1,6 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,10 +15,22 @@ android {
         applicationId = "kg.forester.sg"
         minSdk = 25
         targetSdk = 34
-        versionCode = 40
-        versionName = "0.9-beta32"
-        // head units and phones are ARM; the x86 copies of the native speech libraries only made the APK bigger
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        versionCode = 41
+        versionName = "1.0-beta1"
+    }
+
+    // head units and phones are 32 or 64-bit ARM; the other copies of the native libraries only made the APK bigger
+    packaging { jniLibs { excludes += listOf("lib/x86/**", "lib/x86_64/**", "lib/armeabi/**", "lib/mips/**", "lib/mips64/**") } }
+
+    // A release also gets one APK per ABI, for Updater.pickApk. The universal APK stays the main file under its old name:
+    // installs older than that function only look for it. Debug builds make the universal one alone.
+    splits {
+        abi {
+            isEnable = gradle.startParameter.taskNames.any { it.contains("Release") }
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = true
+        }
     }
 
     // the SensorBox sketch ships inside the app (assets/sensorbox/sensorbox.ino): saved from Настройки → «Доп датчики»
@@ -35,9 +50,17 @@ android {
         }
     }
 
+    // minSdk 25 is the head units of Android 7.1: a call above it compiles and crashes there, and no JVM test or new emulator
+    // shows it. NewApi is fatal, so every release build (lintVitalRelease) stops on one; the other checks are left as they were.
+    // abortOnError stays on: with it off a fatal issue no longer stops the release build either.
+    lint {
+        fatal += "NewApi"
+    }
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
@@ -53,14 +76,32 @@ android {
     }
 }
 
-// The APK is named after the app: carpulse-0.9-beta21.apk (release and debug alike); applicationId and the key stay,
-// so it installs over the versions that were called Subaru Dashboard.
+// The APK is named after the app: carpulse-0.9-beta21.apk (release and debug alike), carpulse-0.9-beta21-arm64-v8a.apk
+// for one ABI; applicationId and the key stay, so it installs over the versions that were called Subaru Dashboard.
 android.applicationVariants.all {
     val ver = versionName
     outputs.all {
-        (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName = "carpulse-$ver.apk"
+        val out = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+        val abi = out.getFilter("ABI")
+        out.outputFileName = if (abi == null) "carpulse-$ver.apk" else "carpulse-$ver-$abi.apk"
     }
 }
+
+// R8 overwrites mapping.txt each time: the copies of its last 3 runs stay beside it, to read a stack trace from such a
+// build's log (76 MB each). Named by the run itself: a build that didn't run R8 adds none.
+val keepMapping by tasks.registering(Copy::class) {
+    val mapping = layout.buildDirectory.file("outputs/mapping/release/mapping.txt")
+    val kept = layout.buildDirectory.dir("outputs/mapping/builds")
+    from(mapping)
+    into(kept)
+    outputs.upToDateWhen { false } // the trim below has to run even when there's nothing new to copy
+    rename { "mapping-${android.defaultConfig.versionName}-${SimpleDateFormat("yyyyMMdd-HHmmss").format(Date(mapping.get().asFile.lastModified()))}.txt" }
+    doLast {
+        kept.get().asFile.listFiles { f -> f.name.startsWith("mapping-") }.orEmpty()
+            .sortedBy { it.name.takeLast(19) }.dropLast(3).forEach { it.delete() }
+    }
+}
+tasks.matching { it.name == "assembleRelease" }.configureEach { finalizedBy(keepMapping) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
@@ -71,6 +112,9 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.5")
+    // installs the baseline profile (src/main/baseline-prof.txt) on units without a store to do it
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    debugImplementation("androidx.metrics:metrics-performance:1.0.0-beta01")
     implementation("com.github.mik3y:usb-serial-for-android:3.8.1")
     implementation("com.composables:icons-lucide:1.1.0")
     implementation("com.alphacephei:vosk-android:0.3.47@aar")

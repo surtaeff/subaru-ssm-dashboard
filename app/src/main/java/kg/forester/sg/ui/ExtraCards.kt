@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -73,7 +72,7 @@ val ExtraCards: Map<String, Pair<String, ImageVector>> = linkedMapOf(
     "turbo" to ("Турбина и масло" to Lucide.Activity),
     "tyres" to ("Давление в шинах" to Lucide.Disc3),
     "service" to ("Ближайшее ТО" to Lucide.Wrench),
-) + (1..6).associate { "s$it" to ("Датчик $it" to Lucide.ListChecks) }
+) + (1..6).associate { "s$it" to ("Датчик $it" to Lucide.ListChecks) } + GaugePanelCards
 
 /** The card for [id] from [ExtraCards], or false if [id] is not one of them. [style]: the card's own settings, if it has any. */
 @Composable
@@ -90,6 +89,7 @@ fun ExtraCard(id: String, info: String, m: Modifier, style: String = ""): Boolea
         "turbo" -> TurboCard(info, m)
         "tyres" -> TyresCard(info, m)
         "service" -> ServiceCard(info, m)
+        in GaugePanelCards -> GaugePanel(id, m)
         else -> {
             val k = id.removePrefix("s").toIntOrNull()
             if (!id.startsWith("s") || k == null) return false
@@ -111,7 +111,14 @@ private fun sevColor(level: Int) = when (level) { 0 -> C.Green; 1 -> C.Orange; e
 
 @Composable
 fun GMeterCard(info: String, m: Modifier, big: Boolean = false) {
-    val st by Repo.motion.collectAsState()
+    val motion = Repo.motion.collectAsState()
+    val latDot = rememberSmooth(motion.slot { (it.latG ?: 0f).coerceIn(-1.2f, 1.2f) }, 2.4f)
+    val lonDot = rememberSmooth(motion.slot { (it.lonG ?: 0f).coerceIn(-1.2f, 1.2f) }, 2.4f)
+    val latText by rememberDigits { motion.value.latG?.let { "%.2f".format(abs(it)) } ?: "—" }
+    val lonText by rememberDigits { motion.value.lonG?.let { "%.2f".format(abs(it)) } ?: "—" }
+    val speedingUp by motion.slot { (it.lonG ?: 0f) >= 0f }
+    val peaks by motion.slot { "макс: бок %.2f · разгон %.2f · тормоз %.2f".format(it.maxLat, it.maxAccel, it.maxBrake) }
+    val source by motion.slot { it.source }
     Card(m, Lucide.Crosshair, "G-метр", info) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
             Canvas(Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true).padding(4.dp)) {
@@ -120,8 +127,8 @@ fun GMeterCard(info: String, m: Modifier, big: Boolean = false) {
                 for (g in listOf(0.5f, 1f)) drawCircle(C.Border, r * g, c, style = Stroke(1.5f))
                 drawLine(C.Border, Offset(c.x - r, c.y), Offset(c.x + r, c.y), 1f)
                 drawLine(C.Border, Offset(c.x, c.y - r), Offset(c.x, c.y + r), 1f)
-                val lat = (st.latG ?: 0f).coerceIn(-1.2f, 1.2f)
-                val lon = (st.lonG ?: 0f).coerceIn(-1.2f, 1.2f)
+                val lat = latDot.value.floatValue
+                val lon = lonDot.value.floatValue
                 // up = speeding up (the body pushes back, but drivers read it as "forward"), right = right turn
                 val p = Offset(c.x + lat * r, c.y - lon * r)
                 drawCircle(C.Violet.copy(alpha = 0.25f), r * 0.16f, p)
@@ -129,11 +136,10 @@ fun GMeterCard(info: String, m: Modifier, big: Boolean = false) {
             }
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                T("бок  ${st.latG?.let { "%.2f".format(abs(it)) } ?: "—"} g", if (big) 18.sp else 13.sp)
-                T(if ((st.lonG ?: 0f) >= 0f) "разгон  ${st.lonG?.let { "%.2f".format(it) } ?: "—"} g"
-                else "тормоз  ${"%.2f".format(-(st.lonG ?: 0f))} g", if (big) 18.sp else 13.sp)
-                T("макс: бок %.2f · разгон %.2f · тормоз %.2f".format(st.maxLat, st.maxAccel, st.maxBrake), 10.sp, C.Sub, maxLines = 2)
-                T(st.source, 10.sp, C.Sub, maxLines = 1)
+                FitText("бок $latText g", if (big) LocalCar.current.label else LocalCar.current.secondary, Modifier.fillMaxWidth())
+                FitText(if (speedingUp) "разгон $lonText g" else "тормоз $lonText g", if (big) LocalCar.current.label else LocalCar.current.secondary, Modifier.fillMaxWidth())
+                FitText(peaks, LocalCar.current.secondary, Modifier.fillMaxWidth(), C.Sub, maxLines = 2)
+                FitText(source, LocalCar.current.secondary, Modifier.fillMaxWidth(), C.Sub)
             }
         }
     }
@@ -148,12 +154,12 @@ fun InclineCard(info: String, m: Modifier) {
                 Tilt("крен", st.rollDeg!!, rear = true, Modifier.weight(1f))
                 Tilt("тангаж", st.pitchDeg!!, rear = false, Modifier.weight(1.4f))
             }
-            st.gradePct?.let { T("уклон %+.0f %%".format(it), 11.sp, C.Sub, modifier = Modifier.align(Alignment.TopEnd)) }
+            st.gradePct?.let { T("уклон %+.0f %%".format(it), LocalCar.current.secondary, C.Sub, modifier = Modifier.align(Alignment.TopEnd), maxLines = 1) }
         } else {
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
-                FitValue(st.gradePct?.let { "%+.0f".format(it) } ?: "—", "% уклон", 30f, Modifier.fillMaxWidth())
-                T(if (st.hasSensor) "Датчик есть: обнулите его в «Замеры» → «G-метр» на ровном месте"
-                else "Уклон по GPS. Крена нет: в магнитоле нет датчика наклона", 10.sp, C.Sub, maxLines = 2)
+                FitValue(st.gradePct?.let { "%+.0f".format(it) } ?: "—", "% уклон", LocalCar.current.value.value, Modifier.fillMaxWidth().weight(1f), widest = "+88")
+                FitText(if (st.hasSensor) "Датчик есть: обнулите его в «Замеры» → «G-метр» на ровном месте"
+                else "Уклон по GPS. Крена нет: в магнитоле нет датчика наклона", LocalCar.current.secondary, Modifier.fillMaxWidth(), C.Sub, maxLines = 2)
             }
         }
     }
@@ -162,7 +168,7 @@ fun InclineCard(info: String, m: Modifier) {
 @Composable
 private fun Tilt(label: String, deg: Float, rear: Boolean, modifier: Modifier) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    val model by Repo.car3d.collectAsState()
+    val model = car3dNow()
     val paint by Repo.carPaint.collectAsState()
     // another make: a plain outline instead of the Subaru (see CarKind)
     val other by kg.forester.sg.data.CarKind.other.collectAsState()
@@ -193,7 +199,7 @@ private fun Tilt(label: String, deg: Float, rear: Boolean, modifier: Modifier) {
                 }
             }
         }
-        T("$label %+.0f°".format(shown), 14.sp, col, FontWeight.SemiBold)
+        T("$label %+.0f°".format(shown), LocalCar.current.secondary, col, FontWeight.SemiBold, maxLines = 1)
     }
 }
 
@@ -206,18 +212,18 @@ fun IamCard(info: String, m: Modifier) {
             val learned = g.learnedDeg
             if (iam == null && learned != null) {
                 // no IAM address for this ROM: the ECU's own learned timing tells the same story, in degrees
-                FitValue("%.1f".format(learned), "° обуч. УОЗ", 30f, Modifier.fillMaxWidth())
+                FitValue("%.1f".format(learned), "° обуч. УОЗ", LocalCar.current.value.value, Modifier.fillMaxWidth().weight(1f), widest = "-8.8")
                 val kc = Repo.live.collectAsState().value.knockDeg
-                T("Обученный угол: падает, когда мотор ловит детонацию, после сброса ЭБУ обучается заново" +
-                    (kc?.let { " · коррекция сейчас %.1f°".format(it) } ?: ""), 11.sp, C.Sub, maxLines = 3)
+                FitText("Обученный угол: падает, когда мотор ловит детонацию, после сброса ЭБУ обучается заново" +
+                    (kc?.let { " · коррекция сейчас %.1f°".format(it) } ?: ""), LocalCar.current.secondary, Modifier.fillMaxWidth(), C.Sub, maxLines = 3)
             } else {
                 val lvl = when { iam == null -> 0; iam >= 0.95f -> 0; iam >= 0.75f -> 1; else -> 2 }
-                FitValue(iam?.let { "%.2f".format(it) } ?: "—", "IAM", 30f, Modifier.fillMaxWidth(), sevColor(lvl))
-                T(listOfNotNull(
+                FitValue(iam?.let { "%.2f".format(it) } ?: "—", "IAM", LocalCar.current.value.value, Modifier.fillMaxWidth().weight(1f), sevColor(lvl), widest = "8.88")
+                FitText(listOfNotNull(
                     g.fbkc?.let { "FBKC %.1f°".format(it) }, g.flkc?.let { "FLKC %.1f°".format(it) },
                 ).joinToString(" · ").ifEmpty {
                     if (iam == null) "IAM нет в определениях этой прошивки: пришлите ROM ID из Настроек, поищем адрес" else ""
-                }, 11.sp, C.Sub, maxLines = 2)
+                }, LocalCar.current.secondary, Modifier.fillMaxWidth(), C.Sub, maxLines = 2)
             }
         }
     }
@@ -234,7 +240,7 @@ fun BoostTargetCard(info: String, m: Modifier) {
             val top = maxOf(1.4f, boostTop, (target ?: 0f) + 0.1f)
             Bar("цель", target, top, C.Blue)
             Bar("факт", fact, top, if (target != null && fact != null && fact > target + 0.15f) C.Red else C.Green)
-            if (target == null) T("цели нет в определениях этой прошивки", 10.sp, C.Sub, maxLines = 1)
+            if (target == null) FitText("цели нет в определениях этой прошивки", LocalCar.current.secondary, Modifier.fillMaxWidth(), C.Sub)
         }
     }
 }
@@ -242,11 +248,11 @@ fun BoostTargetCard(info: String, m: Modifier) {
 @Composable
 private fun Bar(label: String, v: Float?, max: Float, col: Color, fmt: String = " %.2f") {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        T(label, 11.sp, C.Sub, modifier = Modifier.width(34.dp))
+        T(label, LocalCar.current.secondary, C.Sub, modifier = Modifier.width(LocalCar.current.secondary.asDp() * 2.4f), maxLines = 1)
         Box(Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(5.dp)).background(C.CardHi)) {
             Box(Modifier.fillMaxHeight().fillMaxWidth(((v ?: 0f) / max).coerceIn(0f, 1f)).background(col))
         }
-        T(v?.let { fmt.format(it) } ?: " —", 12.sp, modifier = Modifier.width(44.dp))
+        T(v?.let { fmt.format(it) } ?: " —", LocalCar.current.secondary, modifier = Modifier.width(LocalCar.current.secondary.asDp() * 2.8f), maxLines = 1)
     }
 }
 
@@ -257,7 +263,7 @@ fun PeaksCard(info: String, m: Modifier) {
     Panel(m, padding = 10.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) { CardTitle(Lucide.TrendingUp, "Пики поездки", info) }
-            T("сброс", 11.sp, C.Sub, modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(C.CardHi)
+            T("сброс", LocalCar.current.secondary, C.Sub, maxLines = 1, modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(C.CardHi)
                 .clickable { Repo.peaks.value = kg.forester.sg.service.Peaks() }.padding(horizontal = 8.dp, vertical = 3.dp))
         }
         val rows = listOfNotNull(
@@ -265,21 +271,22 @@ fun PeaksCard(info: String, m: Modifier) {
             p.mafGs?.let { "MAF" to "%.0f г/с".format(it) },
             p.loadGRev?.let { "нагрузка" to "%.2f г/об".format(it) },
             p.rpm?.let { "обороты" to "$it" },
-            p.speedKmh?.let { "скорость" to "$it км/ч" },
+            p.speedKmh?.let { "скорость" to kg.forester.sg.data.DistanceUnits.speedText(it) },
             p.intakeC?.let { "впуск" to "$it°" },
             p.coolantC?.let { "ОЖ" to "$it°" },
             (p.atfC ?: tcu?.atfC)?.takeIf { p.atfC != null }?.let { "ATF" to "$it°" },
-            p.knockDeg?.takeIf { it < 0f }?.let { "детонация" to "%.1f°".format(it) },
+            p.knockDeg?.takeIf { it != 0f }?.let { "детонация" to "%.1f°".format(it) },
             p.leanAfrUnderBoost?.let { "AFR под наддувом" to "%.1f".format(it) },
         )
         Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.SpaceEvenly) {
-            if (rows.isEmpty()) T("—", 14.sp, C.Sub)
+            if (rows.isEmpty()) T("—", LocalCar.current.secondary, C.Sub)
             rows.chunked(2).forEach { pair ->
                 Row(Modifier.fillMaxWidth()) {
                     pair.forEach { (k, v) ->
-                        Row(Modifier.weight(1f)) {
-                            T("$k ", 11.sp, C.Sub, maxLines = 1)
-                            T(v, 12.sp, weight = FontWeight.SemiBold, maxLines = 1)
+                        // the value whole, the name with what is left, and room before the next pair
+                        Row(Modifier.weight(1f).padding(end = 10.dp)) {
+                            FitText("$k ", LocalCar.current.secondary, Modifier.weight(1f, fill = false), C.Sub)
+                            FitText(v, LocalCar.current.secondary, Modifier.weight(1f, fill = false), weight = FontWeight.SemiBold)
                         }
                     }
                     if (pair.size == 1) Spacer(Modifier.weight(1f))
@@ -296,16 +303,16 @@ fun RunCard(info: String, m: Modifier) {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
             when {
                 p.running -> {
-                    FitValue("%.2f".format(p.elapsedSec), "с", 30f, Modifier.fillMaxWidth(), C.Violet)
-                    T("%.0f км/ч · %.0f м".format(p.speedKmh, p.distanceM) +
-                        (p.live["0-100"]?.let { " · 0–100 %.2f с".format(it) } ?: ""), 11.sp, C.Sub, maxLines = 1)
+                    FitValue("%.2f".format(p.elapsedSec), "с", LocalCar.current.value.value, Modifier.fillMaxWidth().weight(1f), C.Violet, widest = "88.88", everyMs = 0L)
+                    FitText(kg.forester.sg.data.DistanceUnits.speedText(p.speedKmh) + " · %.0f м".format(p.distanceM) +
+                        (p.live[kg.forester.sg.service.PerfCalc.headline]?.let { " · ${resultShort(kg.forester.sg.service.PerfCalc.headline)} %.2f с".format(it) } ?: ""), LocalCar.current.secondary, Modifier.fillMaxWidth(), C.Sub)
                 }
                 else -> {
-                    val last = p.runs.firstOrNull { "0-100" in it.results }
-                    val best = p.runs.mapNotNull { it.results["0-100"] }.minOrNull()
-                    FitValue(last?.results?.get("0-100")?.let { "%.2f".format(it) } ?: "—", "с 0–100", 26f, Modifier.fillMaxWidth())
-                    T((if (p.armed) "готов: трогайтесь" else "встаньте, чтобы засечь") +
-                        (best?.let { " · лучший %.2f".format(it) } ?: ""), 11.sp, if (p.armed) C.Green else C.Sub, maxLines = 1)
+                    val last = p.runs.firstOrNull { kg.forester.sg.service.PerfCalc.headline in it.results }
+                    val best = p.runs.mapNotNull { it.results[kg.forester.sg.service.PerfCalc.headline] }.minOrNull()
+                    FitValue(last?.results?.get(kg.forester.sg.service.PerfCalc.headline)?.let { "%.2f".format(it) } ?: "—", "с ${resultShort(kg.forester.sg.service.PerfCalc.headline)}", LocalCar.current.value.value, Modifier.fillMaxWidth().weight(1f), widest = "88.88")
+                    FitText((if (p.armed) "готов: трогайтесь" else "встаньте, чтобы засечь") +
+                        (best?.let { " · лучший %.2f".format(it) } ?: ""), LocalCar.current.secondary, Modifier.fillMaxWidth(), if (p.armed) C.Green else C.Sub)
                 }
             }
         }
@@ -319,14 +326,14 @@ fun TurboCard(info: String, m: Modifier) {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically)) {
             if (g.turbo) {
                 Bar("жар", g.heat, 100f, if (g.heat > 60) C.Red else if (g.heat > 30) C.Orange else C.Green, " %.0f")
-                T(when {
+                FitText(when {
                     g.cooldownSec > 0 -> "подождите ${g.cooldownSec} с перед выключением"
                     g.heat > 12f -> "после остановки — ~${g.heat.toInt()} с на холостых"
                     else -> "можно глушить"
-                }, 12.sp, if (g.heat > 12f) C.Orange else C.Green, maxLines = 1)
+                }, LocalCar.current.secondary, Modifier.fillMaxWidth(), if (g.heat > 12f) C.Orange else C.Green)
             }
-            T("масло ${g.oilC?.let { "${it.roundToInt()}°" } ?: "—"}${if (g.oilEstimated && g.oilC != null) " (оценка)" else ""}" +
-                if (g.cold) " · не выше 3000 об/мин" else "", 12.sp, if (g.cold) C.Orange else C.Text, maxLines = 2)
+            FitText("масло ${g.oilC?.let { "${it.roundToInt()}°" } ?: "—"}${if (g.oilEstimated && g.oilC != null) " (оценка)" else ""}" +
+                if (g.cold) " · не выше 3000 об/мин" else "", LocalCar.current.secondary, Modifier.fillMaxWidth(), if (g.cold) C.Orange else C.Text, maxLines = 2)
         }
     }
 }
@@ -337,14 +344,13 @@ fun TyresCard(info: String, m: Modifier) {
     val min = Repo.settings.tpmsMinBar
     Card(m, Lucide.Disc3, "Давление в шинах", info) {
         if (t.isEmpty()) {
-            T(if (Repo.settings.tpms) "ищу датчики…" else "включите в «Мониторинг» → «Шины»", 12.sp, C.Sub,
-                modifier = Modifier.align(Alignment.Center))
+            FitText(if (Repo.settings.tpms) "ищу датчики…" else "включите в «Мониторинг» → «Шины»", LocalCar.current.secondary, Modifier.align(Alignment.Center), C.Sub, maxLines = 3)
         } else Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceEvenly) {
             listOf("FL" to "FR", "RL" to "RR").forEach { (a, b) ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     for (w in listOf(a, b)) {
                         val r = t[w]
-                        T(r?.let { "%.1f".format(it.bar) } ?: "—", 18.sp,
+                        T(r?.let { "%.1f".format(it.bar) } ?: "—", LocalCar.current.label,
                             if (r == null) C.Sub else if (r.bar < min || r.leak) C.Red else C.Text, FontWeight.SemiBold)
                     }
                 }
@@ -365,15 +371,15 @@ fun ServiceCard(info: String, m: Modifier) {
     Card(m, Lucide.Wrench, "Ближайшее ТО", info) {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
             if (odo == null || next?.used(odo, now) == null) {
-                T("Введите пробег и даты в «Мониторинг» → «ТО»", 12.sp, C.Sub, maxLines = 3)
+                FitText("Введите пробег и даты в «Мониторинг» → «ТО»", LocalCar.current.secondary, Modifier.fillMaxWidth(), C.Sub, maxLines = 3)
             } else {
                 val km = next.kmLeft(odo)?.roundToInt()
                 val days = next.daysLeft(now)
-                T(next.name, 13.sp, maxLines = 2)
-                T(listOfNotNull(km?.let { if (it < 0) "просрочено ${-it} км" else "через $it км" },
+                FitText(next.name, LocalCar.current.secondary, Modifier.fillMaxWidth(), maxLines = 2)
+                FitText(listOfNotNull(km?.let { if (it < 0) "просрочено ${kg.forester.sg.data.DistanceUnits.distanceText(-it.toDouble())}" else "через ${kg.forester.sg.data.DistanceUnits.distanceText(it.toDouble())}" },
                     next.hoursLeft(Maintenance.hours())?.roundToInt()?.let { if (it < 0) "просрочено ${-it} м·ч" else "$it м·ч" },
-                    days?.let { if (it < 0) "${-it} дн. назад" else "$it дн." }).joinToString(" · "), 12.sp,
-                    if (next.due(odo, now)) C.Orange else C.Sub, maxLines = 1)
+                    days?.let { if (it < 0) "${-it} дн. назад" else "$it дн." }).joinToString(" · "), LocalCar.current.secondary, Modifier.fillMaxWidth(),
+                    if (next.due(odo, now)) C.Orange else C.Sub)
             }
         }
     }
@@ -388,19 +394,19 @@ fun SensorSlotCard(k: Int, info: String, m: Modifier) {
     val chosen = Repo.settings.slot(k)
     if (chosen.isNotEmpty()) {
         val ind = Metrics.of(chosen, avail)
-        val v = ind?.read(rememberMetricCtx())
+        val v by metricSlot(rememberMetricCtx(), chosen to avail) { ind?.read(it) }
         Card(m, ind?.icon ?: Lucide.ListChecks, ind?.title ?: chosen.removePrefix("rr:"), info) {
-            if (ind == null) T("Параметр появится, когда приложение подключится к машине", 11.sp, C.Sub, maxLines = 3)
-            else FitValue(ind.text(v), ind.unit, 30f, Modifier.fillMaxSize(), if (ind.warn(v)) C.Orange else androidx.compose.ui.graphics.Color.White)
+            if (ind == null) FitText("Параметр появится, когда приложение подключится к машине", LocalCar.current.secondary, Modifier.fillMaxWidth(), C.Sub, maxLines = 3)
+            else FitValue(ind.text(v), ind.unit, LocalCar.current.value.value, Modifier.fillMaxSize(), if (ind.warn(v)) C.Orange else C.Ink, widest = "888.8")
         }
         return
     }
     val ticked = avail.filter { it.id in Repo.settings.watchIds }
     val p = ticked.getOrNull(k - 1)
     Card(m, Lucide.ListChecks, p?.name ?: "Датчик $k", info) {
-        if (p == null) T("Выберите показатель кнопкой со списком в режиме редактирования (долгое нажатие) " +
-            "или отметьте параметр на экране «Датчики» — $k-й по списку появится здесь", 11.sp, C.Sub, maxLines = 4)
-        else FitValue(p.text(values[p.id]), p.unitsRu, 30f, Modifier.fillMaxSize())
+        if (p == null) FitText("Выберите показатель кнопкой со списком в режиме редактирования (долгое нажатие) " +
+            "или отметьте параметр на экране «Датчики» — $k-й по списку появится здесь", LocalCar.current.secondary, Modifier.fillMaxSize(), C.Sub, maxLines = 4)
+        else FitValue(p.text(values[p.id]), p.unitsRu, LocalCar.current.value.value, Modifier.fillMaxSize(), widest = "888.8")
     }
 }
 
@@ -411,9 +417,9 @@ fun SlotPicker(k: Int, onClose: () -> Unit) {
     val avail by Repo.rrAvailable.collectAsState()
     Repo.slotVersion.collectAsState().value
     val chosen = Repo.settings.slot(k)
-    androidx.compose.ui.window.Dialog(onClose, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+    CarDialog(onClose, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
-            Modifier.width(760.dp).heightIn(max = 560.dp).clip(RoundedCornerShape(16.dp)).background(C.Card)
+            Modifier.width(760.dp).heightIn(max = minOf(560f, canvasScreen().screenHeightDp * 0.94f).dp).clip(RoundedCornerShape(16.dp)).background(C.Sheet)
                 .border(1.dp, C.Border, RoundedCornerShape(16.dp)).padding(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -423,7 +429,7 @@ fun SlotPicker(k: Int, onClose: () -> Unit) {
                 Chip("Готово", true, onClose)
             }
             Spacer(Modifier.height(8.dp))
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+            Column(Modifier.cueScroll()) {
                 Metrics.all(avail, Repo.settings.watchIds).groupBy { it.group }.forEach { (group, list) ->
                     T(group, 12.sp, C.Sub, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
                     androidx.compose.foundation.layout.FlowRow(

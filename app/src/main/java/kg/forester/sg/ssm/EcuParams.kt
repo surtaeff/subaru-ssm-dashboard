@@ -12,7 +12,10 @@ data class EcuSnapshot(
     val throttlePct: Float? = null,
     val batteryV: Float? = null,
     val injPwMs: Float? = null,
+    /** The live timing pull: P23 until the guard replaces it with the FBKC where the ROM has one (see EngineGuard.livePull). */
     val knockDeg: Float? = null,
+    /** P23 as the ECU gives it: the knock correction advance, KA x IAM + FBKC + FLKC, a sum and no live pull. */
+    val kcaDeg: Float? = null,
     val atmKpa: Float? = null,
     val boostKpa: Float? = null,
     val afCorrPct: Float? = null,
@@ -33,6 +36,8 @@ data class EcuSnapshot(
     val fuelSystem: Int? = null,
     /** OBD-II engine fuel rate, L/h (PID 5E), on the units that have it. */
     val fuelRateLh: Float? = null,
+    /** Calculated engine load, percent (OBD-II PID 04). */
+    val engineLoadPct: Float? = null,
 ) {
     val afr: Float? get() = lambda?.let { it * 14.7f }
 
@@ -159,6 +164,7 @@ object EcuParams {
             batteryV = g(BATTERY)?.let { it * 0.08f },
             injPwMs = g(INJ_PW)?.let { it * 0.256f },
             knockDeg = g(KNOCK)?.let { (it - 128) / 2f },
+            kcaDeg = g(KNOCK)?.let { (it - 128) / 2f },
             atmKpa = g(ATM)?.toFloat(),
             boostKpa = g(BOOST)?.let { (it - 128).toFloat() },
             afCorrPct = g(AF_CORR)?.let { (it - 128) * 100f / 128f },

@@ -22,9 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
@@ -41,7 +39,6 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.Ban
 import com.composables.icons.lucide.ImagePlus
@@ -75,7 +72,7 @@ fun CustomGauge.toStyle(): DialStyle {
         s = s.copy(patternColor = patternColor?.let(::c) ?: defaultPatternColor(s.pattern))
     }
     when (readout) {
-        "none" -> s = s.copy(readout = null)
+        "none" -> s = s.copy(readout = null, numberOnly = true)
         "lcd" -> {
             val a = accent?.let(::c) ?: Color(0xFF7DD3FC)
             s = s.copy(readout = Readout(Color(0xFF0A1016), a, a.copy(alpha = 0.14f), a.copy(alpha = 0.5f)))
@@ -83,6 +80,7 @@ fun CustomGauge.toStyle(): DialStyle {
         "frame" -> s = s.copy(readout = Readout(Color(0x33000000), s.value, Color.Transparent, s.numbers.copy(alpha = 0.6f), segments = false))
     }
     image?.let { s = s.copy(image = it, face = listOf(Color(0x80000000), Color(0x26000000), Color(0x99000000)), minimal = false) }
+    numberPct?.let { s = s.copy(numberScale = it / 100f) }
     return s
 }
 
@@ -99,7 +97,7 @@ private fun defaultPatternColor(p: FacePattern) = when (p) {
 }
 
 /** Colours offered in the designer. */
-private val Palette = listOf(
+private val Swatches = listOf(
     0xFFFFFFFF, 0xFFCBD5E1, 0xFF64748B, 0xFF1E293B, 0xFF000000,
     0xFFEF4444, 0xFFF97316, 0xFFF59E0B, 0xFFFDE047, 0xFFA3E635,
     0xFF22C55E, 0xFF14B8A6, 0xFF22D3EE, 0xFF38BDF8, 0xFF3B82F6,
@@ -124,22 +122,24 @@ fun GaugeDesigner(start: CustomGauge, onSaved: (CustomGauge) -> Unit, onClose: (
     val stored = CustomGauges.list.firstOrNull { it.id == g.id }
     LaunchedEffect(stored?.image) { stored?.image?.let { if (it != g.image) g = g.copy(image = it) } }
 
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    CarDialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Row(
-            Modifier.fillMaxWidth(0.94f).fillMaxHeight(0.92f).clip(RoundedCornerShape(16.dp)).background(C.Card)
+            Modifier.fillMaxWidth(0.94f).fillMaxHeight(0.92f).clip(RoundedCornerShape(16.dp)).background(C.Sheet)
                 .border(1.dp, C.Purple, RoundedCornerShape(16.dp)).padding(16.dp),
             horizontalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            // preview: the needle sweeps so every part of the scale is visible
+            // preview: the needle sweeps from idle to the red line, so every part of the scale is visible and the number is a real one
             Column(Modifier.weight(0.42f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
                 T("Свой дизайн", 18.sp, weight = FontWeight.SemiBold)
                 val sweep by rememberInfiniteTransition(label = "demo").animateFloat(
-                    0f, 7000f, infiniteRepeatable(tween(4000), RepeatMode.Reverse), label = "rpm",
+                    800f, 6800f, infiniteRepeatable(tween(4000), RepeatMode.Reverse), label = "rpm",
                 )
                 Box(Modifier.weight(1f).fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
                     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         val d = minOf(maxWidth, maxHeight)
-                        Dial(sweep, 7000f, 1000f, 1000f, "об/мин", "x1000", 6000f, Modifier.size(d), g.toStyle())
+                        androidx.compose.runtime.CompositionLocalProvider(LocalDialPreview provides true) {
+                            Dial(sweep, 7000f, 1000f, 1000f, "об/мин", "x1000", 6000f, Modifier.size(d), g.toStyle())
+                        }
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -148,18 +148,20 @@ fun GaugeDesigner(start: CustomGauge, onSaved: (CustomGauge) -> Unit, onClose: (
                     Chip("Сохранить", true, { CustomGauges.save(g); onSaved(g) })
                 }
             }
-            Column(Modifier.weight(0.58f).fillMaxHeight().verticalScroll(rememberScrollState())) {
+            Column(Modifier.weight(0.58f).fillMaxHeight().cueScroll()) {
                 Label("Основа")
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     DialStyles.forEach { st ->
                         val on = st.id == g.base
                         Column(
                             Modifier.clip(RoundedCornerShape(10.dp))
-                                .border(if (on) 2.dp else 1.dp, if (on) C.Purple else C.Border, RoundedCornerShape(10.dp))
+                                .border(if (on) 2.dp else 1.dp, if (on) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(10.dp))
                                 .clickable { g = g.copy(base = st.id) }.padding(4.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
-                            Dial(5200f, 7000f, 1000f, 1000f, "", null, 6000f, Modifier.size(64.dp), st)
+                            androidx.compose.runtime.CompositionLocalProvider(LocalDialPreview provides true) {
+                                Dial(5200f, 7000f, 1000f, 1000f, "", null, 6000f, Modifier.size(64.dp), st)
+                            }
                             T(st.name, 10.sp, if (on) C.Text else C.Sub, maxLines = 1, modifier = Modifier.width(64.dp))
                         }
                     }
@@ -213,6 +215,12 @@ fun GaugeDesigner(start: CustomGauge, onSaved: (CustomGauge) -> Unit, onClose: (
                         Chip(l, g.readout == v, { g = g.copy(readout = v) })
                     }
                 }
+                Label("Размер цифр")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(null to "Как в основе", 80 to "80%", 100 to "100%", 120 to "120%", 140 to "140%").forEach { (v, l) ->
+                        Chip(l, g.numberPct == v, { g = g.copy(numberPct = v) })
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
             }
         }
@@ -236,11 +244,11 @@ private fun Swatches(current: Long?, onPick: (Long?) -> Unit) {
                 .clickable { onPick(null) },
             contentAlignment = Alignment.Center,
         ) { Icon(Lucide.Ban, "Как в основе", tint = C.Sub, modifier = Modifier.size(16.dp)) }
-        Palette.forEach { v ->
+        Swatches.forEach { v ->
             val on = current == v
             Box(
                 Modifier.size(30.dp).clip(CircleShape).background(Color(v.toInt()))
-                    .border(if (on) 3.dp else 1.dp, if (on) C.Purple else C.Border, CircleShape)
+                    .border(if (on) 3.dp else 1.dp, if (on) C.activeEdge(C.Purple) else C.Border, CircleShape)
                     .clickable { onPick(v) },
             )
         }

@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
@@ -68,7 +66,7 @@ import kg.forester.sg.service.RuleRunner
 import java.util.Locale
 
 /*
- * Настройки → Доп датчики → «Выходы»: relays, MOSFETs and LEDs on the box, each with rules written as Russian
+ * Настройки → Датчики и экраны → «Выходы»: relays, MOSFETs and LEDs on the box, each with rules written as Russian
  * sentences («Включать, когда антифриз выше 98 °C. Выключать, когда он ниже 94 °C»). Ideas taken from ECU output
  * tables (two numbers instead of a hysteresis), Home Assistant (a "why" line, disable without deleting) and Tinkercad
  * (try it before wiring); docs/knowledge/sensorbox-relays.md.
@@ -144,7 +142,7 @@ fun OutputWidget(id: String, m: Modifier) {
     val board by SensorBox.board.collectAsState()
     Relays.boxStates.collectAsState().value
     val c = chans.firstOrNull { it.ch == ch }
-    if (c == null) { Panel(m) { T("Выход $ch не настроен: Настройки, Доп датчики, Выходы", 12.sp, C.Sub) }; return }
+    if (c == null) { Panel(m) { T("Выход $ch не настроен: Настройки, Датчики и экраны, Выходы", 12.sp, C.Sub) }; return }
     val s = status[ch]
     val on = s?.want == true
     val col = Color(if (on) c.onColor else c.offColor)
@@ -202,12 +200,12 @@ fun OutputsSection(board: BoxBoard, selected: String?, onSelect: (String) -> Uni
     Relays.boxStates.collectAsState().value
     var askPanic by remember { mutableStateOf(false) }
     if (info != null && info!!.via != "демо" && info!!.fw < 3) T("Для выходов нужна прошивка платы версии 3 или новее: обновите её на шаге «Прошивка»", 13.sp, C.Orange)
-    if (askPanic) androidx.compose.material3.AlertDialog(
+    if (askPanic) CarAlertDialog(
         onDismissRequest = { askPanic = false },
-        title = { androidx.compose.material3.Text("Выключить все выходы?") },
-        text = { androidx.compose.material3.Text("Правила не будут работать, пока не вернёте их этой же кнопкой.") },
-        confirmButton = { androidx.compose.material3.TextButton({ RelayEngine.panic(true); askPanic = false }) { androidx.compose.material3.Text("Выключить всё") } },
-        dismissButton = { androidx.compose.material3.TextButton({ askPanic = false }) { androidx.compose.material3.Text("Отмена") } },
+        title = { Text("Выключить все выходы?") },
+        text = { Text("Правила не будут работать, пока не вернёте их этой же кнопкой.") },
+        confirmButton = { androidx.compose.material3.TextButton({ RelayEngine.panic(true); askPanic = false }) { Text("Выключить всё") } },
+        dismissButton = { androidx.compose.material3.TextButton({ askPanic = false }) { Text("Отмена") } },
     )
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         chans.forEach { c ->
@@ -215,7 +213,7 @@ fun OutputsSection(board: BoxBoard, selected: String?, onSelect: (String) -> Uni
             val (txt, col) = lamp(status[c.ch], info == null || info!!.via == "демо")
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (sel) C.Purple.copy(alpha = 0.22f) else C.CardHi)
-                    .border(1.dp, if (sel) C.Purple else C.Border, RoundedCornerShape(10.dp)).clickable { onSelect("out:${c.ch}") }
+                    .border(1.dp, if (sel) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(10.dp)).clickable { onSelect("out:${c.ch}") }
                     .heightIn(min = 52.dp).padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -250,7 +248,7 @@ fun OutputsSection(board: BoxBoard, selected: String?, onSelect: (String) -> Uni
 @Composable
 fun OutputNew(board: BoxBoard, onCreated: (Int) -> Unit) {
     T("Что будет включать плата?", 18.sp, weight = FontWeight.SemiBold)
-    T("Выберите готовый вариант: цифры в нём уже подобраны для Subaru, потом поменяете под себя", 12.sp, C.Sub)
+    SettingHint("Выберите готовый вариант: цифры в нём уже подобраны для Subaru, потом поменяете под себя")
     Spacer(Modifier.height(10.dp))
     val free = Relays.free(board)
     if (free == null) { T("Свободных пинов для выходов на этой плате больше нет", 13.sp, C.Orange); return }
@@ -271,9 +269,9 @@ fun OutputNew(board: BoxBoard, onCreated: (Int) -> Unit) {
         }
     }
     Spacer(Modifier.height(12.dp))
-    T("Займёт выход ${free.first} на пине ${free.second}. Пин можно поменять потом.", 12.sp, C.Sub)
+    SettingHint("Займёт выход ${free.first} на пине ${free.second}. Пин можно поменять потом.")
     Spacer(Modifier.height(12.dp))
-    T("Модули реле бывают на 1, 4 и 8 каналов: один модуль на несколько выходов, каждому выходу свой вход IN", 12.sp, C.Sub)
+    SettingHint("Модули реле бывают на 1, 4 и 8 каналов: один модуль на несколько выходов, каждому выходу свой вход IN")
     Row(Modifier.fillMaxWidth()) {
         listOf("relay1", "relay4", "relay8").forEach { Model3D(it, Modifier.weight(1f).height(130.dp)) }
     }
@@ -358,12 +356,12 @@ fun OutputDetails(board: BoxBoard, ch: Int, onGone: () -> Unit) {
             Spacer(Modifier.width(6.dp))
         }
     }
-    if (confirmTest) androidx.compose.material3.AlertDialog(
+    if (confirmTest) CarAlertDialog(
         onDismissRequest = { confirmTest = false },
-        title = { androidx.compose.material3.Text("Включить на 1 секунду?") },
-        text = { androidx.compose.material3.Text(if (c.icon == "pump") "Насос будет качать 1 секунду. Мотор заглушен?" else "Реле должно щёлкнуть, а нагрузка включиться на секунду") },
-        confirmButton = { androidx.compose.material3.TextButton({ confirmTest = false; RelayEngine.test(ch) }) { androidx.compose.material3.Text("Включить") } },
-        dismissButton = { androidx.compose.material3.TextButton({ confirmTest = false }) { androidx.compose.material3.Text("Отмена") } },
+        title = { Text("Включить на 1 секунду?") },
+        text = { Text(if (c.icon == "pump") "Насос будет качать 1 секунду. Мотор заглушен?" else "Реле должно щёлкнуть, а нагрузка включиться на секунду") },
+        confirmButton = { androidx.compose.material3.TextButton({ confirmTest = false; RelayEngine.test(ch) }) { Text("Включить") } },
+        dismissButton = { androidx.compose.material3.TextButton({ confirmTest = false }) { Text("Отмена") } },
     )
 
     // the rules
@@ -426,7 +424,7 @@ fun OutputDetails(board: BoxBoard, ch: Int, onGone: () -> Unit) {
             Chip("Виджет на экране", c.levelSrc.isEmpty(), { Relays.put(c.copy(levelSrc = "")) })
             pots.forEach { p -> Chip("Потенциометр ${p.input}: ${p.name}", c.levelSrc == "box_${p.input}", { Relays.put(c.copy(levelSrc = "box_${p.input}")) }) }
         }
-        if (pots.isEmpty()) T("Настоящую крутилку можно поставить на панель: подключите потенциометр к входу платы (в выборе датчика «Потенциометр»), и он появится здесь", 12.sp, C.Sub)
+        if (pots.isEmpty()) SettingHint("Настоящую крутилку можно поставить на панель: подключите потенциометр к входу платы (в выборе датчика «Потенциометр»), и он появится здесь")
     }
     if (c.load != LoadKind.MOSFET && c.load != LoadKind.LED) T("Плавная регулировка только с MOSFET-модулем или светодиодом на пинах ${board.pwmPins.joinToString(", ")}", 13.sp, C.Sub)
     if (c.widget != "button" && !c.pwm(board)) T(
@@ -473,7 +471,7 @@ fun OutputDetails(board: BoxBoard, ch: Int, onGone: () -> Unit) {
     Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             T("Реле работает наоборот", 15.sp)
-            T("Включено у большинства синих модулей реле (вход IN, на плате оптрон). Если реле щёлкает, когда должно быть выключено, переключите", 13.sp, C.Sub)
+            SettingHint("Включено у большинства синих модулей реле (вход IN, на плате оптрон). Если реле щёлкает, когда должно быть выключено, переключите")
         }
         Switch(c.activeLow, { Relays.put(c.copy(activeLow = it)) }, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
     }
@@ -484,7 +482,7 @@ fun OutputDetails(board: BoxBoard, ch: Int, onGone: () -> Unit) {
     Stepper("Не включать снова раньше чем через", c.minOffS, "с", 0, 600, 1) { Relays.put(c.copy(minOffS = it)) }
     Stepper("Не держать включённым дольше (0 = без предела)", c.maxOnS, "с", 0, 3600, 10) { Relays.put(c.copy(maxOnS = it)) }
     Spacer(Modifier.height(6.dp))
-    T("Если связи с магнитолой нет (зависла, выдернули кабель), плата сама:", 13.sp, C.Sub)
+    SettingHint("Если связи с магнитолой нет (зависла, выдернули кабель), плата сама:")
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         LostState.entries.forEach { l -> Chip(l.title, c.lost == l, { Relays.put(c.copy(lost = l, lostHoldS = if (l == LostState.HOLD && c.lostHoldS == 0) 60 else c.lostHoldS)) }) }
     }
@@ -577,10 +575,10 @@ private fun ThresholdRow(lead: String, t: Threshold, showOff: Boolean, onRemove:
         T(lead, 14.sp, modifier = Modifier.align(Alignment.CenterVertically))
         Box {
             Chip(src.title + (live?.let { " · " + RuleRunner.num(t.src, it) } ?: ""), true, { picking = true })
-            androidx.compose.material3.DropdownMenu(picking, { picking = false }) {
+            CarDropdownMenu(picking, { picking = false }) {
                 // an output can't be its own condition
                 RuleSources.all().filter { it.id != "out_$selfCh" }.forEach { s ->
-                    androidx.compose.material3.DropdownMenuItem(text = { androidx.compose.material3.Text(s.title) }, onClick = {
+                    androidx.compose.material3.DropdownMenuItem(text = { Text(s.title) }, onClick = {
                         picking = false
                         if (s.bool) { onChange(Threshold(s.id, true, 1f, 1f)); return@DropdownMenuItem }
                         // the new source's own scale: start in its middle with a sensible gap
@@ -603,7 +601,7 @@ private fun ThresholdRow(lead: String, t: Threshold, showOff: Boolean, onRemove:
             // the off value moves along, keeping the gap the driver set
             ValueStepper(t.on, src) { v -> onChange(t.copy(on = v, off = v - (t.on - t.off))) }
         }
-        if (onRemove != null) Icon(Lucide.X, "Убрать условие", tint = C.Sub, modifier = Modifier.size(22.dp).align(Alignment.CenterVertically).clickable(onClick = onRemove))
+        if (onRemove != null) IconTap(Lucide.X, "Убрать условие", onRemove, Modifier.align(Alignment.CenterVertically))
     }
     if (showOff && !src.bool) FlowRow(verticalArrangement = Arrangement.spacedBy(4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
         T("Выключать, когда станет ${if (t.above) "ниже" else "выше"}", 14.sp, modifier = Modifier.align(Alignment.CenterVertically))
@@ -641,11 +639,15 @@ private fun liveValue(src: String): Float? {
 
 @Composable
 private fun ValueStepper(v: Float, s: kg.forester.sg.data.RuleSource, onChange: (Float) -> Unit) {
+    // in miles a speed goes in whole steps of the shown unit (and is kept in km/h)
+    val shownSpeed = s.id == "speed" && kg.forester.sg.data.DistanceUnits.miles
     fun snap(x: Float) = (Math.round(x / s.step) * s.step).coerceIn(s.min, s.max)
+    fun stepped(sign: Int): Float = if (!shownSpeed) snap(v + sign * s.step) else
+        kg.forester.sg.data.DistanceUnits.speedToKmh((Math.round(kg.forester.sg.data.DistanceUnits.speed(v) / s.step) + sign) * s.step.toDouble()).toFloat().coerceIn(s.min, s.max)
     Row(Modifier.clip(RoundedCornerShape(10.dp)).background(C.Card).border(1.dp, C.Border, RoundedCornerShape(10.dp)), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(48.dp).clickable { onChange(snap(v - s.step)) }, contentAlignment = Alignment.Center) { Icon(Lucide.Minus, null, tint = C.Text, modifier = Modifier.size(18.dp)) }
+        Box(Modifier.size(48.dp).clickable { onChange(stepped(-1)) }, contentAlignment = Alignment.Center) { Icon(Lucide.Minus, null, tint = C.Text, modifier = Modifier.size(18.dp)) }
         T(RuleRunner.num(s.id, v), 15.sp, weight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 4.dp))
-        Box(Modifier.size(48.dp).clickable { onChange(snap(v + s.step)) }, contentAlignment = Alignment.Center) { Icon(Lucide.Plus, null, tint = C.Text, modifier = Modifier.size(18.dp)) }
+        Box(Modifier.size(48.dp).clickable { onChange(stepped(1)) }, contentAlignment = Alignment.Center) { Icon(Lucide.Plus, null, tint = C.Text, modifier = Modifier.size(18.dp)) }
     }
 }
 
@@ -740,10 +742,10 @@ fun ButtonFace(c: OutChannel, on: Boolean, m: Modifier, blinking: Boolean = fals
 private fun ButtonLookDialog(c0: OutChannel, onClose: () -> Unit) {
     var c by remember { mutableStateOf(c0) }
     var group by remember { mutableStateOf(OUT_ICON_SET.firstOrNull { it.id == c0.icon }?.group ?: OUT_ICON_SET.first().group) }
-    androidx.compose.ui.window.Dialog(onClose, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+    CarDialog(onClose, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
-            Modifier.width(820.dp).screenCap().clip(RoundedCornerShape(16.dp)).background(C.Card).border(1.dp, C.Purple, RoundedCornerShape(16.dp))
-                .verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(16.dp),
+            Modifier.width(820.dp).screenCap().clip(RoundedCornerShape(16.dp)).background(C.Sheet).border(1.dp, C.Purple, RoundedCornerShape(16.dp))
+                .cueScroll().padding(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T("Вид кнопки: ${c.name}", 18.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -787,7 +789,7 @@ private fun ButtonLookDialog(c0: OutChannel, onClose: () -> Unit) {
                     val sel = c.icon == ic.id
                     Column(
                         Modifier.width(88.dp).clip(RoundedCornerShape(12.dp)).background(if (sel) C.Purple.copy(alpha = 0.25f) else C.CardHi)
-                            .border(if (sel) 2.dp else 1.dp, if (sel) C.Purple else C.Border, RoundedCornerShape(12.dp))
+                            .border(if (sel) 2.dp else 1.dp, if (sel) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(12.dp))
                             .clickable { c = c.copy(icon = ic.id) }.padding(vertical = 10.dp, horizontal = 4.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
@@ -803,7 +805,7 @@ private fun ButtonLookDialog(c0: OutChannel, onClose: () -> Unit) {
 
 /** No taller than most of the screen: the dialog scrolls inside. */
 @Composable
-private fun Modifier.screenCap(): Modifier = this.heightIn(max = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.92f).dp)
+private fun Modifier.screenCap(): Modifier = this.heightIn(max = (canvasScreen().screenHeightDp * 0.92f).dp)
 
 @Composable
 private fun LookField(label: String, value: String, onChange: (String) -> Unit) {
@@ -864,14 +866,14 @@ private fun Knob(c: OutChannel, on: Boolean, m: Modifier) {
                 val inset = stroke / 2
                 val arcSize = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke)
                 val tl = androidx.compose.ui.geometry.Offset(inset, inset)
-                drawArc(Color(0xFF232A40), 135f, 270f, false, tl, arcSize, style = androidx.compose.ui.graphics.drawscope.Stroke(stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                drawArc(C.Border, 135f, 270f, false, tl, arcSize, style = androidx.compose.ui.graphics.drawscope.Stroke(stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round))
                 drawArc(col, 135f, 270f * shown / 100f, false, tl, arcSize, style = androidx.compose.ui.graphics.drawscope.Stroke(stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round))
                 // the knob's mark
                 val r = size.minDimension / 2 - stroke * 1.9f
                 val ang = Math.toRadians((135.0 + 270.0 * shown / 100.0))
                 val cx = size.width / 2
                 val cy = size.height / 2
-                drawCircle(Color(0xFF181D2E), r, androidx.compose.ui.geometry.Offset(cx, cy))
+                drawCircle(C.DialogHi, r, androidx.compose.ui.geometry.Offset(cx, cy))
                 // the mark at the knob's rim, clear of the number in the middle
                 drawLine(col, androidx.compose.ui.geometry.Offset(cx + (r * 0.80f) * kotlin.math.cos(ang).toFloat(), cy + (r * 0.80f) * kotlin.math.sin(ang).toFloat()),
                     androidx.compose.ui.geometry.Offset(cx + (r * 0.97f) * kotlin.math.cos(ang).toFloat(), cy + (r * 0.97f) * kotlin.math.sin(ang).toFloat()), stroke * 0.45f,

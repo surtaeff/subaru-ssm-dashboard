@@ -131,10 +131,10 @@ object Maintenance {
         val days = due.daysLeft(now)
         val h = due.hoursLeft(hours())?.roundToInt()
         val left = when {
-            km != null && km < 0 -> "просрочено на ${-km} км"
+            km != null && km < 0 -> "просрочено на ${kg.forester.sg.data.DistanceUnits.distanceText(-km.toDouble())}"
             days != null && days < 0 -> "просрочено на ${-days} дн."
             h != null && h < 0 -> "просрочено на ${-h} моточасов"
-            km != null && km <= 500 -> "осталось $km км"
+            km != null && km <= 500 -> "осталось ${kg.forester.sg.data.DistanceUnits.distanceText(km.toDouble())}"
             h != null && h <= 15 -> "осталось $h моточасов"
             days != null -> "осталось $days дн."
             else -> ""

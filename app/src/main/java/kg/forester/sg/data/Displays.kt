@@ -177,7 +177,7 @@ object Displays {
                 else -> null
             } ?: RuleSources.of(src)?.title ?: src
         }
-        return t.uppercase(Locale("ru")).take(n).trimEnd()
+        return tr(t).uppercase(Locale("ru")).take(n).trimEnd()
     }
 
     /** A box sensor's name as a few words for a small screen: «Давление масла 0–10 бар» → «ДАВЛ МАСЛА». */
@@ -201,9 +201,10 @@ object Displays {
         val s = RuleSources.of(src) ?: return v?.let { "%.1f".format(Locale.US, it) } ?: "--"
         if (v == null) return "--"
         if (s.bool) return if (v >= 0.5f) "ВКЛ" else "ВЫКЛ"
-        val num = "%.${s.decimals}f".format(Locale.US, v)
+        val miles = src == "speed"
+        val num = "%.${s.decimals}f".format(Locale.US, if (miles) DistanceUnits.speed(v) else v)
         // AFR is already the name of the value: «14.7», not «14.7AFR»
-        val unit = s.unit.replace(" ", "").uppercase(Locale("ru")).takeUnless { it == "AFR" } ?: ""
+        val unit = (if (miles) DistanceUnits.speedUnit else s.unit).replace(" ", "").uppercase(Locale("ru")).takeUnless { it == "AFR" } ?: ""
         return if (withUnit) num + unit else num
     }
 

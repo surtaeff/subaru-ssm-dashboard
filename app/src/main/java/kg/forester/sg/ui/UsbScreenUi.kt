@@ -22,14 +22,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -58,7 +54,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /*
- * Настройки → «Цветной экран»: an ESP32-S3 board with an AMOLED or IPS panel on its own USB. Left: which board, its
+ * Настройки → «Датчики и экраны»: an ESP32-S3 board with an AMOLED or IPS panel on its own USB. Left: which board, its
  * firmware, how it is turned and lit. Right: the pages as the screen shows them (drawn by the same code that feeds
  * the board), what is on each and in which gauge design.
  */
@@ -126,7 +122,7 @@ private fun ScreensList(sel: String) {
                         else -> "не подключён"
                     }, 12.sp, if (on) C.Green else C.Sub, maxLines = 2)
                 }
-                if (!on && id.isNotEmpty()) Icon(Lucide.Trash2, "Забыть экран", tint = C.Sub, modifier = Modifier.size(20.dp).clickable {
+                if (!on && id.isNotEmpty()) IconTap(Lucide.Trash2, "Забыть экран", {
                     val keep = UsbScreen.cfgOf(id)
                     UsbScreen.forget(id)
                     offerUndo("Экран «${keep.name.ifEmpty { ScreenModel.of(keep.model)?.title ?: "экран" }}» забыт") { UsbScreen.put(id, keep) }
@@ -191,13 +187,14 @@ private fun ModelPicker(id: String) {
         }
         Icon(if (open) Lucide.ChevronDown else Lucide.ChevronRight, null, tint = C.Sub, modifier = Modifier.size(20.dp))
     }
+    m?.note?.takeIf { it.isNotEmpty() }?.let { Hint(Lucide.Info, it) }
     if (!open) return
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         ScreenModel.entries.forEach { s ->
             val on = cfg.model == s.id
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (on) C.Purple.copy(alpha = 0.22f) else C.CardHi)
-                    .border(1.dp, if (on) C.Purple else C.Border, RoundedCornerShape(10.dp))
+                    .border(1.dp, if (on) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(10.dp))
                     .clickable {
                         // a tall panel lies on its side in a car: start turned
                         UsbScreen.put(id, cfg.copy(model = s.id, rotation = if (s.h > s.w * 1.4f) 1 else 0))
@@ -245,11 +242,31 @@ private fun ScreenFlash(id: String) {
         msg = runCatching {
             ctx.assets.open(m.asset).use { i -> ctx.contentResolver.openOutputStream(uri)!!.use { i.copyTo(it) } }
             "Сохранено"
-        }.getOrElse { "Не удалось сохранить: ${it.message}" }
+        }.getOrElse { kg.forester.sg.ssm.SsmTrace.log("save: $it"); "Не удалось сохранить: ${kg.forester.sg.data.Failure.text(it)}" }
+    }
+    val savePre3 = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val asset = m?.assetPre3
+        if (uri == null || asset == null) return@rememberLauncherForActivityResult
+        msg = runCatching {
+            ctx.assets.open(asset).use { i -> ctx.contentResolver.openOutputStream(uri)!!.use { i.copyTo(it) } }
+            "Сохранено"
+        }.getOrElse { kg.forester.sg.ssm.SsmTrace.log("save: $it"); "Не удалось сохранить: ${kg.forester.sg.data.Failure.text(it)}" }
     }
     T("Прошивка экрана", 16.sp, weight = FontWeight.SemiBold)
-    T("Один раз для новой платы и после обновлений приложения. Прошивка лежит в приложении, компьютер не нужен.", 12.sp, C.Sub)
+    if (m?.selfFlash != false) SettingHint("Один раз для новой платы и после обновлений приложения. Прошивка лежит в приложении, компьютер не нужен.")
     Spacer(Modifier.height(6.dp))
+    if (m != null && !m.selfFlash) {
+        // a P4: its loader needs what only a computer's esptool does; the images are here to take there
+        Hint(Lucide.Info, "Эта плата прошивается с компьютера: сохраните файл .bin, подключите порт USB TO UART, в esptool: write-flash 0 файл.bin. Прошивка лежит здесь в двух версиях: для чипа ревизии 3.00 и новее и для более старых. Ревизию покажет esptool при подключении.")
+        Spacer(Modifier.height(4.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Chip("Сохранить .bin (ревизия 3+)", false, { save.launch(m.asset.substringAfterLast('/')) }, Lucide.FileDown)
+            Chip("Сохранить .bin (до ревизии 3)", false, { savePre3.launch(m.assetPre3!!.substringAfterLast('/')) }, Lucide.FileDown)
+        }
+        if (msg.isNotEmpty()) T(msg, 12.sp, if (msg == "Сохранено") C.Green else C.Orange)
+        return
+    }
     BigButton(if (working) "Прошиваю…" else if (m == null) "Сначала выберите плату" else "Прошить экран", Lucide.Download,
         { if (m != null) EspFlasher.start(ctx, m, id) }, enabled = m != null && !working)
     when (val s = st) {
@@ -291,14 +308,14 @@ private fun ScreenLook(id: String) {
     Spacer(Modifier.height(6.dp))
     T("Страницы меняются", 13.sp, C.Sub)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        listOf(0 to "кнопкой BOOT", 5 to "каждые 5 с", 10 to "10 с", 30 to "30 с").forEach { (s, t) ->
+        listOf(0 to if (ScreenModel.of(cfg.model)?.big == true) "не менять" else "кнопкой BOOT", 5 to "каждые 5 с", 10 to "10 с", 30 to "30 с").forEach { (s, t) ->
             Chip(t, cfg.switchS == s, { UsbScreen.put(id, cfg.copy(switchS = s)) })
         }
     }
     Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             T("Показывать тревогу", 14.sp)
-            T("Значение вышло за норму (как красное на карточках): экран сам откроет страницу с ним", 12.sp, C.Sub)
+            SettingHint("Значение вышло за норму (как красное на карточках): экран сам откроет страницу с ним")
         }
         Switch(cfg.alert, { UsbScreen.put(id, cfg.copy(alert = it)) }, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
     }
@@ -307,6 +324,20 @@ private fun ScreenLook(id: String) {
         listOf(5, 10, 15, 20).forEach { f -> Chip("$f", cfg.fps == f, { UsbScreen.put(id, cfg.copy(fps = f)) }) }
     }
     T("Больше кадров: плавнее стрелка, но больше работы магнитоле", 12.sp, C.Sub)
+    if (ScreenModel.of(cfg.model)?.big == true) {
+        Spacer(Modifier.height(6.dp))
+        T("Оформление на этом экране", 13.sp, C.Sub)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            (listOf(ScreenLook.current()) + ScreenLook.chosen).forEach { l -> Chip(l.name, cfg.theme == l.id, { UsbScreen.put(id, cfg.copy(theme = l.id)) }) }
+        }
+        Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                T("Сжимать крупные изменения (JPEG)", 14.sp)
+                SettingHint("Смена страницы приходит быстрее, потом уточняется без потерь. Если цвета на экране странные, выключите")
+            }
+            Switch(cfg.jpeg, { UsbScreen.put(id, cfg.copy(jpeg = it)) }, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
+        }
+    }
 }
 
 @Composable
@@ -329,10 +360,11 @@ private fun PagePreview(id: String, page: ScreenPage) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val cfg = UsbScreen.screens.collectAsState().value[id] ?: UsbScreen.cfgOf(id)
     val (w, h, round) = ScreenRenderer.canvas(cfg)
+    val big = ScreenModel.of(cfg.model)?.big == true
     var bmp by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    LaunchedEffect(page, w, h, round) {
+    LaunchedEffect(page, w, h, round, cfg.theme, big) {
         while (true) {
-            bmp = withContext(Dispatchers.Default) { runCatching { ScreenRenderer.render(ctx, page, w, h, round) }.getOrNull() }
+            bmp = withContext(Dispatchers.Default) { runCatching { ScreenRenderer.render(ctx, page, w, h, round, look = ScreenLook.of(cfg.theme, big)) }.getOrNull() }
             kotlinx.coroutines.delay(330)
         }
     }
@@ -354,7 +386,7 @@ private fun PageEditor(id: String, page: ScreenPage, onRemoved: () -> Unit) {
     var picking by remember { mutableStateOf(false) }
     T("Как расположить", 15.sp, weight = FontWeight.SemiBold)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        ScreenLayout.entries.forEach { l ->
+        ScreenLayout.forBoard(ScreenModel.of(cfg.model)?.big == true).forEach { l ->
             Chip(l.title, page.layout == l, {
                 val items = if (page.items.size >= l.slots) page.items else page.items + UsbScreen.defaultItems(8).filter { it !in page.items }
                 UsbScreen.putPage(id, page.copy(layout = l, items = items.take(maxOf(l.slots, page.items.size))))
@@ -362,8 +394,9 @@ private fun PageEditor(id: String, page: ScreenPage, onRemoved: () -> Unit) {
         }
     }
     Spacer(Modifier.height(10.dp))
-    T("Что показывать", 15.sp, weight = FontWeight.SemiBold)
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
+    if (page.layout.own) Hint(Lucide.Lightbulb, "Экран показывает ваше расположение из приложения: что поменяете там, изменится и здесь. Графики идут числом, 3D, карта и другие особые карточки остаются пустыми")
+    else T("Что показывать", 15.sp, weight = FontWeight.SemiBold)
+    if (!page.layout.own) Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
         (0 until page.layout.slots).forEach { i ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T("${i + 1}.", 14.sp, C.Sub, modifier = Modifier.width(28.dp))
@@ -383,13 +416,13 @@ private fun PageEditor(id: String, page: ScreenPage, onRemoved: () -> Unit) {
     }
     if (picking) {
         // the number in the middle can be left out, as on the cards; it rides along with whatever design is picked
-        val hidden = page.style.endsWith(NO_NUMBER)
-        val base = page.style.removeSuffix(NO_NUMBER)
+        val o = DialOptions.parse(page.style)
+        val hidden = o.noNumber
         StylePicker(
-            "Дизайн стрелки на цветном экране", base, plain = null, Modifier, target = "usbscreen",
+            "Дизайн стрелки на цветном экране", o.base, plain = null, Modifier, target = "usbscreen",
             preview = { st, m -> Dial(3600f, 7000f, 1000f, 1000f, "об/мин", null, 6000f, m, st.copy(hideValue = hidden)) },
-            onPick = { UsbScreen.putPage(id, page.copy(style = if (hidden) it + NO_NUMBER else it)) }, onClose = { picking = false },
-            numberShown = !hidden, onNumber = { show -> UsbScreen.putPage(id, page.copy(style = base + if (show) "" else NO_NUMBER)) },
+            onPick = { UsbScreen.putPage(id, page.copy(style = o.copy(base = it).format())) }, onClose = { picking = false },
+            numberShown = !hidden, onNumber = { show -> UsbScreen.putPage(id, page.copy(style = o.copy(noNumber = !show).format())) },
         )
     }
     Spacer(Modifier.height(12.dp))
@@ -410,7 +443,7 @@ private fun ValuePicker(id: String?, onPick: (String) -> Unit) {
     val ind = id?.takeIf { it.isNotEmpty() }?.let { ScreenRenderer.indicator(it) }
     Box {
         Chip(ind?.title ?: "пусто", ind != null, { open = true }, Lucide.ChevronDown)
-        DropdownMenu(open, { open = false }, Modifier.heightIn(max = 420.dp)) {
+        CarDropdownMenu(open, { open = false }, Modifier.heightIn(max = 420.dp)) {
             DropdownMenuItem(text = { Text("Ничего") }, onClick = { open = false; onPick("") })
             all.groupBy { it.group }.forEach { (g, list) ->
                 DropdownMenuItem(text = { Text(g, color = C.Violet, fontWeight = FontWeight.SemiBold) }, onClick = {}, enabled = false)

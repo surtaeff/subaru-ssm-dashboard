@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older: the device id stays out of the backup, a restore must not carry it to another unit -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="device_id.xml" />
+</full-backup-content>

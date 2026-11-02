@@ -37,8 +37,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -75,12 +73,13 @@ private val DriveEdit = BoardEdit(
     DriveBoard,
     gaugeable = setOf("pedal", "throttle", "boost", "load", "rpm", "avcs", "injDuty", "maf", "throttleMotor", "wgdc"),
     rowWeight = ::driveRowWeight,
+    effective = { saved, small -> kg.forester.sg.data.HomeLayout.driveEffective(saved, small, Repo.carTurbo.value) },
 )
 
 /** Row heights: gauges 0.9, charts 1.2, small tiles 0.55; a row with a needle gauge gets 1.3 so the dial is readable. */
-private fun driveRowWeight(t: TileCfg) = when {
+internal fun driveRowWeight(t: TileCfg) = when {
     t.id.startsWith("chart") -> 1.2f
-    t.id == "defi" || t.id == "navcluster" -> 1.8f
+    t.id == "defi" || t.id == "navcluster" || t.id in kg.forester.sg.data.GAUGE_PANELS -> 1.8f
     t.id in kg.forester.sg.data.EXTRA_CARDS -> 0.9f
     t.style.isNotEmpty() -> 1.3f
     t.id in setOf("avcs", "injDuty", "maf", "throttleMotor", "wgdc", "pressure") -> 0.55f
@@ -89,16 +88,18 @@ private fun driveRowWeight(t: TileCfg) = when {
 
 @Composable
 fun DriveScreen() {
-    val e by Repo.live.collectAsState()
-    val h by Repo.history.collectAsState()
+    // each card reads its own value (see [pick]): a reading recomposes the cards whose number changed
+    val live = Repo.live.collectAsState()
+    val engine by Repo.engineProfile.collectAsState()
     val knock by Repo.knock.collectAsState()
 
-    BoardScreen(DriveEdit, DriveCards, ::driveRowWeight) { t, m ->
+    val turbo by Repo.carTurbo.collectAsState()
+    BoardScreen(DriveEdit, DriveCards, ::driveRowWeight, factoryKey = turbo) { t, m ->
         val info = "drive.${t.id}"
         @Composable
         fun Mini(icon: ImageVector, title: String, v: Float?, min: Float, max: Float, unit: String, fmt: String, sub: String? = null, red: Float? = null) =
-            ValueCard(CardValue(icon, title, v, min, max, unit, fmt, info, red), t.style, m) {
-                MiniGauge(icon, title, v, min, max, unit, fmt, m, sub = sub, info = info)
+            ValueCard(CardValue(icon, title, v, min, max, unit, fmt, info, red, warnRule = WarnRule(above = red)), t.style, m) {
+                MiniGauge(icon, title, v, min, max, unit, fmt, m, sub = sub, info = info, warnRule = WarnRule(above = red))
             }
         @Composable
         fun Small(icon: ImageVector, title: String, v: Float?, min: Float, max: Float, unit: String, fmt: String) =
@@ -106,118 +107,135 @@ fun DriveScreen() {
                 Tile(icon, title, v?.let { fmt.format(it) } ?: "—", unit, m, info)
             }
         @Composable
-        fun Chart(title: String, series: List<Series>, min: Float, max: Float, fmt: String = "%.1f", zero: Boolean = false) =
-            ChartCard(title, series, min, max, m, fmt, zero, info)
+        fun Chart(title: String, lines: ChartLines, min: Float, max: Float, fmt: String = "%.1f", zero: Boolean = false) =
+            ChartCard(title, lines, min, max, m, fmt, zero, info)
         when (t.id) {
-            "pedal" -> Mini(Lucide.ChevronsUp, "Педаль газа", e.pedalPct, 0f, 100f, "%", "%.0f")
-            "throttle" -> Mini(Lucide.Disc, "Дроссель", e.throttlePct, 0f, 100f, "%", "%.0f")
-            "boost" -> Mini(Lucide.Fan, "Наддув", e.boostBar, 0f, boostTop, "бар", "%.2f",
-                sub = e.vacuumKpa?.takeIf { it > 1f }?.let { "разрежение %.0f кПа".format(it) })
-            "load" -> Mini(Lucide.Activity, "Нагрузка", e.loadGRev, 0f, loadTop, "г/об", "%.2f")
-            "rpm" -> Mini(Lucide.Gauge, "Обороты", e.rpm?.toFloat(), 0f, 7000f, "об/мин", "%.0f", red = 6000f)
-            "knock" -> KnockCard(knock, e.knockDeg, m)
+            "pedal" -> Mini(Lucide.ChevronsUp, "Педаль газа", live.pick { it.pedalPct }, 0f, 100f, "%", "%.0f")
+            "throttle" -> Mini(Lucide.Disc, "Дроссель", live.pick { it.throttlePct }, 0f, 100f, "%", "%.0f")
+            "boost" -> Mini(Lucide.Fan, "Наддув", live.pick { it.boostBar }, 0f, boostTop, "бар", "%.2f",
+                sub = live.pick { e -> e.vacuumKpa?.takeIf { it > 1f }?.let { "разрежение %.0f кПа".format(it) } })
+            "load" -> Mini(Lucide.Activity, "Нагрузка", live.pick { it.loadGRev }, 0f, loadTop, "г/об", "%.2f")
+            "rpm" -> Mini(Lucide.Gauge, "Обороты", live.pick { it.rpm?.toFloat() }, 0f, engine.rpmTop, "об/мин", "%.0f", red = engine.rpmRedFrom)
+            "knock" -> KnockCard(knock, live.pick { it.knockDeg }, m)
             "chartPedal" -> Chart(
                 "Педаль и дроссель, %",
-                listOf(Series("педаль", h.map { it.pedalPct }, C.Violet), Series("дроссель", h.map { it.throttlePct }, C.Blue)),
+                rememberChart(Repo.history, ChartLine("педаль", C.Violet) { it.pedalPct }, ChartLine("дроссель", C.Blue) { it.throttlePct }),
                 0f, 100f, "%.0f",
             )
-            "chartBoost" -> Chart("Наддув, бар", listOf(Series("наддув", h.map { it.boostBar }, C.Green)), 0f, boostTop, "%.2f")
-            "chartAfr" -> Chart("Смесь (AFR)", listOf(Series("AFR", h.map { it.afr }, C.Orange)), 10f, 20f)
+            "chartBoost" -> Chart("Наддув, бар", rememberChart(Repo.history, ChartLine("наддув", C.Green) { it.boostBar }), 0f, boostTop, "%.2f")
+            "chartAfr" -> Chart("Смесь (AFR)", rememberChart(Repo.history, ChartLine("AFR", C.Orange) { it.afr }), 10f, 20f)
             "chartTiming" -> Chart(
-                "Зажигание и детонация, °",
-                listOf(Series("УОЗ", h.map { it.timingDeg }, C.Blue), Series("детонация", h.map { it.knockDeg }, C.Red)),
+                "Зажигание, °",
+                rememberChart(Repo.history, ChartLine("УОЗ", C.Blue) { it.timingDeg }, ChartLine("детонация", C.Red) { it.knockDeg }),
                 -10f, 45f, "%.0f", zero = true,
             )
-            "chartRpm" -> Chart("Обороты, об/мин", listOf(Series("обороты", h.map { it.rpm?.toFloat() }, C.Violet)), 0f, 7000f, "%.0f")
+            "chartRpm" -> Chart("Обороты, об/мин", rememberChart(Repo.history, ChartLine("обороты", C.Violet) { it.rpm?.toFloat() }), 0f, engine.rpmTop, "%.0f")
             "chartTrims" -> Chart(
                 "Коррекции A/F, %",
-                listOf(Series("коррекция", h.map { it.afCorrPct }, C.Orange), Series("обучение", h.map { it.afLearnPct }, C.Blue)),
+                rememberChart(Repo.history, ChartLine("коррекция", C.Orange) { it.afCorrPct }, ChartLine("обучение", C.Blue) { it.afLearnPct }),
                 -25f, 25f, "%.0f", zero = true,
             )
-            "chartMaf" -> Chart("MAF, г/с", listOf(Series("MAF", h.map { it.mafGs }, C.Blue)), 0f, mafTop, "%.0f")
-            "avcs" -> Small(Lucide.RefreshCw, "AVCS (впуск)", e.avcsDeg, -10f, 50f, "°", "%.0f")
-            "injDuty" -> Small(Lucide.Droplets, "Загрузка форсунок", e.injDutyPct, 0f, 100f, "%", "%.0f")
-            "maf" -> Small(Lucide.Wind, "MAF", e.mafGs, 0f, mafTop, "г/с", "%.1f")
-            "throttleMotor" -> Small(Lucide.Cog, "Привод дросселя", e.throttleMotorPct, -100f, 100f, "%", "%.0f")
-            "wgdc" -> Small(Lucide.Wind, "Wastegate", e.wastegatePct, 0f, 100f, "%", "%.0f")
-            "pressure" -> Tile(Lucide.Gauge, "Абс. давление", "${fmtF(e.mapKpa, 0)} / ${fmtF(e.atmKpa, 0)}", "кПа", m, info)
+            "chartMaf" -> Chart("MAF, г/с", rememberChart(Repo.history, ChartLine("MAF", C.Blue) { it.mafGs }), 0f, mafTop, "%.0f")
+            "avcs" -> Small(Lucide.RefreshCw, "AVCS (впуск)", live.pick { it.avcsDeg }, -10f, 50f, "°", "%.0f")
+            "injDuty" -> Small(Lucide.Droplets, "Форсунки", live.pick { it.injDutyPct }, 0f, 100f, "%", "%.0f")
+            "maf" -> Small(Lucide.Wind, "MAF", live.pick { it.mafGs }, 0f, mafTop, "г/с", "%.1f")
+            "throttleMotor" -> Small(Lucide.Cog, "Привод др.", live.pick { it.throttleMotorPct }, -100f, 100f, "%", "%.0f")
+            "wgdc" -> Small(Lucide.Wind, "Wastegate", live.pick { it.wastegatePct }, 0f, 100f, "%", "%.0f")
+            "pressure" -> Tile(Lucide.Gauge, "Абс. давление", live.pick { e -> "${fmtF(e.mapKpa, 0)} / ${fmtF(e.atmKpa, 0)}" }, "кПа", m, info)
             else -> ExtraCard(t.id, info, m, t.style)
         }
     }
 }
 
 @Composable
-fun MiniGauge(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, value: Float?, min: Float, max: Float, unit: String, format: String, modifier: Modifier, sub: String? = null, big: Boolean = false, info: String = title) {
+fun MiniGauge(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, value: Float?, min: Float, max: Float, unit: String, format: String, modifier: Modifier, sub: String? = null, big: Boolean = false, info: String = title, warnRule: WarnRule = WarnRule()) {
+    val warn = warnRule.hits(value)
+    val car = LocalCar.current
+    val titleH = car.label.lineDp()
+    val valueH = car.value.lineDp()
+    val lineH = car.secondary.lineDp()
     // The card height depends on the screen; drop the scale labels and shrink the number when it is short
     // instead of letting the number get clipped.
     androidx.compose.foundation.layout.BoxWithConstraints(modifier.fillMaxHeight()) {
-        val roomy = maxHeight >= if (big) 150.dp else 135.dp
-        val tight = maxHeight < 96.dp
-        Panel(Modifier.fillMaxSize(), padding = if (tight) 8.dp else 12.dp) {
-            CardTitle(icon, title, info)
+        val roomy = maxHeight >= titleH + valueH + lineH * 2 + 40.dp
+        val tight = maxHeight < titleH + valueH + 30.dp
+        val showSub = maxHeight >= titleH + valueH + lineH + 30.dp
+        val shownTitle = if (tight) minOf(titleH, maxHeight * 0.3f) else titleH
+        Panel(Modifier.fillMaxSize(), padding = if (tight) 8.dp else 12.dp, warn = warn) {
+            CardTitle(icon, title, info, shownTitle, warn)
             FitValue(
-                value?.let { format.format(it) } ?: "—", unit, if (big) 46f else 30f,
-                Modifier.weight(1f).fillMaxWidth(),
+                value?.let { format.format(it) } ?: "—", unit, if (big) car.value.value * 1.4f else car.value.value,
+                Modifier.weight(1f).fillMaxWidth(), if (warn) C.Orange else C.Text, widest = listOf(format.format(min), format.format(max)).maxBy { it.length },
             )
-            if (sub != null || (roomy && !big)) T(sub ?: " ", 11.sp, C.Sub, maxLines = 1)
+            // the note only where the number keeps its size beside it
+            if (sub != null && showSub) FitText(sub, car.secondary, Modifier.fillMaxWidth(), C.Sub)
+            else if (roomy && !big) Spacer(Modifier.height(lineH))
             Spacer(Modifier.height(if (tight) 4.dp else 6.dp))
-            ProgressBar(value?.let { (it - min) / (max - min) } ?: 0f, C.Accent, Modifier.fillMaxWidth(), if (tight) 5.dp else 7.dp)
+            ProgressBar(value?.let { (it - min) / (max - min) } ?: 0f, C.Accent, Modifier.fillMaxWidth(), if (tight) 5.dp else 7.dp, known = value != null)
             if (roomy) {
                 Spacer(Modifier.height(3.dp))
                 Row(Modifier.fillMaxWidth()) {
-                    T(format.format(min), 10.sp, C.Sub, modifier = Modifier.weight(1f))
-                    T(format.format(max), 10.sp, C.Sub)
+                    T(format.format(min), car.secondary, C.Sub, modifier = Modifier.weight(1f), maxLines = 1)
+                    T(format.format(max), car.secondary, C.Sub, maxLines = 1)
                 }
             }
         }
     }
 }
 
-/** Card header: a small accent icon and the parameter name; a low card gives it 16 dp instead of 20. */
+/** Card header: a small accent icon and the parameter name in the label size, smaller if a low or narrow card needs it. */
 @Composable
 fun CardTitle(
     icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, info: String = title,
-    height: androidx.compose.ui.unit.Dp = 20.dp,
+    height: androidx.compose.ui.unit.Dp = LocalCar.current.label.lineDp(),
+    /** Over its warning line: a triangle after the name, a sign that is not only a colour. */
+    warn: Boolean = false,
 ) {
-    val small = height < 18.dp
     Row(Modifier.fillMaxWidth().height(height), verticalAlignment = Alignment.CenterVertically) {
-        androidx.compose.material3.Icon(icon, null, tint = C.Violet.copy(alpha = 0.85f), modifier = Modifier.size(if (small) 14.dp else 16.dp))
+        Icon(icon, null, tint = C.Violet.copy(alpha = 0.85f), modifier = Modifier.size(minOf(height * 0.8f, 24.dp)))
         Spacer(Modifier.width(6.dp))
-        T(title, if (small) 12.sp else 13.sp, C.Sub, maxLines = 1, modifier = Modifier.weight(1f))
+        FitText(title, LocalCar.current.label, Modifier.weight(1f), C.Sub)
+        if (warn) Icon(
+            com.composables.icons.lucide.Lucide.TriangleAlert, "Выше нормы", tint = C.Orange, modifier = Modifier.size(minOf(height * 0.8f, 24.dp)),
+        )
         InfoButton(title, info)
     }
 }
 
 /**
- * Big number + unit, bottom-aligned, as large as [maxSp] but never taller or wider than its box. [widest] is the
+ * Big number + unit on one baseline, as large as [maxSp] but never taller or wider than its box. [widest] is the
  * longest text the number can take (the scale's ends): sized by it, the number keeps its size from «99» to «100».
  */
 @Composable
 fun FitValue(
     text: String, unit: String, maxSp: Float, modifier: Modifier, color: androidx.compose.ui.graphics.Color = C.Text,
     widest: String? = null, align: Alignment = Alignment.BottomStart,
+    /** How often the number may change ([DigitGate]); 0 for a timer, or when the text has been through a gate already. */
+    everyMs: Long = DIGITS_MS,
+    /** The longest unit it can have, for one that changes. */
+    widestUnit: String? = null,
 ) {
+    val text = if (everyMs > 0L) rememberDigits(everyMs) { text }.value else text
+    val unit = kg.forester.sg.data.tr(unit)
+    val car = LocalCar.current
     androidx.compose.foundation.layout.BoxWithConstraints(modifier, contentAlignment = align) {
         val d = androidx.compose.ui.platform.LocalDensity.current
-        val unitW = if (unit.isEmpty()) 0.dp else (unit.length * 8 + 12).dp
-        val digits = maxOf(text.length, widest?.length ?: 0).coerceAtLeast(2)
-        // a bold digit is ~0.6 em wide, the line is ~1.2 em tall
-        val byH = with(d) { (maxHeight / 1.2f).toSp().value }
-        val byW = with(d) { ((maxWidth - unitW) / (digits * 0.62f)).toSp().value }
-        // a card stretched over many cells grows its number instead of keeping the size of a small card: up to 0.7 of
-        // the height, and up to 0.85 of it as the width to spare grows (a wide card on a 1920×720 screen)
-        val share = 0.7f + 0.15f * (byW / byH.coerceAtLeast(1f) - 1f).coerceIn(0f, 1f)
-        val cap = maxOf(maxSp, byH * share)
-        val size = minOf(cap, byH, byW).coerceAtLeast(10f)
-        Row(verticalAlignment = Alignment.Bottom) {
+        // the unit goes along with the number, at the ratio of the secondary and value sizes: its room is part of the sum
+        val unitShare = car.secondary.value / car.value.value
+        val size = with(d) { fitValueSp(text, widest, unit, widestUnit, maxSp, maxWidth.toSp().value, maxHeight.toSp().value, unitShare, C.palette.digitEm) }
+        Row {
             // tabular figures: every digit as wide as the others, so a changing number does not shift sideways
-            androidx.compose.material3.Text(
-                text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                style = androidx.compose.ui.text.TextStyle(fontSize = size.sp, color = color, fontWeight = FontWeight.Bold, fontFeatureSettings = "tnum"),
+            Text(
+                text, Modifier.alignByBaseline(), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                style = androidx.compose.ui.text.TextStyle(fontSize = size.sp, color = color, fontWeight = C.palette.weight(FontWeight.Bold, size), fontFamily = if (C.palette.thin) androidx.compose.ui.text.font.FontFamily.SansSerif else null, fontFeatureSettings = "tnum"),
             )
             if (unit.isNotEmpty()) {
                 Spacer(Modifier.width(5.dp))
-                T(unit, (size * 0.33f).coerceIn(10f, 15f).sp, C.Sub, maxLines = 1, modifier = Modifier.padding(bottom = (size * 0.2f).dp))
+                // sized here with the number: past the floor of the parked screens
+                Text(
+                    unit, Modifier.alignByBaseline(), maxLines = 1,
+                    style = androidx.compose.ui.text.TextStyle(fontSize = minOf(size * unitShare, car.secondary.value).sp, color = C.Sub),
+                )
             }
         }
     }
@@ -226,30 +244,32 @@ fun FitValue(
 /** Timing pulls this trip; pulses red while the ECU is pulling timing, tap for the list. */
 @Composable
 private fun KnockCard(stats: KnockStats, knockDeg: Float?, modifier: Modifier) {
-    val active = (knockDeg ?: 0f) < 0f
+    // knockDeg is the live pull (the FBKC where the ROM has one), not P23, which is a sum and can sit above 0 during a pull
+    val active = Warn.of("knock").hits(knockDeg)
     var open by remember { mutableStateOf(false) }
     // the pulse runs only while timing is being pulled; its alpha is applied in the layer, not by recomposing the card
     val pulse = if (active) rememberInfiniteTransition(label = "knock").animateFloat(
         0.35f, 1f, infiniteRepeatable(tween(450), RepeatMode.Reverse), label = "pulse",
     ) else null
-    Panel(modifier.fillMaxHeight().clip(Rounded).clickable { open = true }, padding = 12.dp) {
-        Row(Modifier.fillMaxWidth().height(20.dp), verticalAlignment = Alignment.CenterVertically) {
-            T("Детонация", 13.sp, C.Sub, modifier = Modifier.weight(1f))
+    val car = LocalCar.current
+    Panel(modifier.fillMaxHeight().clip(Rounded).clickable { open = true }, padding = 12.dp, warn = active) {
+        Row(Modifier.fillMaxWidth().height(car.label.lineDp()), verticalAlignment = Alignment.CenterVertically) {
+            FitText("Детонация", car.label, Modifier.weight(1f), C.Sub)
+            if (active) Icon(Lucide.TriangleAlert, "Откат зажигания", tint = C.Orange, modifier = Modifier.size(24.dp))
             InfoButton("Детонация", "drive.knock")
         }
-        Spacer(Modifier.weight(1f))
-        T(
-            if (active) "%.1f°".format(knockDeg) else "нет",
-            30.sp, if (active) C.Red else C.Green, FontWeight.Bold,
-            Modifier.graphicsLayer {
+        FitValue(
+            knockDeg?.takeIf { it != 0f }?.let { "%.1f°".format(it) } ?: "нет", "", car.value.value,
+            Modifier.weight(1f).fillMaxWidth().graphicsLayer {
                 alpha = pulse?.value ?: 1f
                 compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.ModulateAlpha
             },
+            if (active) C.Red else C.Green, widest = "-8.8°", everyMs = 0L,
         )
-        Spacer(Modifier.height(4.dp))
-        T(
-            stats.maxPullDeg?.let { "За поездку: ${stats.count} · макс %.1f°".format(it) } ?: "За поездку: не было",
-            12.sp, C.Sub, maxLines = 1,
+        FitText(
+            (stats.maxPullDeg?.let { "Откатов: ${stats.count} · %.1f°".format(it) } ?: "Откатов не было") +
+                if (stats.bumpCount > 0) " · на кочках: ${stats.bumpCount}" else "",
+            car.secondary, Modifier.fillMaxWidth(), C.Sub,
         )
     }
     if (open) KnockDialog(stats) { open = false }
@@ -258,9 +278,9 @@ private fun KnockCard(stats: KnockStats, knockDeg: Float?, modifier: Modifier) {
 @Composable
 private fun KnockDialog(stats: KnockStats, onClose: () -> Unit) {
     val time = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-    AlertDialog(
+    CarAlertDialog(
         onDismissRequest = onClose,
-        containerColor = C.CardHi,
+        containerColor = C.CardHi, textScrolls = false,
         title = { T("Откаты зажигания за поездку", 18.sp, weight = FontWeight.SemiBold) },
         text = {
             Column {
@@ -281,8 +301,9 @@ private fun KnockDialog(stats: KnockStats, onClose: () -> Unit) {
                                     ev.rpm?.let { "$it об/мин" },
                                     ev.loadGRev?.let { "%.2f г/об".format(it) },
                                     ev.throttlePct?.let { "дроссель %.0f%%".format(it) },
-                                    ev.speedKmh?.let { "$it км/ч" },
+                                    ev.speedKmh?.let { kg.forester.sg.data.DistanceUnits.speedText(it) },
                                     if (ev.active) "идёт сейчас" else "%.1f с".format(ev.durationMs / 1000f),
+                                    if (ev.bump) "похоже на кочку" else null,
                                 ).joinToString(" · "),
                                 13.sp, maxLines = 2, modifier = Modifier.weight(1f),
                             )
@@ -293,7 +314,8 @@ private fun KnockDialog(stats: KnockStats, onClose: () -> Unit) {
                 T(
                     "Редкие откаты на 1–2° под нагрузкой — обычная работа ЭБУ (плохой бензин, жара, кочки дают ложную детонацию). " +
                         "Стоит разобраться, если откаты глубже 3°, частые или идут на прогретом моторе при ровной езде. " +
-                        "Все случаи пишутся в logs/knock.csv.",
+                        "Все случаи пишутся в logs/knock.csv. «Похоже на кочку»: короткий неглубокий откат без нагрузки в тот же миг, что толчок по датчику магнитолы; " +
+                        "в счёт откатов такие не идут, предупреждения от этого не меняются.",
                     12.sp, C.Sub,
                 )
             }

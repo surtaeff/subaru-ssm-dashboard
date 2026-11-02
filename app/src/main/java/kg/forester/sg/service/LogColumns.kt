@@ -1,6 +1,7 @@
 package kg.forester.sg.service
 
 import android.os.SystemClock
+import kg.forester.sg.data.Derived
 import kg.forester.sg.data.GpsFix
 import kg.forester.sg.data.Repo
 import kg.forester.sg.data.Wideband
@@ -46,7 +47,7 @@ object LogColumns {
         LogColumn("afr", "AFR", "Топливо") { f(it.s.afr) },
         LogColumn("fuel_lh", "Расход, л/ч", "Топливо") { "%.3f".format(Locale.US, it.lh) },
         LogColumn("timing_deg", "УОЗ", "Зажигание и детонация") { f(it.s.timingDeg) },
-        LogColumn("knock_deg", "Коррекция детонации", "Зажигание и детонация") { f(it.s.knockDeg) },
+        LogColumn("knock_deg", "Откат по детонации", "Зажигание и детонация") { f(it.s.knockDeg) },
         LogColumn("iam", "IAM", "Зажигание и детонация") { f(it.guard.iam, 3) },
         LogColumn("fbkc_deg", "FBKC (откат)", "Зажигание и детонация") { f(it.guard.fbkc) },
         LogColumn("flkc_deg", "FLKC (обучение)", "Зажигание и детонация") { f(it.guard.flkc) },
@@ -78,9 +79,14 @@ object LogColumns {
         LogColumn("boost_error_kpa", "Ошибка наддува (цель − факт)", "Наддув") { r -> f(r.guard.targetBoostKpa?.let { t -> r.s.gaugeKpa?.let { t - it } }) },
         LogColumn("lat_g", "Перегрузка боковая", "Перегрузки") { f(Repo.motion.value.latG) },
         LogColumn("lon_g", "Перегрузка продольная", "Перегрузки") { f(Repo.motion.value.lonG) },
+        LogColumn("ve_pct", "Наполнение VE (расчётное)", "Топливо") {
+            f(Derived.vePct(it.s.mafGs, it.s.rpm, it.s.intakeC, it.s.mapKpa, RulesHost.displacementNow()), 1)
+        },
+        // P23 as the ECU gives it: a sum (KA x IAM + FBKC + FLKC), not the live pull of knock_deg
+        LogColumn("kca_deg", "P23: поправка УОЗ по детонации (сумма)", "Зажигание и детонация") { f(it.s.kcaDeg) },
     ) + listOf(
-        // the USB wideband (Innovate LC-2): last, and only while it is switched on (see [offered]), so everybody
-        // else's files keep the columns they always had
+        // the USB wideband (Innovate LC-2): after the columns above, and only while it is switched on (see [offered]);
+        // later additions go before it. Readers (LogViewer, TrackMap) find columns by header name, not by position
         LogColumn("wideband_afr", "AFR ШДК USB", WIDEBAND) { f(it.wideband.afr(it.elapsedMs)) },
         LogColumn("wideband_lambda", "λ ШДК USB", WIDEBAND) { f(it.wideband.lambda(it.elapsedMs), 3) },
         LogColumn("wideband_status", "Статус ШДК USB", WIDEBAND) { it.wideband.status(it.elapsedMs) },
@@ -92,7 +98,7 @@ object LogColumns {
     private val ecuAddr = mapOf(
         0x08 to "coolant_c", 0x09 to "af_corr_pct", 0x0A to "af_learn_pct", 0x0D to "map_kpa", 0x0E to "rpm", 0x10 to "speed_kmh",
         0x11 to "timing_deg", 0x12 to "intake_c", 0x13 to "maf_gs", 0x15 to "throttle_pct", 0x1C to "battery_v", 0x20 to "inj_pw_ms",
-        0x22 to "knock_deg", 0x23 to "atm_kpa", 0x24 to "boost_kpa", 0x29 to "pedal_pct", 0x2E to "fuel_sensor_v", 0x30 to "wgdc_pct",
+        0x22 to "kca_deg", 0x23 to "atm_kpa", 0x24 to "boost_kpa", 0x29 to "pedal_pct", 0x2E to "fuel_sensor_v", 0x30 to "wgdc_pct",
         0x3A to "alt_duty_pct", 0x3C to "avcs_deg", 0x46 to "afr", 0x4A to "gear",
     )
     private val tcuAddr = mapOf(

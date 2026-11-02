@@ -1,0 +1,54 @@
+// Cyrillic literals the coverage test may leave without a dictionary line. One per line, as tools/i18n/scan.py writes keys.
+// Search stems of parameter names (ui/Metrics.kt): compared against Russian names, never shown.
+детонац
+ошибк
+передач
+вал
+колес
+скорост
+темп
+лямбд
+смес
+форсун
+впрыск
+давлен
+отсечк
+срез
+// Built at run time into "разница %+.1f" (ui/HealthScreen.kt): its line in the dictionary is the shown form, «разница #».
+разница %+.{}f
+// A number plus «к» (3к), its line is «#к».
+{}к
+// Voice command stems (service/Voice.kt), parsed against what was heard, never shown.
+открой
+запусти
+покажи
+включи
+// Keyboard letters of a search normaliser (service/LocalMusic.kt) and a tag of BtAudio: logic.
+йцукенгшщзхъфывапролджэячсмитьбю
+муз
+// Log file text (service/LogUpload.kt, service/LogScrub.kt): the owner reads logs in Russian, never on a screen as UI.
+{}(начало журнала обрезано)\n{}
+ID устройства: {}. Машина: «{}», коробка {}; адаптер {}, шина {}; найден: {}; связь: {}; ROM {}
+[скрыто]
+Машина: «{}»
+$1[VIN скрыт]
+$1 [ответ с VIN скрыт]
+$1 [трек скрыт]
+$1: [описание скрыто]
+$1[ид платы скрыт]
+[путь]
+// A display's Cyrillic font test on the external screen (service/DisplayEngine.kt): the letters are the point.
+ПРОВЕРКА ЭКРАНА
+АБВГД 0123456789
+АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ
+// Unit stems compared with a parameter's unit (data/Derived.kt).
+кпа
+мпа
+// Written into files for people reading logs and folders, not screens: log headers (ssm/SsmTrace.kt), the note in the definitions folder (data/EcuDefs.kt), the reference XML (ssm/RomRaiderXml.kt).
+\n--- интервалы GPS, опроса и кадров карты ---\n
+\n--- последние запросы опроса ---\n
+CarPulse: журнал обмена
+<!-- База параметров SSM, по которой работает CarPulse: {}.\n
+     Это копия для справки, приложение её не читает. Чтобы поправить адрес или формулу, скопируйте parameter\n
+     или ecuparam в свой .xml в папке defs (уровнем выше): параметр с тем же id заменит базовый. -->\n
+Сюда можно класть свои определения RomRaider для CarPulse: logger.xml целиком или кусок с\nэлементами parameter, ecuparam, switch (адреса и формулы для ЭБУ, которых нет в базе или где она ошибается).\n\nВ base/carpulse_base.xml лежит вся база приложения в том же формате: копируйте оттуда то, что надо поправить\n(сама она не читается и обновляется с новой версией приложения).\n\nЧитаются все .xml этой папки (без подпапок), по порядку имён; параметр с тем же id, что в базе (P2, E51…), заменяет её,\nфайл ниже по алфавиту главнее. Параметр без ecubyteindex/ecubit опрашивается, даже если ЭБУ при подключении\nсказал, что его нет. Новый или изменённый файл подхватывается сам за несколько секунд; что вышло из каждого,\nвидно в Настройки → Машина и адаптер → Свои определения RomRaider.\n

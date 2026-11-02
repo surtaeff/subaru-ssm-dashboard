@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -40,7 +39,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Undo2
@@ -59,6 +57,8 @@ class PresetLayout(val id: String, val name: String, val about: String, val free
 
 private fun t(id: String, span: Int, style: String = "") = TileCfg(id, true, span, style)
 private fun f(id: String, x: Float, y: Float, w: Float, h: Float, style: String = "") = TileCfg(id, true, 3, style, FreeRect(x, y, w, h))
+
+private fun panel(id: String, name: String, about: String) = PresetLayout(id, name, about, free = false, tiles = listOf(t(id, 12)))
 
 /*
  * The free one is laid out for the usual head unit area (about twice as wide as tall: 1280 × 720 minus the side
@@ -128,6 +128,16 @@ val PresetLayouts = listOf(
             "timing", "knock", "iamV", "load", "rpm", "throttle", "injDuty", "wgdc",
         ).map { t(it, 3) },
     ),
+    panel("p_tacho_blue", "Тахо-арка: синяя", "Арка оборотов с красным концом, скорость крупно, по краям ОЖ и топливо, внизу расход и пробег"),
+    panel("p_tacho_orange", "Тахо-арка: оранжевая", "Та же раскладка, тёплая оранжевая арка"),
+    panel("p_tacho_teal", "Тахо-арка: бирюзовая", "Та же раскладка, градиент и точка на конце арки"),
+    panel("p_turbo", "Турбо-панель", "Наддув в барах и PSI с разрежением ниже нуля, сбоку расход, скорость, ОЖ, пробег (только с турбиной)"),
+    panel("p_tilt", "Крен и тангаж", "Машина сбоку и сзади наклоняется по датчику, шкалы ±40° (нужен обнулённый акселерометр)"),
+    panel("p_gradar", "G-радар", "Сектор по направлению перегрузки, в центре G и скорость (нужен обнулённый акселерометр)"),
+    panel("gforce", "G-сила", "Точка по перегрузке и максимумы по четырём сторонам (нужен обнулённый акселерометр)"),
+    panel("p_web", "Паутина", "Скорость в центре, вокруг шесть значений: что есть из ОЖ, напряжения, оборотов, наддува, времени, высоты"),
+    panel("p_accel", "Разгон: график", "Кривая последнего разгона 0–100: время и путь"),
+    panel("p_brake", "Торможение: график", "Кривая последнего торможения 100–0: время и путь"),
 )
 
 /** Puts [p] on «Мой экран»; the driver's own layout (not another ready-made one) is kept for «Вернуть мой экран». */
@@ -143,11 +153,11 @@ fun applyPreset(p: PresetLayout) {
 fun PresetPicker(onClose: () -> Unit) {
     val current by Repo.myTiles.collectAsState()
     val prev = Repo.settings.myTilesPrev
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        val screen = LocalConfiguration.current
+    CarDialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val screen = canvasScreen()
         Column(
             Modifier.widthIn(max = (screen.screenWidthDp * 0.96f).dp).heightIn(max = (screen.screenHeightDp * 0.94f).dp)
-                .clip(RoundedCornerShape(16.dp)).background(C.Card).border(1.dp, C.Purple, RoundedCornerShape(16.dp)).padding(14.dp),
+                .clip(RoundedCornerShape(16.dp)).background(C.Sheet).border(1.dp, C.Purple, RoundedCornerShape(16.dp)).padding(14.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -162,15 +172,15 @@ fun PresetPicker(onClose: () -> Unit) {
             }
             Spacer(Modifier.height(10.dp))
             FlowRow(
-                Modifier.verticalScroll(rememberScrollState()),
+                Modifier.cueScroll(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                PresetLayouts.forEach { p ->
+                PresetLayouts.filter { l -> l.tiles.all { panelOffered(it.id) } }.forEach { p ->
                     val on = p.format() == current
                     Column(
                         Modifier.width(286.dp).clip(RoundedCornerShape(12.dp))
                             .background(if (on) C.Purple.copy(alpha = 0.22f) else C.CardHi)
-                            .border(if (on) 2.dp else 1.dp, if (on) C.Purple else C.Border, RoundedCornerShape(12.dp))
+                            .border(if (on) 2.dp else 1.dp, if (on) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(12.dp))
                             .clickable { applyPreset(p); onClose() }.padding(8.dp),
                     ) {
                         Canvas(Modifier.fillMaxWidth().aspectRatio(2.1f).clip(RoundedCornerShape(8.dp)).background(C.Bg)) { drawPreset(p) }
@@ -243,6 +253,11 @@ private fun DrawScope.drawTile(t: TileCfg, r: androidx.compose.ui.geometry.Rect)
                 ring(Offset(x, c.y), d * 0.9f, Color(0xFF4FC3F7), 0.6f)
             }
         }
+        t.id in kg.forester.sg.data.GAUGE_PANELS -> {
+            drawRoundRect(Color(0xFF06080D), r.topLeft, r.size, corner)
+            ring(Offset(c.x, c.y + r.height * 0.08f), minOf(r.width, r.height) * 0.36f, Color(0xFF4FC3F7), 0.6f)
+            label(ExtraCards[t.id]?.first ?: "", Offset(c.x, r.bottom - r.height * 0.08f), r.height * 0.1f, Color(0xFFE8EAEE))
+        }
         t.id == "gmeter" -> {
             drawRoundRect(C.Card, r.topLeft, r.size, corner)
             val d = minOf(r.width, r.height) * 0.38f
@@ -279,5 +294,5 @@ private fun DrawScope.label(text: String, at: Offset, size: Float, col: Color) {
         color = col.toArgb(); textSize = size; textAlign = android.graphics.Paint.Align.CENTER
         typeface = android.graphics.Typeface.DEFAULT_BOLD
     }
-    drawContext.canvas.nativeCanvas.drawText(text, at.x, at.y, p)
+    drawContext.canvas.nativeCanvas.drawText(kg.forester.sg.data.tr(text), at.x, at.y, p)
 }

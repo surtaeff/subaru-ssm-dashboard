@@ -26,6 +26,7 @@ data class CustomGauge(
     val patternColor: Long? = null,
     val readout: String? = null,  // "none", "lcd", "frame"
     val image: String? = null,    // GaugeImages name
+    val numberPct: Int? = null,   // size of the numbers, percent; null = as in the base
 ) {
     val styleId get() = "custom:$id"
 
@@ -34,7 +35,7 @@ data class CustomGauge(
         face?.let { put("face", it) }; scale?.let { put("scale", it) }; accent?.let { put("accent", it) }
         glow?.let { put("glow", it) }; needle?.let { put("needle", it) }; rim?.let { put("rim", it) }
         ticks?.let { put("ticks", it) }; pattern?.let { put("pattern", it) }; patternColor?.let { put("patternColor", it) }
-        readout?.let { put("readout", it) }; image?.let { put("image", it) }
+        readout?.let { put("readout", it) }; image?.let { put("image", it) }; numberPct?.let { put("numberPct", it) }
     }
 
     companion object {
@@ -45,6 +46,7 @@ data class CustomGauge(
                 o.getInt("id"), o.optString("name", "Мой дизайн"), o.optString("base", "neon"),
                 long("face"), long("scale"), long("accent"), if (o.has("glow")) o.getBoolean("glow") else null,
                 long("needle"), long("rim"), str("ticks"), str("pattern"), long("patternColor"), str("readout"), str("image"),
+                if (o.has("numberPct")) o.getInt("numberPct") else null,
             )
         }
     }

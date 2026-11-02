@@ -121,10 +121,108 @@ object ScreenLink {
             SsmTrace.log("screen: ${inf.board} ${inf.w}x${inf.h} fw ${inf.fw} id ${inf.id}")
             UsbScreen.attach(inf, dev)
             val id = inf.id.ifEmpty { "dev:$dev" }
-            try { loop(ctx, port, lines, inf, id, dev, lease) } finally { UsbScreen.detach(id) }
+            try {
+                if (inf.isBig) bigLoop(ctx, port, lines, inf, id, dev, lease) else loop(ctx, port, lines, inf, id, dev, lease)
+            } finally { UsbScreen.detach(id) }
         } finally {
             runCatching { port.close() }
             runCatching { conn.close() }
+        }
+    }
+
+    /** Sends one rectangle and waits for its answer; the button and redraw requests may come in between. */
+    private fun sendRect(port: UsbSerialPort, lines: Lines, head: String, body: ByteArray, news: (String) -> Unit): Boolean {
+        // at the 500 KB/s a full-speed link can be counted on, plus the board's work on it
+        val patience = 2000 + body.size / 200
+        port.write((head + "\n").toByteArray() + body, patience)
+        val end = System.currentTimeMillis() + patience
+        while (System.currentTimeMillis() < end) {
+            val l = lines.next(200) ?: continue
+            if (l == "K") return true
+            if (l == "E") return false
+            news(l)
+        }
+        return false
+    }
+
+    /** A rectangle of the panel's picture as JPEG, for the board's decoder. Null: it stays lossless. */
+    private fun jpegOf(panel: android.graphics.Bitmap, r: ScreenFrames.Rect, buf: java.io.ByteArrayOutputStream): ByteArray? = runCatching {
+        buf.reset()
+        val part = android.graphics.Bitmap.createBitmap(panel, r.x, r.y, r.w, r.h)
+        val ok = part.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, buf)
+        if (part !== panel) part.recycle()
+        if (ok) buf.toByteArray() else null
+    }.getOrNull()
+
+    /**
+     * A big panel: the same loop as [loop], on its own so the small boards' stays as it was. Two pictures and two pixel
+     * arrays kept for the session, rectangles and JPEG by [BigSender]; all of it on this IO thread.
+     */
+    private suspend fun bigLoop(ctx: Context, port: UsbSerialPort, lines: Lines, inf: ScreenInfo, id: String, dev: String, lease: UsbOwnership.Lease) {
+        var prev: IntArray? = null
+        var spare: IntArray? = null
+        var drawn = Triple(-1, -1, "")
+        var bright = -1
+        var turnedAt = System.currentTimeMillis()
+        var frames = 0
+        var countedAt = System.currentTimeMillis()
+        var lastSend = 0L
+        var upright: android.graphics.Bitmap? = null
+        val panel = android.graphics.Bitmap.createBitmap(inf.w, inf.h, android.graphics.Bitmap.Config.ARGB_8888)
+        val jpegBuf = java.io.ByteArrayOutputStream(128 * 1024)
+        var useJpeg = true
+        fun news(l: String) {
+            when (l) {
+                "N" -> { UsbScreen.next(id); turnedAt = System.currentTimeMillis() }
+                "Y R" -> prev = null
+            }
+        }
+        var sent = false
+        val sender = BigSender(inf.w, inf.h, inf.maxPx, { useJpeg && inf.jpeg }, { r -> jpegOf(panel, r, jpegBuf) }) { head, body ->
+            sent = true
+            sendRect(port, lines, head, body, ::news)
+        }
+        try {
+            while (dev !in flashing && lease.permitted && currentCoroutineContext().isActive) {
+                val t0 = System.currentTimeMillis()
+                val cfg = UsbScreen.cfgOf(id)
+                useJpeg = cfg.jpeg
+                if (cfg.brightness != bright) { bright = cfg.brightness; port.write("B $bright\n".toByteArray(), 300) }
+                if (cfg.switchS > 0 && t0 - turnedAt > cfg.switchS * 1000L) { UsbScreen.next(id); turnedAt = t0 }
+                val m = ScreenRenderer.ctxNow()
+                val pageIx = ScreenRenderer.pageToShow(cfg, UsbScreen.pageOf(id), m)
+                val page = cfg.pages.getOrNull(pageIx) ?: cfg.pages.first()
+                val (cw, ch) = if (cfg.rotation % 2 == 1) inf.h to inf.w else inf.w to inf.h
+                val key = Triple(pageIx, cfg.rotation, page.toString() + cfg.theme)
+                if (key != drawn) { drawn = key; prev = null }
+                val look = kg.forester.sg.ui.ScreenLook.of(cfg.theme, true)
+                if (cfg.rotation % 4 == 0) ScreenRenderer.render(ctx, page, cw, ch, false, m, look, panel)
+                else {
+                    val up = upright?.takeIf { it.width == cw && it.height == ch }
+                        ?: android.graphics.Bitmap.createBitmap(cw, ch, android.graphics.Bitmap.Config.ARGB_8888).also { upright = it }
+                    ScreenRenderer.render(ctx, page, cw, ch, false, m, look, up)
+                    ScreenRenderer.toPanelInto(up, cfg.rotation, panel)
+                }
+                val px = spare ?: IntArray(inf.w * inf.h)
+                panel.getPixels(px, 0, inf.w, 0, 0, inf.w, inf.h)
+                for (i in px.indices) px[i] = ScreenFrames.rgb565(px[i])
+                sent = false
+                val ok = sender.frame(prev, px)
+                if (sent) lastSend = System.currentTimeMillis()
+                spare = prev
+                // a lost answer or a refused picture: start again from black
+                prev = if (ok) px else { port.write("Z\n".toByteArray(), 300); null }
+                if (ok && !sent && System.currentTimeMillis() - lastSend > 2000) { port.write("H\n".toByteArray(), 300); lastSend = System.currentTimeMillis() }
+                frames++
+                val now = System.currentTimeMillis()
+                if (now - countedAt >= 2000) { UsbScreen.fps.value = UsbScreen.fps.value + (id to frames * 1000f / (now - countedAt)); frames = 0; countedAt = now }
+                val fps = ScreenFrames.fpsFor(cfg.fps.coerceIn(2, 30), kg.forester.sg.data.DeviceTier.current.value, true)
+                val until = now + (1000L / fps - (now - t0)).coerceAtLeast(5)
+                while (System.currentTimeMillis() < until) lines.next((until - System.currentTimeMillis()).toInt().coerceAtLeast(1))?.let(::news)
+            }
+        } finally {
+            panel.recycle()
+            upright?.recycle()
         }
     }
 

@@ -3,13 +3,19 @@ package kg.forester.sg.service
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
-import android.media.ToneGenerator
 import android.net.Uri
 import android.os.SystemClock
 import android.view.KeyEvent
 import kg.forester.sg.data.Shortcut
 import kg.forester.sg.data.Shortcuts
+import kg.forester.sg.data.tr
+import kg.forester.sg.service.audio.AudioPlatforms
+import kg.forester.sg.service.audio.RadioCap
+import kg.forester.sg.service.audio.VolumeSet
+import kg.forester.sg.service.audio.ownSources
+import kg.forester.sg.service.audio.voiceVolumePlan
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -25,17 +31,29 @@ import java.util.zip.ZipInputStream
 /** Screens the voice can open in our UI. */
 enum class VoiceTarget { HOME, DRIVE, FUEL, GEARBOX, BATTERY, DTC, MEDIA }
 
+/** A language's speech model: where it lives on the unit, where it comes from. The zip's file name is what a release must hold. */
+internal class VoiceModel(val dir: String, val zip: String, val cacheName: String, val sizeMb: Int) {
+    // our GitHub copy first: alphacephei.com sits on Hetzner, which some Russian operators block (timeouts on every try)
+    val urls = listOf(
+        "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/voice-model/$zip",
+        "https://alphacephei.com/vosk/models/$zip",
+    )
+
+    companion object {
+        val RU = VoiceModel("vosk-ru", "vosk-model-small-ru-0.22.zip", "vosk.zip", 45)
+        val EN = VoiceModel("vosk-en", "vosk-model-small-en-us-0.15.zip", "vosk-en.zip", 40)
+    }
+}
+
 /**
- * Offline voice control (Vosk, small Russian model downloaded on first use).
+ * Offline voice control (Vosk, a small model of the chosen language downloaded on first use; each language has its own).
  * Always listening; reacts to "<wake word> <command>" or the wake word followed by a command within a few seconds.
  */
 object Voice {
-    // our GitHub copy first: alphacephei.com sits on Hetzner, which some Russian operators block (timeouts on every try)
-    private val MODEL_URLS = listOf(
-        "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/voice-model/vosk-model-small-ru-0.22.zip",
-        "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip",
-    )
-    private const val MODEL_DIR = "vosk-ru"
+    private val currentModel get() = if (kg.forester.sg.data.I18n.english) VoiceModel.EN else VoiceModel.RU
+
+    /** The commands of the chosen language. */
+    val grammar: VoiceGrammar get() = if (kg.forester.sg.data.I18n.english) CommandsEn else Commands
 
     val status = MutableStateFlow("выключено")
     val lastHeard = MutableStateFlow("")
@@ -50,9 +68,27 @@ object Voice {
 
     private var service: Thread? = null
     @Volatile private var running = false
+    /** Keeps a stop and a start that is about to listen from crossing. */
+    private val life = Any()
+    private val run = VoiceRun()
     /** Bumped by every start and stop: a capture thread that outlived its stop (blocked in a read) quits on its own. */
     @Volatile private var gen = 0
-    private var model: Model? = null
+    /** The model (native memory, a lot of it for a head unit) is open only while a listener runs; the listener lets go when it has left the recogniser. */
+    private val model = NativeLease(
+        open = {
+            val spec = currentModel
+            openModel = spec
+            val dir = File(app.filesDir, spec.dir)
+            // a folder left half-unpacked by an older version: fetch it again instead of failing on every start
+            runCatching { Model(dir.absolutePath) }.getOrElse {
+                dir.deleteRecursively()
+                throw IllegalStateException("модель повреждена, скачаю её заново", it)
+            }
+        },
+        close = { it.close() },
+    )
+    /** The language of the model last opened: the watchdog restarts a listener left on the other one. */
+    @Volatile private var openModel: VoiceModel? = null
     private var armedUntil = 0L
     private val starting = java.util.concurrent.atomic.AtomicBoolean(false)
     private lateinit var app: Context
@@ -60,7 +96,7 @@ object Voice {
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("voice", Context.MODE_PRIVATE)
     fun enabled(ctx: Context) = prefs(ctx).getBoolean("enabled", false)
-    fun wakeWord(ctx: Context) = prefs(ctx).getString("wake", "форестер")!!
+    fun wakeWord(ctx: Context) = prefs(ctx).getString("wake", if (kg.forester.sg.data.I18n.english) CommandsEn.WAKE_WORD else "форестер")!!
     fun setWakeWord(ctx: Context, w: String) = prefs(ctx).edit().putString("wake", w.trim().lowercase()).apply()
 
     /** Software microphone gain, 1..4. */
@@ -71,21 +107,33 @@ object Voice {
     fun sensitive(ctx: Context) = prefs(ctx).getBoolean("micSource", true)
     fun setSensitive(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean("micSource", v).apply()
 
+    /** true: silence is kept from the recogniser ([RmsGate]). */
+    fun gateOn(ctx: Context) = prefs(ctx).getBoolean("gate", true)
+    fun setGate(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean("gate", v).apply()
+
     fun restart(ctx: Context) { stop(); start(ctx) }
 
     /** The driver's own phrases (Настройки, Голос, Свои команды). */
     val ownList = MutableStateFlow<List<OwnCommand>?>(null)
 
-    fun own(ctx: Context): List<OwnCommand> = ownList.value ?: runCatching {
-        val arr = org.json.JSONArray(prefs(ctx).getString("own", "[]"))
-        (0 until arr.length()).map { arr.getJSONObject(it).let { o -> OwnCommand(o.getString("phrase"), o.getString("action")) } }
-    }.getOrDefault(emptyList()).also { ownList.value = it }
+    /** Each language has its own list: a phrase of the other can't be heard, and its steps wouldn't be understood. */
+    private val ownKey get() = if (kg.forester.sg.data.I18n.english) "own_en" else "own"
+    @Volatile private var ownLoadedFrom: String? = null
+
+    fun own(ctx: Context): List<OwnCommand> {
+        if (ownLoadedFrom != ownKey) { ownLoadedFrom = ownKey; ownList.value = null }
+        return ownList.value ?: runCatching {
+            val arr = org.json.JSONArray(prefs(ctx).getString(ownKey, "[]"))
+            (0 until arr.length()).map { arr.getJSONObject(it).let { o -> OwnCommand(o.getString("phrase"), o.getString("action")) } }
+        }.getOrDefault(emptyList()).also { ownList.value = it }
+    }
 
     fun setOwn(ctx: Context, list: List<OwnCommand>) {
+        ownLoadedFrom = ownKey
         ownList.value = list
         val arr = org.json.JSONArray()
         list.forEach { arr.put(JSONObject().put("phrase", it.phrase).put("action", it.action)) }
-        prefs(ctx).edit().putString("own", arr.toString()).apply()
+        prefs(ctx).edit().putString(ownKey, arr.toString()).apply()
     }
 
     /** A command as if it was said (adb test hook, see MainActivity): no microphone or model needed. */
@@ -121,45 +169,66 @@ object Voice {
         if (on) start(ctx) else stop()
     }
 
-    fun modelReady(ctx: Context) = File(ctx.filesDir, "$MODEL_DIR/am").exists() || File(ctx.filesDir, "$MODEL_DIR/conf").exists()
+    fun modelReady(ctx: Context) = currentModel.let { File(ctx.filesDir, "${it.dir}/am").exists() || File(ctx.filesDir, "${it.dir}/conf").exists() }
 
     fun start(ctx: Context) {
         app = ctx.applicationContext
         android.util.Log.i("Voice", "start: enabled=${enabled(app)} running=${service != null} model=${modelReady(app)}")
-        if (!enabled(app) || service?.isAlive == true || !starting.compareAndSet(false, true)) return
+        if (!enabled(app)) return
+        synchronized(life) {
+            run.started() // before the checks: stop(); start() with a start on its way means that one carries on for this
+            if (service?.isAlive == true || !starting.compareAndSet(false, true)) return
+        }
         scope.launch {
             runCatching {
-                if (!modelReady(app)) download(app)
+                // the language may change while a model is coming: then the other's is what is wanted
+                while (!modelReady(app)) {
+                    val spec = currentModel
+                    download(app, spec)
+                    if (spec === currentModel) break
+                }
                 // switched off while the model was coming
-                if (!enabled(app)) { starting.set(false); status.value = "выключено"; return@launch }
+                synchronized(life) {
+                    if (!run.mayListen(enabled(app))) { starting.set(false); status.value = "выключено"; return@launch }
+                }
                 LibVosk.setLogLevel(LogLevel.WARNINGS)
-                val dir = File(app.filesDir, MODEL_DIR)
-                // a folder left half-unpacked by an older version: fetch it again instead of failing on every start
-                val m = model ?: runCatching { Model(dir.absolutePath) }.getOrElse {
-                    dir.deleteRecursively()
-                    throw IllegalStateException("модель повреждена, скачаю её заново", it)
-                }.also { model = it }
-                val rec = Recognizer(m, 16000f)
-                val myGen = ++gen
-                running = true
-                service = Thread({ listenLoop(rec, myGen) }, "voice").also { it.start() }
-                status.value = "слушаю «${wakeWord(app)}»"
-                starting.set(false)
+                val m = model.acquire()
+                val rec = runCatching { Recognizer(m, 16000f) }.getOrElse { model.release(); throw it }
+                val listening = synchronized(life) {
+                    run.mayListen(enabled(app)).also { go ->
+                        if (go) {
+                            val myGen = ++gen
+                            running = true
+                            service = Thread({ listenLoop(rec, myGen) }, "voice").also { it.start() }
+                            status.value = "слушаю «${wakeWord(app)}»"
+                        } else status.value = "выключено"
+                        // in the lock: a stop(); start() right after this must find the way free, or the start would be lost
+                        starting.set(false)
+                    }
+                }
+                // stopped or switched off while the model was opening
+                if (!listening) {
+                    rec.close(); model.release()
+                    return@launch
+                }
             }.onFailure {
                 starting.set(false)
                 android.util.Log.e("Voice", "start failed", it)
-                status.value = if (enabled(app)) "ошибка: ${it.message}" else "выключено"
+                status.value = if (enabled(app)) (if (it is ModelNotThere) it.message.orEmpty() else kg.forester.sg.data.Failure.text(it, "Голос не запустился")) else "выключено"
                 service = null
             }
         }
     }
 
-    fun stop() {
-        running = false
-        gen++
-        val t = service
-        service = null
-        runCatching { t?.join(3000) }
+    /** [wait]: until the capture thread has left, up to 3 s; the model closes when it has, whichever. */
+    fun stop(wait: Boolean = true) {
+        val t = synchronized(life) {
+            run.stopped()
+            running = false
+            gen++
+            service.also { service = null }
+        }
+        if (wait) runCatching { t?.join(3000) }
         // a start still fetching the model goes on and shows its own progress; only an assistant really off says so
         if (!starting.get()) status.value = "выключено"
     }
@@ -170,6 +239,12 @@ object Voice {
      */
     fun ensure(ctx: Context) {
         app = ctx.applicationContext
+        // the language was changed: its own model and grammar, and off the main thread as a stop may wait for the capture
+        if (enabled(app) && service?.isAlive == true && openModel.let { it != null && it !== currentModel }) {
+            android.util.Log.i("Voice", "language changed, starting again")
+            scope.launch { restart(app) }
+            return
+        }
         if (enabled(app) && service?.isAlive != true && !starting.get()) {
             android.util.Log.i("Voice", "watchdog: not listening, starting again")
             service = null
@@ -181,31 +256,32 @@ object Voice {
      * With timeouts: on a head unit with a weak connection a plain openStream could hang for good, and the assistant
      * stayed "starting" forever, so neither the switch nor the watchdog could start it again.
      */
-    private fun download(ctx: Context) {
-        status.value = "скачиваю модель распознавания (45 МБ)…"
-        android.util.Log.i("Voice", "downloading model")
-        val tmp = File(ctx.cacheDir, "vosk.zip")
+    private fun download(ctx: Context, spec: VoiceModel) {
+        status.value = "скачиваю модель распознавания (${spec.sizeMb} МБ)…"
+        android.util.Log.i("Voice", "downloading model ${spec.zip}")
+        val tmp = File(ctx.cacheDir, spec.cacheName)
         var failure: java.io.IOException? = null
-        for (url in MODEL_URLS) {
+        for (url in spec.urls) {
             try {
-                fetch(ctx, url, tmp)
+                fetch(ctx, url, tmp, spec)
                 failure = null
                 break
             } catch (e: java.io.IOException) {
                 android.util.Log.w("Voice", "model download from $url failed: $e")
                 tmp.delete()
                 if (!enabled(ctx)) throw e
+                if (spec !== currentModel) return
                 failure = e
             }
         }
-        failure?.let { throw java.io.IOException("не удалось скачать модель (${it.message ?: "нет связи"}), попробую ещё раз через полминуты", it) }
+        failure?.let { throw ModelNotThere(kg.forester.sg.data.Failure.waitingText(it, "модель"), it) }
         status.value = "распаковываю модель…"
         // unpacked aside and moved in at the end: a half-unpacked folder would look like a ready model
-        val part = File(ctx.filesDir, "$MODEL_DIR.part").apply { deleteRecursively(); mkdirs() }
+        val part = File(ctx.filesDir, "${spec.dir}.part").apply { deleteRecursively(); mkdirs() }
         ZipInputStream(tmp.inputStream()).use { zip ->
             var e = zip.nextEntry
             while (e != null) {
-                // strip the top-level "vosk-model-small-ru-0.22/" folder
+                // strip the top-level "vosk-model-small-…/" folder
                 val rel = e.name.substringAfter('/', "")
                 if (rel.isNotEmpty()) {
                     val f = File(part, rel)
@@ -215,12 +291,12 @@ object Voice {
             }
         }
         tmp.delete()
-        val out = File(ctx.filesDir, MODEL_DIR).apply { deleteRecursively() }
+        val out = File(ctx.filesDir, spec.dir).apply { deleteRecursively() }
         if (!part.renameTo(out)) error("не удалось распаковать модель")
     }
 
     /** One source into [tmp]; any failure (no connection, a cut-off file) is an IOException, so the next source is tried. */
-    private fun fetch(ctx: Context, url: String, tmp: File) {
+    private fun fetch(ctx: Context, url: String, tmp: File, spec: VoiceModel) {
         val con = URL(url).openConnection().apply { connectTimeout = 20_000; readTimeout = 30_000 }
         val total = con.contentLengthLong
         con.getInputStream().use { inp ->
@@ -232,6 +308,7 @@ object Voice {
                     val n = inp.read(buf)
                     if (n < 0) break
                     if (!enabled(ctx)) throw java.io.IOException("выключено")
+                    if (spec !== currentModel) throw java.io.IOException("language changed")
                     out.write(buf, 0, n)
                     got += n
                     val pct = if (total > 0) (got * 100 / total).toInt() else -1
@@ -263,7 +340,9 @@ object Voice {
             }
         } catch (_: InterruptedException) {
         } finally {
+            // only here, on the thread that calls the recogniser: stopping in the middle of a phrase can't close what it is using
             rec.close()
+            model.release()
         }
     }
 
@@ -274,7 +353,7 @@ object Voice {
         val min = android.media.AudioRecord.getMinBufferSize(rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT)
         val source = if (sensitive(app)) android.media.MediaRecorder.AudioSource.MIC else android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION
         val ar = runCatching {
-            android.media.AudioRecord(source, rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 8192))
+            android.media.AudioRecord(source, rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, maxOf(min, rate * 2))
         }.getOrNull() ?: return false
         if (ar.state != android.media.AudioRecord.STATE_INITIALIZED) { ar.release(); return false }
         val agc = runCatching { if (android.media.audiofx.AutomaticGainControl.isAvailable()) android.media.audiofx.AutomaticGainControl.create(ar.audioSessionId)?.also { it.enabled = true } else null }.getOrNull()
@@ -285,6 +364,11 @@ object Voice {
             if (ar.recordingState != android.media.AudioRecord.RECORDSTATE_RECORDING) return false
             status.value = "слушаю «${wakeWord(app)}»"
             var zerosSince = 0L
+            // each capture learns the cabin anew. A second of buffer (not a latency, a read returns as soon as its
+            // chunk is there): the pre-roll and the first chunk go to the recogniser in one go, 430 ms of audio to
+            // work through while the microphone goes on, and an overrun would eat the word that opened the gate
+            val gate = if (gateOn(app)) RmsGate(rate) else null
+            val gateLog = GateLog(SystemClock.elapsedRealtime())
             while (running && gen == myGen) {
                 val n = ar.read(buf, 0, buf.size)
                 if (n < 0) return true // the record died under us
@@ -307,12 +391,21 @@ object Voice {
                 for (i in 0 until n) sum += buf[i].toDouble() * buf[i]
                 val rms = kotlin.math.sqrt(sum / n) / 32768.0
                 level.value = (kotlin.math.log10(rms.coerceAtLeast(1e-4)) / 2.5 + 1.6).toFloat().coerceIn(0f, 1f)
-                if (rec.acceptWaveForm(buf, n)) handle(rec.result)
-                else onPartial(rec.partialResult)
+                val hear = { audio: ShortArray, len: Int ->
+                    if (rec.acceptWaveForm(audio, len)) handle(rec.result)
+                    else onPartial(rec.partialResult)
+                    Unit
+                }
+                if (gate == null) hear(buf, n)
+                else {
+                    gate.feed(buf, n, hear)
+                    gateLog.line(SystemClock.elapsedRealtime(), gate.opened, gate.closed)?.let { kg.forester.sg.ssm.SsmTrace.log(it, keep = true) }
+                }
             }
             return true
         } catch (e: Exception) {
-            status.value = "ошибка микрофона: ${e.message}"
+            android.util.Log.e("Voice", "microphone", e)
+            status.value = "ошибка микрофона: ${kg.forester.sg.data.Failure.link(e, "занят или недоступен")}"
             return true
         } finally {
             runCatching { ar.stop() }; ar.release(); agc?.release(); ns?.release()
@@ -384,14 +477,14 @@ object Voice {
 
     private fun execute(cmd: String, ownAllowed: Boolean = true) {
         // the driver's own phrase: its commands one after another, a moment apart for the answers to be said
-        if (ownAllowed && !awaitingDestination) Commands.ownFor(cmd, own(app))?.let { (o, steps) ->
+        if (ownAllowed && !awaitingDestination) grammar.ownFor(cmd, own(app))?.let { (o, steps) ->
             android.util.Log.i("Voice", "own: ${o.phrase} → $steps")
             steps.forEachIndexed { i, step -> main.postDelayed({ execute(step, ownAllowed = false) }, i * 1800L) }
             return
         }
         if (awaitingDestination) {
             awaitingDestination = false
-            val c = Commands.parse(cmd)
+            val c = grammar.parse(cmd)
             if (c?.intent == VoiceIntent.CANCEL) { say("Хорошо"); return }
             val dest = c?.takeIf { it.intent.name.startsWith("NAV_") && it.query != null }?.query ?: cmd
             say("Ищу: $dest")
@@ -401,21 +494,24 @@ object Voice {
         // the driver's own buttons first, when the whole command is their name ("навигатор", "открой музыку");
         // their own voice phrase may stand anywhere in the command
         shortcutFor(cmd)?.let { say(it.label); Shortcuts.launch(app, it); return }
-        val c = Commands.parse(cmd) ?: run { say("Не понял: $cmd"); return }
+        val c = grammar.parse(cmd) ?: run { say("Не понял: $cmd"); return }
         android.util.Log.i("Voice", "command: $c")
         run(c)
     }
 
     /** How the assistant takes [step] (a button's name or an ordinary command), null if not at all: for the own commands editor. */
     fun describe(step: String): String? =
-        shortcutFor(step)?.let { "кнопка «${it.label}»" } ?: Commands.parse(step)?.let { Commands.describe(it) }
+        shortcutFor(step)?.let { "кнопка «${it.label}»" } ?: grammar.parse(step)?.let { grammar.describe(it) }
 
     private val OPEN_WORDS = setOf("открой", "запусти", "покажи", "включи")
+    private val OPEN_WORDS_EN = setOf("open", "launch", "show", "start", "play", "the")
 
     private fun shortcutFor(cmd: String): Shortcut? {
-        val cw = cmd.lowercase().split(" ").filter { it.isNotBlank() && it !in OPEN_WORDS }
+        val open = if (kg.forester.sg.data.I18n.english) OPEN_WORDS_EN else OPEN_WORDS
+        val cw = cmd.lowercase().split(" ").filter { it.isNotBlank() && it !in open }
         return Shortcuts.list.value.firstOrNull { s ->
-            val lw = s.label.lowercase().split(" ").filter { it.isNotBlank() }
+            // a button's name as the driver reads it
+            val lw = tr(s.label).lowercase().split(" ").filter { it.isNotBlank() }
             (lw.size == cw.size && lw.indices.all { similar(cw[it], lw[it]) }) ||
                 (s.phrase.isNotBlank() && phraseMatches(cmd.lowercase(), s.phrase.lowercase()))
         }
@@ -432,7 +528,7 @@ object Voice {
                 say("Пауза")
             }
             VoiceIntent.PLAY -> {
-                if (Fyt.present(app) && !otherAppPlaying()) {
+                if (audio.ownSources && !otherAppPlaying()) {
                     if (!Fyt.music.value.playing) Fyt.playPause()
                     Fyt.mute(false)
                     say("Играю")
@@ -469,7 +565,7 @@ object Voice {
             )
             VoiceIntent.PLAY_QUERY -> playFromSearch(c)
             VoiceIntent.MEDIA_APP -> c.app?.let { openApp(it) } ?: say("Не нашёл приложение")
-            VoiceIntent.SOURCE_BT -> { BtAudio.enter(app); say("Bluetooth") }
+            VoiceIntent.SOURCE_BT -> { scope.launch(start = CoroutineStart.UNDISPATCHED) { audio.bt.enter(byUser = true) }; say("Bluetooth") }
             VoiceIntent.SOURCE_USB -> { Fyt.source(8); Fyt.openMusic(); say("Музыка") }
             // --- volume
             VoiceIntent.VOLUME_UP -> volume(c.number ?: 2)
@@ -477,14 +573,14 @@ object Voice {
             VoiceIntent.VOLUME_SET -> setVolume(c.number ?: 10, c.percent)
             VoiceIntent.MUTE, VoiceIntent.UNMUTE -> muteMusic(c.intent == VoiceIntent.MUTE)
             // --- head unit radio
-            VoiceIntent.RADIO -> { Fyt.ensureRadio(); go(VoiceTarget.MEDIA, "Радио") }
+            VoiceIntent.RADIO -> { if (tunerThere()) { radioOn(); go(VoiceTarget.MEDIA, "Радио") } }
             // the driver's own stations (FmRadio) first, tuned by frequency; the stock presets only without them
-            VoiceIntent.RADIO_NEXT, VoiceIntent.RADIO_PREV -> {
+            VoiceIntent.RADIO_NEXT, VoiceIntent.RADIO_PREV -> if (tunerThere()) {
                 FmRadio.load(app); FmRadio.step(c.intent == VoiceIntent.RADIO_NEXT)
                 say(if (c.intent == VoiceIntent.RADIO_NEXT) "Следующая станция" else "Предыдущая станция")
             }
-            VoiceIntent.RADIO_SEEK -> { Fyt.radioSeek((c.number ?: 1) > 0); say("Ищу станцию") }
-            VoiceIntent.RADIO_BAND -> { Fyt.radioBand(when (c.target) { "AM" -> 0; "FM" -> 65536; else -> -1 }); say("Диапазон") }
+            VoiceIntent.RADIO_SEEK -> if (tunerThere()) { audio.radio.seek((c.number ?: 1) > 0); say("Ищу станцию") }
+            VoiceIntent.RADIO_BAND -> if (tunerThere()) { audio.radio.band(when (c.target) { "AM" -> 0; "FM" -> 65536; else -> -1 }); say("Диапазон") }
             VoiceIntent.RADIO_FREQ, VoiceIntent.RADIO_PRESET, VoiceIntent.RADIO_NAME -> {
                 FmRadio.load(app)
                 val st: FmRadio.Station? = when (c.intent) {
@@ -497,16 +593,21 @@ object Voice {
                     }
                 }
                 when {
-                    st != null && Fyt.present(app) -> {
-                        FmRadio.tune(st.freq, st.band); go(VoiceTarget.MEDIA, "Радио")
-                        say(st.name.ifBlank { String.format(java.util.Locale.US, "%.1f", st.freq / 100.0) })
+                    st != null && RadioCap.TUNE in audio.radio.caps -> {
+                        go(VoiceTarget.MEDIA, "Радио")
+                        // the name only once the tuner is there
+                        scope.launch {
+                            if (FmRadio.tuneNow(st.freq, st.band)) say(st.name.ifBlank { String.format(java.util.Locale.US, "%.1f", st.freq / 100.0) })
+                            else say("Не удалось настроить радио")
+                        }
                     }
                     // a number past the own stations: the stock radio's slot
-                    c.intent == VoiceIntent.RADIO_PRESET && (c.number ?: 0) in 1..6 && Fyt.present(app) -> {
+                    c.intent == VoiceIntent.RADIO_PRESET && (c.number ?: 0) in 1..6 && RadioCap.PRESET in audio.radio.caps -> {
                         FmRadio.toPreset(c.number!!); go(VoiceTarget.MEDIA, "Радио"); say("Станция ${c.number}")
                     }
+                    !tunerThere() -> {}
                     else -> {
-                        Fyt.ensureRadio(); go(VoiceTarget.MEDIA, "Радио")
+                        radioOn(); go(VoiceTarget.MEDIA, "Радио")
                         speak(if (c.intent == VoiceIntent.RADIO_NAME) "Такой станции нет в ваших: сохраните её в Медиа, Радио" else "Не нашёл такую станцию")
                     }
                 }
@@ -581,7 +682,7 @@ object Voice {
         VoiceTarget.GEARBOX -> "АКПП"; VoiceTarget.BATTERY -> "Аккумулятор"; VoiceTarget.DTC -> "Ошибки"; VoiceTarget.MEDIA -> "Медиа"
     }
 
-    private fun needSessions() = "Разрешите приложению доступ к уведомлениям: Настройки → Голос"
+    private fun needSessions() = "Разрешите приложению доступ к уведомлениям: Настройки → Звук и голос"
 
     /** Answers that matter (values, what plays) are spoken too, not only shown. */
     private fun speak(t: String) { say(t); Speech.say(t) }
@@ -634,33 +735,27 @@ object Voice {
         else say("Не нашёл, чем включить «$q»")
     }
 
-    /** Volume to [n] steps (or [percent] of the maximum): stepping the MCU on FYT units, Android's volume elsewhere. */
+    /** Volume to [n] steps (or [percent] of the maximum): the unit's own when it has one, Android's elsewhere. */
     private fun setVolume(n: Int, percent: Boolean) {
-        val cur = Fyt.volume.value
-        if (Fyt.present(app) && cur >= 0) {
-            val target = if (percent) Math.round(40 * n / 100f) else n // FYT volume goes 0…40
-            Fyt.volumeStep(target - cur)
-            say("Громкость $target")
-            return
+        val v = audio.volume
+        val max = (app.getSystemService(Context.AUDIO_SERVICE) as AudioManager).getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val target = voiceVolumePlan(v.mcu, n, percent, max) // FYT volume goes 0…40
+        scope.launch {
+            when (v.set(target)) {
+                VolumeSet.DONE -> say("Громкость $target")
+                VolumeSet.UNKNOWN_LEVEL -> say("Не знаю текущую громкость, скажите громче или тише")
+                VolumeSet.NOT_READY -> say(UNIT_NOT_READY)
+            }
         }
-        val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val v = (if (percent) Math.round(max * n / 100f) else n).coerceIn(0, max)
-        val before = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-        am.setStreamVolume(AudioManager.STREAM_MUSIC, v, AudioManager.FLAG_SHOW_UI)
-        volumeTrace("set $n${if (percent) "%" else ""}", before, am)
-        say("Громкость $v")
     }
 
     private fun muteMusic(on: Boolean) {
-        say(if (on) "Без звука" else "Звук включён")
-        if (Fyt.mute(on)) return
-        val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        am.adjustStreamVolume(AudioManager.STREAM_MUSIC, if (on) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE, AudioManager.FLAG_SHOW_UI)
+        if (audio.volume.mute(on)) say(if (on) "Без звука" else "Звук включён") else say(UNIT_NOT_READY)
     }
 
     /** "Какая температура", "сколько бензина"…: the value spoken. */
     private fun readValue(t: String) {
+        if (kg.forester.sg.data.I18n.english) return readValueEn(t)
         val e = kg.forester.sg.data.Repo.live.value
         val trip = kg.forester.sg.data.Repo.trip.value
         val ru = java.util.Locale("ru")
@@ -681,18 +776,34 @@ object Voice {
             "OILP" -> kg.forester.sg.data.SensorBox.role("oilP")?.let { "Давление масла ${String.format(ru, "%.1f", it)} бар" }
                 ?: "Датчика давления масла нет"
             "BATTERY" -> "Напряжение ${e.batteryV?.let { String.format(ru, "%.1f", it) } ?: "нет данных"} вольт"
-            "SPEED" -> "Скорость ${n(e.speedKmh, "километр в час", "километра в час", "километров в час")}"
+            "SPEED" -> if (kg.forester.sg.data.DistanceUnits.miles) "Скорость ${n(e.speedKmh?.let { kg.forester.sg.data.DistanceUnits.speed(it) }, "миля в час", "мили в час", "миль в час")}" else "Скорость ${n(e.speedKmh, "километр в час", "километра в час", "километров в час")}"
             "RPM" -> "Обороты ${n(e.rpm, "")}"
             "BOOST" -> "Наддув ${e.boostBar?.let { String.format(ru, "%.2f", it) } ?: "нет данных"} бар"
             "FUEL" -> trip.fuelLeftL?.let { "В баке ${n(it, "литр", "литра", "литров")}" } ?: e.fuelLevelPct?.let { "В баке ${n(it, "процент", "процента", "процентов")}" } ?: "Нет данных о топливе: отметьте заправку"
-            "RANGE" -> "Хватит на ${n(trip.rangeKm, "километр", "километра", "километров")}"
-            "CONSUMPTION" -> "Расход ${trip.trip?.per100?.let { String.format(ru, "%.1f", it) } ?: "нет данных"} литров на сотню"
-            "TRIP" -> "Проехали ${n(trip.trip?.distanceKm, "километр", "километра", "километров")}"
+            "RANGE" -> if (kg.forester.sg.data.DistanceUnits.miles) "Хватит на ${n(kg.forester.sg.data.DistanceUnits.distance(trip.rangeKm), "милю", "мили", "миль")}" else "Хватит на ${n(trip.rangeKm, "километр", "километра", "километров")}"
+            "CONSUMPTION" -> if (kg.forester.sg.data.DistanceUnits.miles) "Расход ${trip.trip?.per100?.let { String.format(ru, "%.1f", kg.forester.sg.data.DistanceUnits.consumption(it)) } ?: "нет данных"} миль на галлон" else "Расход ${trip.trip?.per100?.let { String.format(ru, "%.1f", it) } ?: "нет данных"} литров на сотню"
+            "TRIP" -> if (kg.forester.sg.data.DistanceUnits.miles) "Проехали ${n(kg.forester.sg.data.DistanceUnits.distance(trip.trip?.distanceKm), "милю", "мили", "миль")}" else "Проехали ${n(trip.trip?.distanceKm, "километр", "километра", "километров")}"
             "TIME" -> java.text.SimpleDateFormat("H:mm", ru).format(java.util.Date())
-            "VOLUME" -> "Громкость ${Fyt.volume.value.takeIf { it >= 0 } ?: (app.getSystemService(Context.AUDIO_SERVICE) as AudioManager).getStreamVolume(AudioManager.STREAM_MUSIC)}"
+            "VOLUME" -> "Громкость ${audio.volume.level.value ?: (app.getSystemService(Context.AUDIO_SERVICE) as AudioManager).getStreamVolume(AudioManager.STREAM_MUSIC)}"
             "DTC" -> "Открываю ошибки".also { go(VoiceTarget.DTC, "Ошибки") }
             else -> "Не знаю"
         })
+    }
+
+    /** The same in English: one degree, two degrees, in the driver's units, for the head unit's voice. */
+    private fun readValueEn(t: String) {
+        val e = kg.forester.sg.data.Repo.live.value
+        val trip = kg.forester.sg.data.Repo.trip.value
+        val g = kg.forester.sg.data.Repo.guard.value
+        val facts = CommandsEn.Facts(
+            coolantC = e.coolantC, intakeC = e.intakeC, atfC = kg.forester.sg.data.Repo.tcu.value?.atfC, oilC = g.oilC, oilEstimated = g.oilEstimated,
+            oilBar = kg.forester.sg.data.SensorBox.role("oilP")?.toDouble(), batteryV = e.batteryV, speedKmh = e.speedKmh?.toDouble(), rpm = e.rpm, boostBar = e.boostBar,
+            fuelLeftL = trip.fuelLeftL, fuelPct = e.fuelLevelPct, rangeKm = trip.rangeKm?.toDouble(), per100 = trip.trip?.per100?.toDouble(), tripKm = trip.trip?.distanceKm?.toDouble(),
+            volume = audio.volume.level.value ?: (app.getSystemService(Context.AUDIO_SERVICE) as AudioManager).getStreamVolume(AudioManager.STREAM_MUSIC),
+            time = java.text.SimpleDateFormat("H:mm", java.util.Locale.US).format(java.util.Date()),
+        )
+        if (t == "DTC") go(VoiceTarget.DTC, "Ошибки")
+        speak(CommandsEn.valueAnswer(t, facts))
     }
 
     /** Street and city by GPS (needs the network for the address), else the point in the navigator. */
@@ -702,7 +813,7 @@ object Voice {
         scope.launch {
             val a = runCatching {
                 @Suppress("DEPRECATION")
-                android.location.Geocoder(app, java.util.Locale("ru")).getFromLocation(g.lat, g.lon, 1)?.firstOrNull()
+                android.location.Geocoder(app, if (kg.forester.sg.data.I18n.english) java.util.Locale.US else java.util.Locale("ru")).getFromLocation(g.lat, g.lon, 1)?.firstOrNull()
             }.getOrNull()
             val text = a?.let { listOfNotNull(it.thoroughfare, it.subThoroughfare, it.locality).joinToString(", ") }?.ifBlank { null }
             main.post { if (text != null) speak(text) else Nav.routeTo(app, Nav.pkg(app, null), g.lat, g.lon) }
@@ -716,39 +827,27 @@ object Voice {
         if (i != null) runCatching { app.startActivity(i) }
     }
 
-    /**
-     * On FYT units (Teyes, many FLY and others) the volume is the MCU's, like the knob: Android's stream volume
-     * changes nothing there. Elsewhere the music stream, and if that didn't move, the stream the system picks.
-     */
+    /** The platform's volume: on FYT units the MCU's, like the knob; elsewhere Android's stream. */
     private fun volume(steps: Int) {
-        say(if (steps > 0) "Громче" else "Тише")
-        if (Fyt.volumeStep(steps)) return
-        val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val dir = if (steps > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
-        val before = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-        repeat(kotlin.math.abs(steps)) { am.adjustStreamVolume(AudioManager.STREAM_MUSIC, dir, AudioManager.FLAG_SHOW_UI) }
-        if (am.getStreamVolume(AudioManager.STREAM_MUSIC) == before) {
-            repeat(kotlin.math.abs(steps)) { am.adjustSuggestedStreamVolume(dir, AudioManager.USE_DEFAULT_STREAM_TYPE, AudioManager.FLAG_SHOW_UI) }
-        }
-        volumeTrace("step $steps", before, am)
+        if (audio.volume.step(steps)) say(if (steps > 0) "Громче" else "Тише") else say(UNIT_NOT_READY)
     }
 
-    /**
-     * Android's music volume was changed (no FYT sound module): which unit and what the stream did, for the log.
-     * Units that keep the volume in their own processor (FYT without the module, Microntek) move the stream and not the sound.
-     */
-    private fun volumeTrace(what: String, before: Int, am: AudioManager) {
-        kg.forester.sg.ssm.SsmTrace.log(
-            "voice volume $what: android stream $before → ${am.getStreamVolume(AudioManager.STREAM_MUSIC)}/${am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}, " +
-                "fyt=${Fyt.present(app)} sound=${Fyt.soundReady()} fytVol=${Fyt.volume.value} microntek=${BtAudio.microntek(app)} " +
-                "music=${am.isMusicActive} ${android.os.Build.MANUFACTURER}/${android.os.Build.MODEL}/${android.os.Build.HARDWARE}",
-            keep = true,
-        )
+    private val audio get() = AudioPlatforms.current(app)
+
+    private val UNIT_NOT_READY = "Магнитола ещё не готова, попробуйте через минуту"
+
+    /** The unit has a tuner of ours to drive; otherwise the voice says what is there and leaves the source alone. */
+    private fun tunerThere(): Boolean {
+        if (RadioCap.TUNE in audio.radio.caps) return true
+        say("Радио магнитолы недоступно, включите интернет-радио в Медиа")
+        return false
     }
+
+    private fun radioOn() { scope.launch(start = CoroutineStart.UNDISPATCHED) { audio.radio.on() } }
 
     /** The head unit's own music, radio or Bluetooth audio is what plays now. */
     private fun fytPlaying(): Boolean {
-        if (!Fyt.present(app)) return false
+        if (!audio.ownSources) return false
         val androidMusic = (app.getSystemService(Context.AUDIO_SERVICE) as AudioManager).isMusicActive
         // FYT radio plays past Android's audio: it counts only while no app plays music
         return Fyt.music.value.playing || (Fyt.appId.value == 1 && !androidMusic)
@@ -785,7 +884,7 @@ object Voice {
     }
 
     private fun beep() {
-        runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 70).startTone(ToneGenerator.TONE_PROP_BEEP2, 150) }
+        Alerts.beep(70, 150)
     }
 
     private fun phraseMatches(cmd: String, phrase: String): Boolean {
@@ -815,3 +914,6 @@ object Voice {
         return dp[b.length]
     }
 }
+
+/** The speech model didn't come: said as it is, the watchdog ([Voice.ensure]) tries again every half minute. */
+private class ModelNotThere(message: String, cause: Throwable) : java.io.IOException(message, cause)

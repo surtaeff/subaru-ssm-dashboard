@@ -252,6 +252,7 @@ class InnovateTest {
             "converter_slip_pct", "lockup_state", "fwd_fuse", "transfer_pct", "front_wheel_kmh", "rear_wheel_kmh",
             "fuel_sensor_v", "fuel_sensor_ohm")
         assertEquals(beta20, keys.take(beta20.size))
+        assertTrue("kca_deg" in keys && keys.indexOf("kca_deg") > keys.indexOf("ve_pct"))
         val on = LogColumns.offered(widebandOn = true).map { it.key }
         // switched on: the same columns in the same order, the wideband's five at the end
         assertEquals(keys, on.dropLast(5))

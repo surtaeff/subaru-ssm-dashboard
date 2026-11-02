@@ -17,11 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,7 +38,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
 import com.composables.icons.lucide.Rows3
 import com.composables.icons.lucide.Grid3x3
 import com.composables.icons.lucide.ChevronLeft
@@ -95,8 +92,13 @@ class BoardEdit(
     private val toFree: (List<TileCfg>) -> List<TileCfg> = { it },
     private val toGrid: (List<TileCfg>) -> List<TileCfg> = { it },
     private val onReset: () -> Unit = {},
+    /** The factory layout this screen's size gets (see [HomeLayout.effective]): what is shown is what is edited. */
+    private val effective: (String, Boolean) -> String = { s, _ -> s },
+    /** How many columns the grid has for these cards. */
+    private val columns: (List<TileCfg>) -> Int = { board.columns },
 ) {
-    private val raw get() = Repo.boardFlow(board.key).value
+    private val raw get() = shown(Repo.boardFlow(board.key).value, CarScreen.small)
+    fun shown(saved: String, small: Boolean) = effective(saved, small)
     fun list() = board.parse(raw)
     fun isFree() = board.isFree(raw)
     private fun save(l: List<TileCfg>, free: Boolean = isFree()) = Repo.settings.setBoard(board.key, board.format(l, free))
@@ -104,7 +106,7 @@ class BoardEdit(
     /** Free layout on/off; the cards keep the places they had in the grid. */
     fun setFree(on: Boolean) {
         if (on == isFree()) return
-        save(if (on) toFree(board.withFreeRects(list(), rowWeight, gridBand())) else toGrid(list()), on)
+        save(if (on) toFree(board.withFreeRects(list(), rowWeight, gridBand(), columns(list()))) else toGrid(list()), on)
     }
 
     /** Puts [id] at [r], on top of the other cards. */
@@ -173,7 +175,7 @@ private val ClusterParts = setOf("car3d", "tach", "speedo")
 
 val HomeEdit = BoardEdit(
     // the extra cards (Спорт-дисплей, G-метр…) and the output widgets have no needle look: they get their own buttons
-    HomeLayout.board, HomeLayout.board.defaults.map { it.id }.toSet() - "car3d" - "minimap" -
+    HomeLayout.board, HomeLayout.board.defaults.map { it.id }.toSet() - "car3d" - "minimap" - HomeLayout.ROAD -
         kg.forester.sg.data.EXTRA_CARDS.toSet() - kg.forester.sg.data.OUT_WIDGETS.toSet(),
     gridBand = {
         val c = HomeLayout.clusterWeight(Repo.clusterSize.value)
@@ -199,7 +201,10 @@ val HomeEdit = BoardEdit(
         }
     },
     toGrid = { list -> list.map { if (it.id in ClusterParts) it.copy(on = false) else it } },
-) { Repo.settings.clusterSize = 1 }
+    onReset = { Repo.settings.clusterSize = 1 },
+    effective = HomeLayout::effective,
+    columns = { HomeLayout.columnsFor(it, CarScreen.small) },
+)
 
 /** Card names and icons for the "add" menu, by card id. */
 typealias CardNames = Map<String, Pair<String, ImageVector>>
@@ -217,8 +222,7 @@ fun HomeEditBar(onDone: () -> Unit) {
             Repo.settings.clusterSize = 2
         }, Lucide.Sparkles)
         if (free) return@BoardEditBar // the 3D block is a card there, sized by dragging
-        // another make has no car in the block, only the two dials
-        T(if (kg.forester.sg.data.CarKind.other.collectAsState().value) "Приборы:" else "3D:", 14.sp, C.Sub)
+        T("3D:", 14.sp, C.Sub)
         listOf(0 to "Скрыть", 1 to "Обычный", 2 to "Большой", 3 to "Макс.").forEach { (v, l) ->
             Chip(l, cluster == v, { Repo.settings.clusterSize = v })
         }
@@ -233,8 +237,8 @@ fun HomeEditBar(onDone: () -> Unit) {
 fun BoardEditBar(edit: BoardEdit, names: CardNames, onDone: () -> Unit, leading: @Composable RowScope.() -> Unit = {}) {
     var adding by remember { mutableStateOf(false) }
     val free = edit.board.isFree(Repo.boardFlow(edit.board.key).collectAsState().value)
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(C.Card)
+    Parked { Row(
+        Modifier.fillMaxWidth().clip(Rounded).panelFill()
             .border(1.dp, C.Purple, RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -267,10 +271,10 @@ fun BoardEditBar(edit: BoardEdit, names: CardNames, onDone: () -> Unit, leading:
                     var open by remember { mutableStateOf(false) }
                     Box {
                         Chip(grid.ifEmpty { "без привязки" }.replace("x", "×"), false, { open = true }, Lucide.Grid3x3)
-                        androidx.compose.material3.DropdownMenu(open, { open = false }) {
+                        CarDropdownMenu(open, { open = false }) {
                             listOf("8x5", "10x6", "12x8", "").forEach { g ->
                                 androidx.compose.material3.DropdownMenuItem(
-                                    text = { androidx.compose.material3.Text(if (g.isEmpty()) "Без привязки" else g.replace("x", " × ")) },
+                                    text = { Text(if (g.isEmpty()) "Без привязки" else g.replace("x", " × ")) },
                                     onClick = { open = false; Repo.settings.freeGrid = g },
                                 )
                             }
@@ -285,18 +289,18 @@ fun BoardEditBar(edit: BoardEdit, names: CardNames, onDone: () -> Unit, leading:
             }
         }
         Chip("Готово", true, onDone)
-    }
+    } }
 }
 
 @Composable
 private fun AddMenu(edit: BoardEdit, names: CardNames, onClose: () -> Unit) {
-    val hidden = edit.list().filter { !it.on && names[it.id] != null }
+    val hidden = edit.list().filter { !it.on && names[it.id] != null && panelOffered(it.id) }
     val avail = Repo.rrAvailable.collectAsState().value
     // in sections, as in the rest of the app: a long flat list hid the sensor cards among the gauges
     val groups = hidden.groupBy { cardGroup(it.id) }.entries.sortedBy { CARD_GROUPS.indexOf(it.key).let { i -> if (i < 0) 99 else i } }
-    Popup(alignment = Alignment.TopEnd, offset = androidx.compose.ui.unit.IntOffset(0, 120), onDismissRequest = onClose) {
+    CarPopup(alignment = Alignment.TopEnd, offset = androidx.compose.ui.unit.IntOffset(0, 120), onDismissRequest = onClose) {
         Column(
-            Modifier.width(300.dp).heightIn(max = 520.dp).clip(RoundedCornerShape(14.dp)).background(C.Card)
+            Modifier.width(LocalCar.current.secondary.value.dp * 20f).heightIn(max = minOf(520f, canvasScreen().screenHeightDp - 140f).dp).clip(RoundedCornerShape(14.dp)).background(C.Sheet)
                 .border(1.dp, C.Border, RoundedCornerShape(14.dp)).padding(vertical = 6.dp)
                 .verticalScroll(rememberScrollState()),
         ) {
@@ -333,7 +337,7 @@ private val CARD_GROUPS = listOf(
 
 /** The section a card is offered under in «Добавить виджет». */
 private fun cardGroup(id: String): String = when {
-    id in setOf("defi", "navcluster", "tach", "speedo", "car3d", "minimap", "gps", "altitude") -> "Приборы и карта"
+    id in setOf("defi", "navcluster", "tach", "speedo", "car3d", HomeLayout.ROAD, "minimap", "gps", "altitude") -> "Приборы и карта"
     id in setOf("gmeter", "incline", "peaks", "run") -> "Динамика и замеры"
     id in setOf("iam", "btarget", "turbo") -> "Защита мотора"
     id in setOf("tyres", "service") -> "Шины и ТО"
@@ -358,7 +362,7 @@ fun BoxScope.TileEditOverlay(edit: BoardEdit, cfg: TileCfg, title: String = "", 
     var picking by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     Box(
-        Modifier.matchParentSize().clip(RoundedCornerShape(14.dp)).background(Color(0x66070A14))
+        Modifier.matchParentSize().clip(Rounded).background(Color(0x66070A14))
             .border(2.dp, C.Purple, RoundedCornerShape(14.dp)),
     )
     BoxWithConstraints(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
@@ -370,7 +374,7 @@ fun BoxScope.TileEditOverlay(edit: BoardEdit, cfg: TileCfg, title: String = "", 
         val btn = minOf(56.dp, maxWidth - 8.dp, maxHeight - 6.dp)
         Box {
             EditButton(Lucide.Ellipsis, btn, tint = C.Text, label = "Действия: $title") { menu = true }
-            androidx.compose.material3.DropdownMenu(
+            CarDropdownMenu(
                 menu, { menu = false },
                 shape = RoundedCornerShape(16.dp), containerColor = C.Card,
                 border = androidx.compose.foundation.BorderStroke(1.dp, C.Border),
@@ -406,15 +410,19 @@ fun BoxScope.TileEditOverlay(edit: BoardEdit, cfg: TileCfg, title: String = "", 
     else if (picking && Regex("s[1-6]").matches(cfg.id)) SlotPicker(cfg.id.drop(1).toInt()) { picking = false }
     else if (picking) {
         // the number in the dial's middle can be left out; it rides along with whatever design is picked
-        val hidden = cfg.style.endsWith(NO_NUMBER)
-        val base = cfg.style.removeSuffix(NO_NUMBER)
+        val o = DialOptions.parse(cfg.style)
+        val base = o.base
         StylePicker(
             "Вид: $title", base, "Обычный", Modifier, target = "${edit.board.key}/${cfg.id}",
-            preview = { st, m -> Dial(62f, 100f, 20f, 1f, "", null, 80f, m, st.copy(hideValue = hidden)) },
-            onPick = { edit.setStyle(cfg.id, if (it.isNotEmpty() && hidden) it + NO_NUMBER else it) },
+            preview = { st, m ->
+                Dial(62f, 100f, 20f, 1f, "", null, 80f, m, st.copy(hideValue = o.noNumber, marks = o.marks, numberScale = o.numberPct?.let { it / 100f } ?: st.numberScale))
+            },
+            onPick = { edit.setStyle(cfg.id, if (it.isNotEmpty()) o.copy(base = it).format() else it) },
             onClose = { picking = false },
-            numberShown = if (base.isNotEmpty()) !hidden else null,
-            onNumber = { show -> edit.setStyle(cfg.id, base + if (show) "" else NO_NUMBER) },
+            numberShown = if (base.isNotEmpty()) !o.noNumber else null,
+            onNumber = { show -> edit.setStyle(cfg.id, o.copy(noNumber = !show).format()) },
+            options = o.takeIf { base.isNotEmpty() },
+            onOptions = { edit.setStyle(cfg.id, it.format()) },
         )
     }
 }
@@ -428,13 +436,20 @@ fun BoardScreen(
     edit: BoardEdit, names: CardNames, rowWeight: (TileCfg) -> Float,
     /** Screen-specific controls at the start of the edit bar («Мой экран»: the ready-made layouts). */
     leading: @Composable RowScope.() -> Unit = {},
+    /** What else the factory picture of this screen goes by, when it changes. */
+    factoryKey: Any? = null,
     card: @Composable (TileCfg, Modifier) -> Unit,
 ) {
-    val layout by Repo.boardFlow(edit.board.key).collectAsState()
+    val saved by Repo.boardFlow(edit.board.key).collectAsState()
+    val small = LocalCar.current.small
+    val carTurbo by Repo.carTurbo.collectAsState()
+    val layout = remember(saved, small, factoryKey, carTurbo) { edit.shown(saved, small) }
     val list = remember(layout) { edit.board.parse(layout) }
     val rows = remember(layout) { edit.board.rows(list) }
     var editing by remember { mutableStateOf(false) }
-    val longPress = Modifier.pointerInput(Unit) { detectTapGestures(onLongPress = { editing = true }) }
+    val longPress = Modifier.onLongPressBuzz { editing = true }
+    // Back ends the editing before it leaves the screen
+    androidx.activity.compose.BackHandler(enabled = editing) { editing = false }
     if (edit.board.isFree(layout)) {
         FreeFrame(if (editing) ({ BoardEditBar(edit, names, { editing = false }, leading) }) else null, Modifier.fillMaxSize()) { m ->
             FreeArea(edit, list.filter { it.on }, editing, names, longPress, m, card = card)
@@ -443,9 +458,10 @@ fun BoardScreen(
     }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (editing) BoardEditBar(edit, names, { editing = false }, leading)
-        rows.forEach { row ->
+        rows.forEachIndexed { rowAt, row ->
+            val rowOn = rememberLater(rowAt)
             Row(Modifier.weight(row.maxOf { rowWeight(it) }).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                row.forEach { t ->
+                if (rowOn || rowAt == 0) row.forEach { t ->
                     // keyed by the card: one moved along its row takes its state along (the open edit menu stays its own)
                     key(t.id) {
                         Box(Modifier.weight(t.span.toFloat()).fillMaxHeight().then(longPress)) {

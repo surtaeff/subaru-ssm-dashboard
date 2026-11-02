@@ -288,9 +288,5 @@ object Routing {
     }
 
     /** "350 м", "1,2 км", "12 км". */
-    fun distanceText(m: Double): String = when {
-        m < 1000 -> "${((m / 10).toInt() * 10).coerceAtLeast(10)} м"
-        m < 10_000 -> "%.1f км".format(m / 1000).replace('.', ',')
-        else -> "${(m / 1000).toInt()} км"
-    }
+    fun distanceText(m: Double): String = kg.forester.sg.data.DistanceUnits.navDistance(m)
 }

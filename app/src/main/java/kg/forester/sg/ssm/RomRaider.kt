@@ -73,6 +73,12 @@ data class RrParam(
     /** [units] the Russian way for the screen (the CSV keeps RomRaider's). */
     val unitsRu: String get() = UNITS_RU[units.lowercase()] ?: units
 
+    /** [text] and the unit as the driver chose them: a speed or a distance from the ECU is said in miles. */
+    fun shownText(v: Double?): String =
+        text(kg.forester.sg.data.DistanceUnits.kindOf(unitsRu)?.let { k -> v?.let { kg.forester.sg.data.DistanceUnits.shown(k, it.toFloat()).toDouble() } } ?: v)
+
+    val shownUnit: String get() = kg.forester.sg.data.DistanceUnits.kindOf(unitsRu)?.let(kg.forester.sg.data.DistanceUnits::unit) ?: unitsRu
+
     /** Value text with this parameter's format ("0.00" → 2 decimals). */
     fun text(v: Double?): String {
         if (v == null || v.isNaN() || v.isInfinite()) return "—"
@@ -205,6 +211,12 @@ object RomRaider {
         parseCarberry(ctx.assets.open("carberry42_logger.json").bufferedReader().use { it.readText() })
     }.onFailure { SsmTrace.log("CarBerry 4.2: $it") }.getOrDefault(emptyList()).also { carberry = it }
 
+    /** The ECU's own VE of the CarBerry list: on «Датчики» ticked by itself, once, when the profile first applies. */
+    const val CARBERRY_VE = "CB42_E158"
+
+    /** RomRaider's standard exhaust temperatures of a petrol ECU; each needs its capability bit, so a unit without the sensor lists none. */
+    val ECU_EGT = listOf("P79", "P116")
+
     /** The CarBerry 4.2 profile is picked and the engine unit has its ROM; any other ROM keeps the stock list. */
     fun useCarberry(profile: String, rom: String, tcu: Boolean) =
         profile == "carberry42" && rom.equals(CARBERRY_ROM, ignoreCase = true) && !tcu
@@ -278,7 +290,7 @@ object RomRaider {
             val p = ss.getJSONObject(i)
             out += RrParam(
                 id = p.getString("id"), kind = RrParam.Kind.SWITCH, target = p.getInt("t"),
-                name = p.optString("ru").ifEmpty { p.getString("n") }, nameEn = p.getString("n"), desc = "",
+                name = p.optString("ru").ifEmpty { p.getString("n") }.also { kg.forester.sg.data.I18n.learn(it, p.getString("n")) }, nameEn = p.getString("n"), desc = "",
                 addr = p.getInt("a"), len = 1, bit = p.getInt("bit"), units = "", format = "0", storage = "",
                 expr = RrExpr.parse("x"), deps = emptyList(), conversions = emptyMap(),
                 capByte = p.optInt("b", -1), capBit = p.getInt("bit"),
@@ -320,7 +332,7 @@ object RomRaider {
         }
         return RrParam(
             id = p.getString("id"), kind = kind, target = p.getInt("t"),
-            name = p.optString("ru").ifEmpty { p.getString("n") }, nameEn = p.getString("n"), desc = p.optString("d"),
+            name = p.optString("ru").ifEmpty { p.getString("n") }.also { kg.forester.sg.data.I18n.learn(it, p.getString("n")) }, nameEn = p.getString("n"), desc = p.optString("d"),
             addr = addr, len = len, bit = bit,
             // one value in memory, one storage: E36 leaves it out on its kPa conversion only, the others say float
             units = first?.getString(0) ?: "", format = first?.getString(2) ?: "0", storage = first?.getString(3)?.ifEmpty { typed } ?: "",
@@ -359,16 +371,35 @@ object RomRaider {
     }
 
     /**
+     * Constants the base doesn't list, 4-byte floats read like any address, once per connection and not in the poll
+     * list. A8AK210A (ecuid 2A04446305, the ROM of an owner's Forester XT; the id comes second-hand): the addresses
+     * are from TD-D's SubaruDefs (Alpha, subaru standard, A8AK210A.xml). Whether the ECU answers a read there is not verified.
+     */
+    fun romConstants(rom: String): List<RrParam> {
+        val at = when (rom.uppercase()) {
+            "2A04446305" -> listOf("IAM_INIT" to 0x6A478, "IAM_CUT" to 0x62350, "IAM_RESTORE" to 0x62354, "IAM_STEP" to 0x6A4A0)
+            else -> return emptyList()
+        }
+        return at.map { (id, addr) ->
+            RrParam(id = id, kind = RrParam.Kind.EXT, target = 1, name = id, nameEn = id, desc = "константа ROM $rom", addr = addr, len = 4, bit = -1,
+                units = "multiplier", format = "0.0000", storage = "float", expr = RrExpr.parse("x"), deps = emptyList(), conversions = emptyMap())
+        }
+    }
+
+    /**
      * For a ROM the base doesn't know: the extended parameters of its nearest sibling (same first 7 and last 2
      * hex digits, e.g. 2A04446405 → 2A04446305, two revisions of one JDM Forester XT ECU), which usually keep their
      * RAM layout. Marked in the description; the engine guard ignores readings that make no sense for a role.
      */
+    /** The start of the description of a parameter taken from a sibling ROM. */
+    const val SIBLING_NOTE = "адрес соседней прошивки"
+
     private fun sibling(rom: String): List<RrParam> {
         if (rom.length != 10) return emptyList()
         val sib = baseRoms.filter { it.length == 10 && it != rom && it.take(7) == rom.take(7) && it.takeLast(2) == rom.takeLast(2) }
             .minByOrNull { kotlin.math.abs((it[7].digitToIntOrNull(16) ?: 99) - (rom[7].digitToIntOrNull(16) ?: 0)) } ?: return emptyList()
         return byRom[sib].orEmpty().filter { it.expr != null }
-            .map { it.copy(desc = "адрес соседней прошивки $sib: значения стоит проверить. " + it.desc) }
+            .map { it.copy(desc = "$SIBLING_NOTE $sib: значения стоит проверить. " + it.desc) }
     }
 
     /** ROMs whose extended parameters come from a sibling (see [sibling]), for the log. */

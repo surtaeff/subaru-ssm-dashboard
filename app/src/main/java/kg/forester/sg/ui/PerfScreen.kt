@@ -5,7 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +28,9 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,20 +58,29 @@ import com.composables.icons.lucide.Tag
 import com.composables.icons.lucide.Timer
 import com.composables.icons.lucide.Trash2
 import kg.forester.sg.data.Repo
+import kg.forester.sg.service.DynoCalc
+import kg.forester.sg.service.DynoRun
+import kg.forester.sg.service.DynoStore
 import kg.forester.sg.service.Motion
 import kg.forester.sg.service.Perf
 import kg.forester.sg.service.PerfCalc
+import kg.forester.sg.service.PerfState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 private fun runTitle(r: kg.forester.sg.service.PerfRun) = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault()).format(Date(r.timeMs)) +
-    (if (r.maxSpeed > 0) "  ·  ${if (r.braking) "с" else "до"} %.0f км/ч".format(r.maxSpeed) else "") +
+    (if (r.maxSpeed > 0) "  ·  ${if (r.braking) "с" else "до"} ${kg.forester.sg.data.DistanceUnits.speedText(r.maxSpeed)}" else "") +
     (if (r.braking) "  ·  торможение" else if (!r.standing) "  ·  на ходу" else "") +
     (r.cond.label.takeIf { it.isNotEmpty() }?.let { "  ·  «$it»" } ?: "") + if (r.demo) "  ·  демо" else ""
 
 private fun runLine(r: kg.forester.sg.service.PerfRun, keys: List<String>) =
-    keys.mapNotNull { k ->
+    keysOfRun(r, keys).mapNotNull { k ->
         r.results[k]?.let { "${resultShort(k)} %.2f".format(it) + (r.results[k + PerfCalc.DIST]?.let { d -> " · %.1f м".format(d) } ?: "") +
             if (r.clean(k)) "" else "⚠" }
     }.joinToString("   ")
@@ -87,15 +98,16 @@ fun PerfScreen() {
     if (!turbo && tab == 5) tab = 0
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Chip("Разгон", tab == 0, { tab = 0 }, Lucide.Timer)
-            Chip("Серии", tab == 4, { tab = 4 }, Lucide.Tag)
+            Chip("Разгон", tab == 0, { tab = 0 }, Lucide.Timer, Modifier.keepInView(tab == 0))
+            Chip("Серии", tab == 4, { tab = 4 }, Lucide.Tag, Modifier.keepInView(tab == 4))
             // the spool test is about the turbo: an atmospheric engine has no boost to come on
-            if (turbo) Chip("Спул", tab == 5, { tab = 5 }, Lucide.Gauge)
-            Chip("Диностенд", tab == 1, { tab = 1 }, Lucide.ChartSpline)
-            Chip("Круги", tab == 2, { tab = 2 }, Lucide.Flag)
-            Chip("G-метр и крен", tab == 3, { tab = 3 }, Lucide.Crosshair)
+            if (turbo) Chip("Спул", tab == 5, { tab = 5 }, Lucide.Gauge, Modifier.keepInView(tab == 5))
+            Chip("Диностенд", tab == 1, { tab = 1 }, Lucide.ChartSpline, Modifier.keepInView(tab == 1))
+            Chip("Круги", tab == 2, { tab = 2 }, Lucide.Flag, Modifier.keepInView(tab == 2))
+            Chip("G-метр и крен", tab == 3, { tab = 3 }, Lucide.Crosshair, Modifier.keepInView(tab == 3))
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
+            ScrollWhenLow(440.dp) {
             when (tab) {
                 0 -> RunsTab { open = it }
                 1 -> DynoTab()
@@ -103,6 +115,7 @@ fun PerfScreen() {
                 4 -> SeriesTab()
                 5 -> SpoolTab()
                 else -> GTab()
+            }
             }
         }
     }
@@ -130,6 +143,8 @@ private fun RunsTab(analyse: (java.io.File) -> Unit) {
             Panel(m) {
                 PanelTitle(Lucide.Timer, "Замер разгона")
                 Spacer(Modifier.height(8.dp))
+                // all that reads scrolls together, the buttons stay: on 7" the results had no height left between them
+                Column(Modifier.weight(1f).cueScroll(null)) {
                 T(
                     when {
                         p.running && p.rolling -> "На ходу, газ в полу: замер идёт, пока не отпустите газ"
@@ -139,27 +154,29 @@ private fun RunsTab(analyse: (java.io.File) -> Unit) {
                     }, 13.sp, if (p.armed || p.running) C.Green else C.Sub,
                 )
                 Spacer(Modifier.height(12.dp))
-                FitValue(if (p.running || p.elapsedSec > 0) "%.2f".format(p.elapsedSec) else "—", "с", 64f, Modifier.fillMaxWidth().height(90.dp), C.Violet)
-                T("%.0f км/ч".format(p.speedKmh) + if (p.rolling) "" else " · %.0f м".format(p.distanceM), 18.sp)
+                FitValue(if (p.running || p.elapsedSec > 0) "%.2f".format(p.elapsedSec) else "—", "с", 64f, Modifier.fillMaxWidth().height(90.dp), C.highlight(C.Violet), everyMs = 0L)
+                T(kg.forester.sg.data.DistanceUnits.speedText(p.speedKmh) + if (p.rolling) "" else " · %.0f м".format(p.distanceM), 18.sp)
                 Spacer(Modifier.height(12.dp))
-                Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                Column {
                     keys.forEach { k ->
                         p.live[k]?.let { v ->
                             Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                                 T(resultName(k), 14.sp, C.Sub, modifier = Modifier.weight(1f))
-                                T("%.2f с".format(v) + (if (k.endsWith("m")) p.live[k.replace("m", "v")]?.let { "  ·  %.0f км/ч".format(it) } ?: "" else ""), 15.sp, weight = FontWeight.SemiBold)
+                                T("%.2f с".format(v) + (if (k.endsWith("m")) p.live[k.replace("m", "v")]?.let { "  ·  " + kg.forester.sg.data.DistanceUnits.speedText(it) } ?: "" else ""), 15.sp, weight = FontWeight.SemiBold)
                             }
                         }
                     }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SmallAction("Отрезки", Lucide.Ruler) { intervals = true }
-                    SmallAction(Repo.settings.perfLabel.ifEmpty { "Метка" }, Lucide.Tag) { label = true }
                 }
                 Spacer(Modifier.height(6.dp))
                 T("Скорость — GPS, если он даёт 4 замера в секунду и чаще, иначе ЭБУ с поправкой по GPS; моменты пересечения " +
                     "интерполируются по времени замеров. " + (measured?.second?.speed?.let { "Замер на графике: ${it.precisionText()}." }
                         ?: "С GPS от 10 Гц или быстрым опросом ЭБУ точность около ±0,1 с, иначе около ±0,3 с."), 10.sp, C.Sub)
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SmallAction("Отрезки", Lucide.Ruler) { intervals = true }
+                    SmallAction(Repo.settings.perfLabel.ifEmpty { "Метка" }, Lucide.Tag) { label = true }
+                }
             }
         },
         1.25f to { m ->
@@ -198,7 +215,7 @@ private fun RunsTab(analyse: (java.io.File) -> Unit) {
                     T(runTitle(run!!), 12.sp, C.Sub, maxLines = 1)
                     T(runLine(run, keys), 14.sp, weight = FontWeight.SemiBold, maxLines = 2)
                     keys.firstOrNull { it in run.results && corrected(run, it) != null }?.let { k ->
-                        T("${resultShort(k)} с поправкой на погоду (SAE): %.2f с".format(corrected(run, k)), 12.sp, C.Sub, maxLines = 1)
+                        T("${resultShort(k)} с поправкой на погоду (SAE): ${correctedText(run, k)}", 12.sp, C.Sub, maxLines = 1)
                     }
                     T(runFacts(run, measured?.second), 12.sp, C.Sub, maxLines = 2)
                     condLine(run).takeIf { it.isNotEmpty() }?.let { T(it, 12.sp, C.Sub, maxLines = 1) }
@@ -208,13 +225,22 @@ private fun RunsTab(analyse: (java.io.File) -> Unit) {
                         if (file != null) SmallAction("Графики и карта", Lucide.ChartLine) { analyse(file) }
                         measured?.let { (tr, ms) -> SmallAction("Поделиться", Lucide.Share2) { shareRun(ctx, run, tr, ms, keys) } }
                         SmallAction("Метка", Lucide.Tag) { labelRun = run }
-                        SmallAction("Удалить", Lucide.Trash2, C.Red) { Perf.deleteRun(run.timeMs); picked = null }
+                        var askRun by remember(run.timeMs) { mutableStateOf(false) }
+                        SmallAction("Удалить", Lucide.Trash2, C.Red) { askRun = true }
+                        if (askRun) ConfirmDialog(
+                            "Удалить замер?", "Замер вместе с записью для графиков уйдёт из списка. Вернуть его будет нельзя.",
+                            "Удалить", { Perf.deleteRun(run.timeMs); picked = null }, { askRun = false },
+                        )
                     }
                 }
             }
         },
         1.05f to { m ->
             Panel(m) {
+                // a new run goes on top: the list follows it there, unless it was scrolled down to older ones
+                val list = androidx.compose.foundation.lazy.rememberLazyListState()
+                androidx.compose.runtime.LaunchedEffect(p.runs.firstOrNull()?.timeMs) { if (list.firstVisibleItemIndex <= 1) list.scrollToItem(0) }
+                ListWithHead({
                 // clearing the list moved under it, as a proper button asking first (it was a small word beside the "i",
                 // one stray tap away from losing every run)
                 PanelTitle(Lucide.Flag, "Лучшие и последние")
@@ -234,10 +260,7 @@ private fun RunsTab(analyse: (java.io.File) -> Unit) {
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                // a new run goes on top: the list follows it there, unless it was scrolled down to older ones
-                val list = androidx.compose.foundation.lazy.rememberLazyListState()
-                androidx.compose.runtime.LaunchedEffect(p.runs.firstOrNull()?.timeMs) { if (list.firstVisibleItemIndex <= 1) list.scrollToItem(0) }
-                LazyColumn(Modifier.weight(1f), state = list) {
+                }, state = list) {
                     items(p.runs, key = { it.timeMs }) { r ->
                         val on = r == run && !p.running
                         Row(
@@ -250,8 +273,7 @@ private fun RunsTab(analyse: (java.io.File) -> Unit) {
                                 T(runLine(r, keys), 13.sp, if (r.flags.isEmpty()) C.Text else C.Orange)
                             }
                             val f = Perf.logFile(r.log, r.demo)
-                            if (f != null) androidx.compose.material3.Icon(Lucide.ChartLine, "Графики", tint = C.Violet,
-                                modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).clickable { analyse(f) }.padding(7.dp))
+                            if (f != null) IconTap(Lucide.ChartLine, "Графики", { analyse(f) }, tint = C.Violet, iconSize = 22.dp)
                         }
                     }
                 }
@@ -262,13 +284,13 @@ private fun RunsTab(analyse: (java.io.File) -> Unit) {
             }
         },
     )
-    if (confirmClear) androidx.compose.material3.AlertDialog(
+    if (confirmClear) CarAlertDialog(
         onDismissRequest = { confirmClear = false },
         containerColor = C.CardHi,
         title = { T("Удалить все замеры?", 18.sp, weight = FontWeight.SemiBold) },
         text = {
-            T("Из списка уйдут все замеры (${p.runs.size}) вместе с записями для графиков, и замеры мощности тоже. " +
-                "Вернуть их будет нельзя.", 15.sp)
+            T("Из списка уйдут все замеры (${p.runs.size}) вместе с записями для графиков. " +
+                "Вернуть их будет нельзя. Заезды диностенда останутся.", 15.sp)
         },
         confirmButton = {
             androidx.compose.material3.TextButton({ confirmClear = false; picked = null; Perf.clearRuns() }) { T("Удалить все", 16.sp, C.Red) }
@@ -280,55 +302,125 @@ private fun RunsTab(analyse: (java.io.File) -> Unit) {
     labelRun?.let { r -> RunLabelDialog(r) { labelRun = null } }
 }
 
+/** What the dyno tab draws from the state of the timer, without the samples that change it all the time. */
+private data class DynoState(val runs: List<DynoRun>, val pulling: Boolean, val rejected: Boolean, val shown: Long?)
+
+private fun PerfState.forDyno() = DynoState(dynoRuns, dynoPulling, dynoRejected, dynoShown)
+
 @Composable
 private fun DynoTab() {
-    val p by Repo.perf.collectAsState()
+    val first = remember { Repo.perf.value.forDyno() }
+    val state by remember { Repo.perf.map { it.forDyno() }.distinctUntilChanged() }.collectAsState(first)
     val s = Repo.settings
     var mass by remember { mutableStateOf(s.massKg.toString()) }
-    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Panel(Modifier.weight(2f).fillMaxHeight()) {
-            PanelTitle(Lucide.ChartSpline, "Мощность на колёсах (оценка)")
-            val maxHp = p.dyno.maxByOrNull { it.hp }
-            val maxNm = p.dyno.maxByOrNull { it.nm }
-            T(if (maxHp == null) "Нет замера: на ровной дороге на 3-й передаче от ~2000 об/мин нажмите газ в пол до отсечки"
-            else "%.0f л.с. при %d об/мин · %.0f Н·м при %d об/мин (на коленвалу, без потерь) · на коленвалу ≈ %.0f л.с. (+15 %% потерь трансмиссии)"
-                .format(maxHp.hp, maxHp.rpm, maxNm!!.nm, maxNm.rpm, maxHp.hp * 1.15f), 13.sp, C.Sub)
-            Spacer(Modifier.height(8.dp))
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (p.dyno.size >= 2) Canvas(Modifier.fillMaxSize().padding(8.dp)) {
-                    val r0 = p.dyno.first().rpm.toFloat(); val r1 = p.dyno.last().rpm.toFloat().coerceAtLeast(r0 + 1)
-                    val hpMax = (p.dyno.maxOf { it.hp } * 1.15f).coerceAtLeast(1f)
-                    val nmMax = (p.dyno.maxOf { it.nm } * 1.15f).coerceAtLeast(1f)
-                    fun x(r: Int) = (r - r0) / (r1 - r0) * size.width
-                    for (k in 0..4) drawLine(C.Border, Offset(0f, size.height * k / 4), Offset(size.width, size.height * k / 4), 1f)
-                    val hp = Path(); val nm = Path()
-                    p.dyno.forEachIndexed { i, d ->
-                        val yh = size.height - d.hp / hpMax * size.height
-                        val yn = size.height - d.nm / nmMax * size.height
-                        if (i == 0) { hp.moveTo(x(d.rpm), yh); nm.moveTo(x(d.rpm), yn) } else { hp.lineTo(x(d.rpm), yh); nm.lineTo(x(d.rpm), yn) }
-                    }
-                    drawPath(hp, C.Violet, style = Stroke(4f))
-                    drawPath(nm, C.Blue, style = Stroke(3f))
-                }
-            }
-            Row {
-                T("— мощность, л.с.   ", 12.sp, C.Violet)
-                T("— момент, Н·м   ", 12.sp, C.Blue)
-                if (p.dyno.isNotEmpty()) T("${p.dyno.first().rpm}…${p.dyno.last().rpm} об/мин", 12.sp, C.Sub)
-            }
-        }
-        Panel(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())) {
-            PanelTitle(Lucide.Timer, "Как считается")
-            Spacer(Modifier.height(8.dp))
-            NumberField("Масса машины с водителем, кг", mass) { mass = it; it.toIntOrNull()?.takeIf { v -> v in 600..4000 }?.let { v -> s.massKg = v } }
-            Spacer(Modifier.height(8.dp))
-            T("Мощность = (масса × ускорение + сопротивление воздуха + качения) × скорость. Ускорение — по скорости ЭБУ, " +
-                "сглаживание 0,6 с. Это оценка «виртуального диностенда»: на точность влияют уклон, ветер, масса и шины. " +
-                "Сравнивайте свои замеры между собой (до и после доработки) в одинаковых условиях.", 12.sp, C.Sub)
+    var picked by remember { mutableStateOf<Long?>(null) }
+    var compared by remember { mutableStateOf<Long?>(null) }
+    var noCompare by remember { mutableStateOf(false) }
+    var percent by remember { mutableStateOf(false) }
+    var labelRun by remember { mutableStateOf<DynoRun?>(null) }
+    // the poll goes fast only while this is on the screen: not with the app in the background
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val cycle = owner.lifecycle
+        val seen = androidx.lifecycle.LifecycleEventObserver { _, _ -> Repo.dynoTab.value = cycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) }
+        cycle.addObserver(seen)
+        onDispose {
+            cycle.removeObserver(seen)
+            Repo.dynoTab.value = false
         }
     }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val demo by Repo.demoOn.collectAsState()
+    LaunchedEffect(demo) { withContext(Dispatchers.IO) { Perf.loadDyno() } }
+    // a new pull is what's shown next, against the one before it
+    LaunchedEffect(state.pulling) { if (state.pulling) { picked = null; compared = null; noCompare = false } }
+    val runs = state.runs
+    val views by produceState(emptyMap<Long, DynoStore.View>(), runs) {
+        value = withContext(Dispatchers.IO) { runs.associate { it.startMs to DynoStore.view(it) } }
+    }
+    // the pull just driven: its longest part, not the part it ended on
+    val cur = runs.firstOrNull { it.startMs == picked } ?: if (state.pulling || state.rejected) null else runs.firstOrNull { it.startMs == state.shown } ?: runs.firstOrNull()
+    val ref = cur?.takeIf { !noCompare }?.let { c -> runs.firstOrNull { it.startMs == compared && it != c } ?: DynoCalc.previousSameGear(runs, c) }
+    val view = cur?.let { views[it.startMs] }
+    val curve = view?.curve ?: emptyList()
+    val refCurve = ref?.let { views[it.startMs]?.curve }
+    PerfColumns(
+        2f to { m ->
+            Panel(m) {
+                PanelTitle(Lucide.ChartSpline, "Мощность на колёсах (оценка)") {
+                    Chip("% от пика", percent, { percent = !percent })
+                }
+                val maxHp = curve.maxByOrNull { it.hp }
+                val maxNm = curve.maxByOrNull { it.nm }
+                when {
+                    cur == null && state.pulling -> T("Идёт заезд: держите газ в полу до отсечки", 13.sp, C.Green)
+                    cur == null && state.rejected -> T("Заезд не засчитан: слишком короткий или мало замеров. Повторите или выберите заезд в списке", 13.sp, C.Orange)
+                    maxHp == null || maxNm == null -> T("Нет замера: на ровной дороге на 3-й передаче от ~2000 об/мин нажмите газ в пол до отсечки", 13.sp, C.Sub)
+                    else -> {
+                        T("%.0f л.с. при %d об/мин · %.0f Н·м при %d об/мин · на коленвалу ≈ %.0f л.с. (+15 %% потерь трансмиссии)"
+                            .format(maxHp.hp, maxHp.rpm, maxNm.nm, maxNm.rpm, maxHp.hp * 1.15f), 13.sp, C.Sub, maxLines = 1)
+                        DynoCalc.compareLines(curve, refCurve).forEach { T(it, 15.sp, weight = FontWeight.SemiBold, maxLines = 1) }
+                        if (ref != null && DynoCalc.otherGear(cur!!, ref)) T(kg.forester.sg.data.DistanceUnits.label("Другая передача: обороты на км/ч отличаются больше чем на 8 %, сравнение условное"), 12.sp, C.Orange, maxLines = 1)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    if (curve.size >= 2) DynoChart(curve, refCurve, percent, Modifier.fillMaxSize())
+                    else T("Здесь будут кривые мощности и момента", 13.sp, C.Sub)
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    T("● ", 12.sp, C.Violet); T("мощность${if (percent) "" else ", л.с."}   ", 12.sp, C.Sub)
+                    T("● ", 12.sp, C.Blue); T("момент${if (percent) "" else ", Н·м"}   ", 12.sp, C.Sub)
+                    if (ref != null) T("пунктир: ${dynoTitle(ref)}   ", 12.sp, C.Sub, maxLines = 1)
+                    Spacer(Modifier.weight(1f))
+                    if (cur != null) SmallAction(cur.label ?: "Метка", Lucide.Tag) { labelRun = cur }
+                }
+                view?.let { v ->
+                    T(listOfNotNull("%.0f замеров в секунду".format(v.hz),
+                        v.slopePct?.let { "уклон %+.1f %% учтён".format(it) } ?: "уклон меньше 3 % или не измерен, дорога считается ровной",
+                        cur?.iatC?.let { "IAT $it°" }, cur?.baroKpa?.let { "%.1f кПа".format(it) }, cur?.coolantC?.let { "ОЖ $it°" },
+                        cur?.iam?.let { "IAM %.2f".format(it) }).joinToString(" · "), 11.sp, C.Sub, maxLines = 1)
+                }
+            }
+        },
+        1f to { m ->
+            Panel(m) {
+                PanelTitle(Lucide.Timer, "Заезды")
+                Spacer(Modifier.height(6.dp))
+                if (runs.isEmpty()) T("Заездов ещё нет. Хранятся последние 100, у каждого свой файл замеров", 13.sp, C.Sub)
+                // a new pull goes on top: the list follows it there
+                val list = androidx.compose.foundation.lazy.rememberLazyListState()
+                LaunchedEffect(runs.firstOrNull()?.startMs) { list.scrollToItem(0) }
+                LazyColumn(Modifier.weight(1f), state = list) {
+                    items(runs, key = { it.startMs }) { r ->
+                        DynoRow(r, views[r.startMs], r == cur, r == ref, onClick = { picked = r.startMs }, onCompare = {
+                            if (r == ref) { compared = null; noCompare = true } else { compared = r.startMs; noCompare = false }
+                        }, onDelete = {
+                            if (r.startMs == picked) picked = null
+                            scope.launch(Dispatchers.IO) { Perf.deleteDyno(r) }
+                        })
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                NumberField("Масса машины с водителем, кг", mass) { mass = it; it.toIntOrNull()?.takeIf { v -> v in 600..4000 }?.let { v -> s.massKg = v } }
+                Spacer(Modifier.height(6.dp))
+                Column(Modifier.heightIn(max = 96.dp).verticalScroll(rememberScrollState())) {
+                    T("Мощность = (масса × ускорение + сопротивление воздуха + качения + уклон) × скорость. Ускорение по оборотам, скорость ЭБУ задаёт " +
+                        "только передаточное число заезда; уклон по высоте GPS, если он от 3 %. Это оценка: на точность влияют ветер, масса и шины, " +
+                        "поэтому сравнивайте свои заезды между собой на одной передаче, в похожих условиях. Пока открыт этот экран и газ в полу, " +
+                        "ЭБУ опрашивается чаще, а предупреждения проверяются реже: остальные значения приходят только раз в несколько секунд. В заезд идут " +
+                        "только разгоны при открытом экране. Через ELM327 замеры идут слишком редко для диностенда.", 12.sp, C.Sub)
+                }
+            }
+        },
+    )
+    labelRun?.let { r -> RunLabelDialog(r) { labelRun = null } }
 }
 
+private fun dynoTitle(r: DynoRun) = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault()).format(Date(r.startMs)) + (r.label?.let { " «$it»" } ?: "")
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun LapsTab(analyse: (java.io.File) -> Unit) {
     val p by Repo.perf.collectAsState()
@@ -344,7 +436,7 @@ private fun LapsTab(analyse: (java.io.File) -> Unit) {
             T(if (!lap.lineSet) "Встаньте на линии старта/финиша и нажмите кнопку. Круг засчитывается, когда машина проезжает в 25 м от этой точки после отъезда дальше 60 м."
             else "Линия старта задана. Каждое прохождение рядом с ней — новый круг.", 13.sp, C.Sub)
             Spacer(Modifier.height(12.dp))
-            FitValue(if (lap.running) lapTime(lap.currentSec) else "—", "", 64f, Modifier.fillMaxWidth().height(90.dp), C.Violet)
+            FitValue(if (lap.running) lapTime(lap.currentSec) else "—", "", 64f, Modifier.fillMaxWidth().height(90.dp), C.highlight(C.Violet), everyMs = 0L)
             lap.laps.lastOrNull()?.let { T("последний ${lapTime(it.sec)}", 16.sp) }
             lap.best?.let { T("лучший ${lapTime(it)}", 16.sp, C.Green) }
             Spacer(Modifier.weight(1f))
@@ -372,7 +464,7 @@ private fun LapsTab(analyse: (java.io.File) -> Unit) {
                 else T("Задайте старт/финиш: здесь появится трасса", 13.sp, C.Sub)
             }
             Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.foundation.layout.FlowRow(verticalArrangement = Arrangement.Center) {
                 if (current.any) { T("● ", 13.sp, C.Violet); T(if (lap.running) "текущий круг   " else "к линии старта   ", 13.sp, C.Sub) }
                 if (shown != null) {
                     T("● ", 13.sp, C.Orange)
@@ -395,8 +487,7 @@ private fun LapsTab(analyse: (java.io.File) -> Unit) {
                     ) {
                         T("Круг ${i + 1}" + if (l.demo) " · демо" else "", 14.sp, C.Sub, modifier = Modifier.weight(1f))
                         T(lapTime(l.sec), 15.sp, if (l.sec == lap.best) C.Green else C.Text, FontWeight.SemiBold)
-                        if (f != null) androidx.compose.material3.Icon(Lucide.ChartLine, "Графики", tint = C.Violet,
-                            modifier = Modifier.padding(start = 6.dp).size(34.dp).clip(RoundedCornerShape(8.dp)).clickable { analyse(f) }.padding(7.dp))
+                        if (f != null) IconTap(Lucide.ChartLine, "Графики", { analyse(f) }, Modifier.padding(start = 6.dp), tint = C.Violet, iconSize = 22.dp)
                     }
                 }
             }
@@ -455,13 +546,3 @@ fun TextFieldDark(label: String, value: String, digits: Boolean = false, onChang
     )
 }
 
-@Composable
-fun SwitchRow(title: String, sub: String, on: Boolean, onChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            T(title, 15.sp)
-            if (sub.isNotEmpty()) T(sub, 11.sp, C.Sub)
-        }
-        Switch(on, onChange, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
-    }
-}

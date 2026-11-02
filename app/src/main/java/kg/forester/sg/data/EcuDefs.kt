@@ -60,7 +60,7 @@ object EcuDefs {
         "Читаются все .xml этой папки (без подпапок), по порядку имён; параметр с тем же id, что в базе (P2, E51…), заменяет её,\n" +
         "файл ниже по алфавиту главнее. Параметр без ecubyteindex/ecubit опрашивается, даже если ЭБУ при подключении\n" +
         "сказал, что его нет. Новый или изменённый файл подхватывается сам за несколько секунд; что вышло из каждого,\n" +
-        "видно в Настройки → Авто и адаптер → Свои определения RomRaider.\n"
+        "видно в Настройки → Машина и адаптер → Свои определения RomRaider.\n"
 
     /**
      * The open folder made, with the bundled base in base/carpulse_base.xml as a RomRaider logger.xml to copy from
@@ -129,7 +129,8 @@ object EcuDefs {
         } catch (x: RomRaiderXml.BadFile) {
             Loaded(e, null, x.message)
         } catch (x: Exception) {
-            Loaded(e, null, x.message ?: x.toString())
+            kg.forester.sg.ssm.SsmTrace.log("defs: $x")
+            Loaded(e, null, Failure.text(x, "файл не читается"))
         }
     }
 
@@ -146,7 +147,8 @@ object EcuDefs {
                 out.toByteArray()
             } ?: return "Не удалось открыть файл"
         } catch (x: Exception) {
-            return "Не удалось прочитать файл: ${x.message}"
+            kg.forester.sg.ssm.SsmTrace.log("defs: $x")
+            return "Не удалось прочитать файл: ${Failure.text(x)}"
         }
         if (bytes.size > MAX_BYTES) return "Файл больше 8 МБ: это не определение логгера"
         val text = RomRaiderXml.text(bytes)
@@ -161,7 +163,8 @@ object EcuDefs {
         } catch (x: RomRaiderXml.BadFile) {
             return "Файл не подходит: ${x.message}"
         } catch (x: Exception) {
-            return "Файл не разобрался: ${x.message}"
+            kg.forester.sg.ssm.SsmTrace.log("defs: $x")
+            return "Файл не разобрался: ${Failure.text(x, "это не определение логгера")}"
         }
         if (defs.params.none { it.expr != null } && defs.ext.none { it.param.expr != null })
             return "Файл не подходит: ни одной формулы, которую приложение понимает"

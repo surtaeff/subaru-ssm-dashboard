@@ -42,6 +42,12 @@ data class GuardState(
     val atfMax: Int? = null,
 )
 
+/**
+ * What a lost link leaves of the guard: the live readings go (the knock corrections, the oil, the boost target), what is
+ * kept is what was learned or decided (IAM, the turbo latch, the cool-down).
+ */
+fun GuardState.afterLinkLoss() = copy(fbkc = null, flkc = null, oilC = null, oilEstimated = true, targetBoostKpa = null)
+
 /** Highest (and lowest) values since the start of the trip or the last reset. */
 data class Peaks(
     val boostBar: Float? = null,
@@ -59,8 +65,8 @@ data class Peaks(
 
 /**
  * Watches the engine between polls: reads IAM and the knock corrections, estimates the oil temperature, keeps
- * the turbo cool-down, the thermostat (warm-up time), sudden coolant rise (EJ25 head gaskets) and the peak values.
- * The other warnings (knock, mixture, boost, idle, overheating, ATF) are the [analyzer]'s rules. Warnings go
+ * the turbo cool-down, the thermostat (warm-up time) and the peak values.
+ * The other warnings (knock, mixture, boost, idle, overheating and coolant rise, ATF) are the [analyzer]'s rules. Warnings go
  * through [Alerts].
  */
 class EngineGuard {
@@ -73,6 +79,8 @@ class EngineGuard {
 
     private var avail: List<RrParam>? = null
     private var roles = emptyMap<String, RrParam>()
+    /** Merged frames were left out since the rules last saw a frame: told to them with the next one. */
+    private var skippedMerged = false
     /**
      * Another make whose unit has no PID 5C (VW and others keep the oil in their own mode 22 ids): the oil temperature
      * signals of its OBDb set, all asked, the first that answers wins (which id a car has depends on the engine).
@@ -90,16 +98,39 @@ class EngineGuard {
     /** The cool-down countdown is on (see [process]): set at a stop after real work, kept until it runs out. */
     private var cooldownShown = false
     private var turboSeen = false
+    /** This run's boost is written to Repo.settings.boostRom. */
+    private var romBoostSaved = false
     private var boostMs = 0L
+    private val turboWatch = kg.forester.sg.data.TurboWatch()
+    private var turboWatchCar = ""
+
+    /**
+     * Another make over OBD-II: what is known of its turbo now (the stored state, moved on by the PIDs the unit lists and
+     * by this sample), written under the settings' lock. Any other car: unknown, which the rules read as no turbo.
+     */
+    private fun otherTurboState(e: EcuSnapshot): kg.forester.sg.data.TurboState {
+        val s = Repo.settings
+        if (!(kg.forester.sg.data.CarKind.other.value && Repo.obdMode.value && !s.demo)) return kg.forester.sg.data.TurboState.UNKNOWN
+        val stored = s.otherTurbo
+        if (stored.car != turboWatchCar) {
+            // another car in the same process: nothing of the last one's boost stays (turboSeen is also cleared in reset on SSM)
+            if (turboWatchCar.isNotEmpty() && stored.car.isNotEmpty()) { turboSeen = false; boostMs = 0L }
+            turboWatchCar = stored.car; turboWatch.reset()
+        }
+        var st = stored.state
+        kg.forester.sg.data.turboFromPids(EcuLink.obd?.supported ?: emptySet())?.let { p ->
+            if (p == kg.forester.sg.data.TurboState.TURBO) st = p else if (st == kg.forester.sg.data.TurboState.UNKNOWN) st = p
+        }
+        st = turboWatch.sample(e.timeMs, st, e.rpm, e.mapKpa, e.atmKpa, e.engineLoadPct, e.throttlePct)
+        if (st != stored.state) s.updateOtherTurbo { it.with(if (it.state == kg.forester.sg.data.TurboState.TURBO) it.state else st) }
+        return st
+    }
     private var iamStart: Float? = null
     private var iamLogged = false
     private var coldStartMs = 0L
     private var movingMsSinceCold = 0L
     private var warmupMin: Float? = null
     private var thermostatWarned = false
-    /** Coolant samples of the last 90 s: time, °C, and whether the car was moving with the radiator fan on then. */
-    private val coolant = ArrayDeque<Triple<Long, Int, Boolean>>()
-    private var warmSince = 0L
     private var maintenanceChecked = 0L
     private var features = -1
     private var custom = -1
@@ -123,6 +154,8 @@ class EngineGuard {
             // another car's own oil sensor, if its unit reports the standard PID 5C
             pick("oil", "P122", "OBD_5C")?.let { "oil" to it },
             pick("latG", "P172")?.let { "latG" to it },
+            // the exhaust temperature where this ECU lists the sensor (its capability bit): a metric of its own (Metrics.ofParam), one byte more per poll
+            pick("egtEcu", *kg.forester.sg.ssm.RomRaider.ECU_EGT.toTypedArray())?.let { "egtEcu" to it },
             // the ROM's own manifold pressure, wider than the standard single byte (0–255 kPa absolute = 1.53 bar of boost)
             pick("mapAbs", "E51", "E129", "E20", "E88", "E98")?.let { "mapAbs" to it },
             pick("mapRel", "E113", "E72")?.let { "mapRel" to it },
@@ -184,10 +217,11 @@ class EngineGuard {
             ?: v("mapRel")?.let { r -> e.atmKpa?.let { it + r } }?.takeIf { it in 10f..450f }
             ?: v("mapRelSea")?.let { it + 101.325f }?.takeIf { it in 10f..450f }
         mapLimit(e, abs != null)
-        // the knock correction: some ROMs (a 16-bit 572 of a tester) keep the standard byte 0x22 at 0 and pull timing
-        // only in their FBKC, so the cards and the knock counter showed nothing while the log had the pulls
+        // the live pull comes from the FBKC when there is one: the standard byte 0x22 is the knock correction advance
+        // (with the base advance in it), so it hides a pull on some ROMs (a 16-bit 572 keeps it at 0) and shows one
+        // from the learned FLKC alone on others
         val fbkc = v("fbkc")?.takeIf { it in -16f..2f }
-        val knock = if (fbkc != null && fbkc < (e.knockDeg ?: 0f)) fbkc else e.knockDeg
+        val knock = livePull(e.knockDeg, fbkc, roles["fbkc"]?.desc?.startsWith(kg.forester.sg.ssm.RomRaider.SIBLING_NOTE) != true)
         // the driver's own values for what the ECU doesn't give or gives wrong (old JECS units); a reading out of
         // range is a wrong address or formula and leaves the ECU's value
         val afr = v("afr")?.takeIf { it in 6f..25f }
@@ -289,7 +323,7 @@ class EngineGuard {
     fun reset() {
         oilEst = null; mafAvg = 0f; heat = 0f; cooldownAnnounced = false; turboSeen = false; boostMs = 0L
         iamStart = null; iamLogged = false; coldStartMs = 0L; movingMsSinceCold = 0L; warmupMin = null
-        thermostatWarned = false; coolant.clear(); warmSince = 0L; engineOnSince = 0L; lastMs = 0L; romIdSeen = null
+        thermostatWarned = false; engineOnSince = 0L; lastMs = 0L; romIdSeen = null
         analyzer?.reset()
     }
 
@@ -300,7 +334,9 @@ class EngineGuard {
         iamLogged = false
     }
 
-    fun process(e: EcuSnapshot, t: TcuSnapshot?, now: Long) {
+    /** [rules] false: a merged frame of the dyno's fast poll (see [DynoPoll]), for the live state only, not the rules or the peaks. */
+    fun process(e: EcuSnapshot, t: TcuSnapshot?, now: Long, rules: Boolean = true) {
+        if (!rules) skippedMerged = true
         val list = Repo.rrAvailable.value
         if (list !== avail || features != Repo.featureVersion.value || custom != Repo.customVersion.value) {
             avail = list; features = Repo.featureVersion.value; custom = Repo.customVersion.value; chooseRoles(list)
@@ -340,16 +376,31 @@ class EngineGuard {
         // turbo only after real boost: above 0.15 bar, below 2.5 bar (a junk 0xFF reads +127 kPa), held for 2 s
         boostMs = if (gauge in 15f..250f && (e.rpm ?: 0) > 1500) boostMs + (dt * 1000).toLong() else 0L
         if (boostMs > 2000) turboSeen = true
+        // another make: its ECU doesn't say, the PIDs it lists and the boost it really makes do (see OtherTurbo)
+        val otherState = otherTurboState(e)
         // turbo by what the ECU says (its ROM ID, a wastegate it reports, boost seen), not by the name typed in the settings
         val init = Repo.ecuInit.value
         if (init?.romId != romIdSeen) {
             romIdSeen = init?.romId
-            romTurbo = init != null && ((ctx?.let { kg.forester.sg.ssm.EngineId.romTurbo(it, init.romId) } ?: kg.forester.sg.ssm.EngineId.fromRomId(init.romId)?.turbo) == true ||
-                (kg.forester.sg.ssm.EcuParams.reported(init, kg.forester.sg.ssm.EcuParams.WGDC) && init.capabilities.size > 4))
+            romBoostSaved = false
+            romTurbo = init != null && kg.forester.sg.ssm.EngineId.turbo(ctx, init, s.boostRom == init.romId)
         }
         val sport = kg.forester.sg.data.CanEcu.active
         if (sport && turboSeen && !s.linkTurbo) s.linkTurbo = true
-        val turboCar = turboSeen || romTurbo || s.demo || (sport && s.linkTurbo)
+        // real boost reaches the cards too, not only the guard. Another make over OBD-II has its own way (OtherTurbo, applied
+        // at the next connection); the demo's boost is no car's
+        val obdOther = kg.forester.sg.data.CarKind.other.value && Repo.obdMode.value
+        if (turboSeen && !s.demo && !obdOther) {
+            if (!Repo.carTurbo.value) {
+                s.carTurbo = true
+                val tiles = s.homeTiles
+                val back = kg.forester.sg.data.HomeLayout.tilesAfterBoost(tiles)
+                if (back != tiles) s.homeTiles = back
+            }
+            if (init != null && !romBoostSaved) { romBoostSaved = true; if (s.boostRom != init.romId) s.boostRom = init.romId }
+        }
+        // a real boost reading is a turbo in any state: turboSeen stays in, so no TurboState suppresses a boost warning that exists.
+        val turboCar = turboSeen || romTurbo || s.demo || (sport && s.linkTurbo) || otherState == kg.forester.sg.data.TurboState.TURBO
         val turbo = fTurbo && turboCar
         val speed = e.speedKmh ?: 0
         val idle = running && rpm < 1300 && speed < 3
@@ -395,7 +446,8 @@ class EngineGuard {
             val gap = (if (turboCar) 10f + 0.3f * mafAvg else 8f + 0.25f * mafAvg).coerceAtMost(35f) * warmth
             val target = c + gap
             val o = oilEst ?: (c - 5f)
-            (o + (target - o) * (dt / 300f).coerceAtMost(1f)).also { oilEst = it }
+            // the driver's correction only on what is shown and judged: the estimate itself keeps its own course
+            oilEstimate((o + (target - o) * (dt / 300f).coerceAtMost(1f)).also { oilEst = it }, s.oilCorrection)
         } else null
         // warm by the coolant, as the ECU sees it: every EJ ends its warm-up enrichment at 80° (the oil is only an estimate)
         val cold = running && c != null && c < 80
@@ -418,39 +470,18 @@ class EngineGuard {
             }
         } else if (!running) coldStartMs = 0L
 
-        // --- coolant: overheating and sudden rise on a warm engine
-        if (c != null && running && fCool) {
-            // the radiator fan: null when this ECU does not report it
-            val fan = listOf("fan1", "fan2", "fan3").mapNotNull { v(it) }.takeIf { it.isNotEmpty() }?.any { it >= 0.5f }
-                ?: v("fanPct")?.let { it > 5f }
-            // a rise counts only on a real move (40+ km/h, the radiator in the airflow) with the fan on: standing or
-            // crawling in a jam the coolant climbs to the fan's switch-on point (97–99°) by itself, and that is what kept
-            // raising this warning in traffic while the dash needle (buffered from ~70 to ~105°) didn't move
-            coolant.addLast(Triple(now, c, speed >= 40 && fan != false))
-            while (coolant.isNotEmpty() && now - coolant.first().first > 90_000L) coolant.removeFirst()
-            // right after reaching 80° the thermostat may still be opening and the coolant overshoots: no spike check then
-            if (c < 80) warmSince = 0L else if (warmSince == 0L) warmSince = now
-            // 80→88 under hard throttle is the thermostat opening late, normal; gases in the coolant show as a jump of a
-            // warm engine already at 90, to 95–100 within a minute
-            val from = coolant.indexOfFirst { now - it.first in 50_000L..90_000L }
-            val old = coolant.getOrNull(from)?.second
-            val driving = from >= 0 && (from until coolant.size).all { coolant[it].third }
-            if (old != null && driving && old in 90..97 && c >= 95 && c - old >= 5 && now - warmSince > 5 * 60_000L) {
-                Alerts.raise("spike", "ОЖ выросла с $old° до $c° за минуту на ходу" + (if (fan == true) " при работающем вентиляторе" else "") +
-                    ". Так бывает при воздухе в системе охлаждения и при прорыве газов через прокладку ГБЦ. " +
-                    "Проверьте уровень антифриза и нет ли пузырей в расширительном бачке", Alerts.Level.WARN, 20 * 60_000L)
-            }
-        } else if (!running) warmSince = 0L
         val atf = t?.atfC
         // the transmission's sample only while fresh: a TCU that stopped answering must not feed a gear frozen at 3
         val tFresh = t?.takeIf { now - it.timeMs in 0L..2500L }
         // a rule failing must not cost the guard's own update below
-        runCatching {
-            analyzer?.process(RuleInput(e, tFresh, now, iam = if (fKnock) iam else null, fbkc = if (fKnock) fbkc else null, flkc = if (fKnock) flkc else null,
-                oilC = oil, turbo = turboCar, targetBoostKpa = target, sportEcu = sport, box = boxInput(),
+        if (rules) runCatching {
+            analyzer?.process(RuleInput(e, tFresh, now, skippedMerged, iam = if (fKnock) iam else null, fbkc = if (fKnock) fbkc else null, flkc = if (fKnock) flkc else null,
+                iamInitial = romIam.initial, iamBoostCut = romIam.boostCut, oilC = oil, turbo = turboCar, targetBoostKpa = target, sportEcu = sport, box = boxInput(),
+                boostNormCar = if (otherState == kg.forester.sg.data.TurboState.TURBO) s.otherTurbo.car else null,
                 fanLow = v("fan1")?.let { it >= 0.5f }, fan = listOf("fan1", "fan2", "fan3").mapNotNull { v(it) }.takeIf { it.isNotEmpty() }?.any { it >= 0.5f } ?: v("fanPct")?.let { it > 5f },
                 ac = v("ac")?.let { it >= 0.5f }, knockSums = (1..4).map { v("ks$it") ?: return@map null }.takeIf { l -> l.all { it != null } }?.filterNotNull(),
                 ecuGear = v("gearEcu")?.toInt(), automatic = s.gearbox != "mt", displacementL = ctx?.let { RulesHost.displacement(it) },
+                profile = ctx?.let { RulesHost.profile(it) } ?: kg.forester.sg.ssm.EngineProfiles.GENERIC,
                 tripPer100 = Repo.trip.value.trip?.takeIf { it.distanceKm >= 20.0 }?.let { (it.fuelL * 100 / it.distanceKm).toFloat() }))
         }.onFailure { kg.forester.sg.ssm.SsmTrace.log("analyzer: $it") }
 
@@ -477,8 +508,20 @@ class EngineGuard {
             coolantMax = maxOf(g.coolantMax ?: Int.MIN_VALUE, c ?: Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
             atfMax = maxOf(g.atfMax ?: Int.MIN_VALUE, atf ?: Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
         )
-        updatePeaks(e, t)
-        updateRange(e, t)
+        if (rules) {
+            skippedMerged = false
+            updatePeaks(e, t)
+            updateRange(e, t)
+        }
+    }
+
+    /**
+     * What of this ROM's own values the dyno's short list can carry: the FBKC (one borrowed from a sibling ROM doesn't
+     * count, its live pull needs the stale P23 too) and the direct manifold pressure.
+     */
+    fun fastRoles(): Pair<RrParam?, RrParam?> {
+        val fbkc = roles["fbkc"]?.takeIf { !it.desc.startsWith(kg.forester.sg.ssm.RomRaider.SIBLING_NOTE) }
+        return fbkc to fastMap(roles)
     }
 
     /** Min / max of every home card value over the trip (like BtSSM), only while the engine runs. */
@@ -505,8 +548,51 @@ class EngineGuard {
     }
 
     companion object {
+        /**
+         * The live timing pull. The standard byte 0x22 (P23) is the knock correction advance, KA x IAM + FBKC + FLKC:
+         * it can read positive while timing is pulled, and negative from the learned FLKC alone. The pull is the
+         * FBKC (E39 / E10) when the ROM has it; only without one is P23 all there is.
+         */
+        /** The direct pressure [withDirectMap] takes over the MAP byte: read it as fresh as the byte, or its old value freezes the boost. */
+        fun <T> fastMap(roles: Map<String, T>): T? = roles["mapAbs"] ?: roles["mapRel"] ?: roles["mapRelSea"]
+
+        fun livePull(p23: Float?, fbkc: Float?, own: Boolean): Float? = when {
+            fbkc == null -> p23
+            // assumption: an address taken from a sibling ROM (RomRaider.sibling) may be wrong and read a constant 0,
+            // which would hide a real pull in P23, so the deeper of the two stays as before
+            !own -> if (fbkc < (p23 ?: 0f)) fbkc else p23
+            else -> fbkc.coerceAtMost(0f)
+        }
+
+        /**
+         * Target boost relative to the atmosphere, whatever units this ROM's definition uses. Null when it can't be
+         * trusted: an address borrowed from a sibling ROM (it may read a constant 0, which is about -100 kPa here), or a
+         * value no boost control asks for.
+         */
+        fun targetKpa(raw: Float, units: String, atmKpa: Float, sibling: Boolean): Float? {
+            if (sibling) return null
+            val u = units.lowercase()
+            val k = when { "bar" in u -> 100f; "psi" in u -> 6.895f; "mmhg" in u -> 0.1333f; else -> 1f }
+            val kpa = when {
+                "sea level" in u -> raw * k + 101.3f - atmKpa
+                "relative" in u -> raw * k
+                else -> raw * k - atmKpa
+            }
+            return kpa.takeIf { it in -50f..300f }
+        }
+
+        /** The estimated oil temperature with the driver's correction («Поправка оценки масла», -15..+15 °C); real sensors never get it. */
+        fun oilEstimate(estC: Float, correctionC: Int): Float = estC + correctionC.coerceIn(-15, 15)
+
         /** The standard MAP byte at its top (255 kPa absolute) with no wider parameter in its place. */
         fun mapAtLimit(mapKpa: Float?, direct: Boolean) = !direct && mapKpa != null && mapKpa >= 254.5f
+
+        /** Whether to read the ROM's IAM constants: skipped after [FAILS] failed connections, until [RETRY_MS] have passed; a clock set back tries again. */
+        fun shouldReadRomIam(failures: Int, lastTryMs: Long, nowMs: Long): Boolean =
+            failures < FAILS || nowMs < lastTryMs || nowMs - lastTryMs >= RETRY_MS
+
+        private const val FAILS = 3
+        private const val RETRY_MS = 30L * 24 * 3600_000L
 
         /**
          * IAM 0…1 from the value read in the parameter's [units]: RomRaider's "raw ecu value" (E1 and the 1-byte
@@ -525,18 +611,10 @@ class EngineGuard {
         }
     }
 
-    /** Target boost relative to the atmosphere, whatever units this ROM's definition uses. */
     private fun targetBoost(e: EcuSnapshot): Float? {
         val p = roles["target"] ?: return null
         val raw = Repo.rrValues.value[p.id]?.toFloat() ?: return null
-        val u = p.units.lowercase()
-        val k = when { "bar" in u -> 100f; "psi" in u -> 6.895f; "mmhg" in u -> 0.1333f; else -> 1f }
-        val atm = e.atmKpa ?: 101.3f
-        return when {
-            "sea level" in u -> raw * k + 101.3f - atm
-            "relative" in u -> raw * k
-            else -> raw * k - atm
-        }
+        return targetKpa(raw, p.units, e.atmKpa ?: 101.3f, p.desc.startsWith(kg.forester.sg.ssm.RomRaider.SIBLING_NOTE))
     }
 
     private fun updatePeaks(e: EcuSnapshot, t: TcuSnapshot?) {
@@ -557,6 +635,20 @@ class EngineGuard {
             leanAfrUnderBoost = mx(p.leanAfrUnderBoost, lean),
         )
     }
+
+    /**
+     * The ROM's own IAM constants, read once per connection (see EcuService.readRomIam); null = not read or not sane,
+     * the rules then use their typical values. [initial] is where IAM starts after a reset and suppresses the low-IAM
+     * alarms, so only a k/16 value of 0.4…0.8 counts; [boostCut] the IAM below which the ECU limits boost.
+     */
+    data class RomIam(val initial: Float? = null, val boostCut: Float? = null, val restore: Float? = null, val step: Float? = null) {
+        fun checked() = copy(
+            initial = initial?.takeIf { it in 0.4f..0.8f && kotlin.math.abs(it * 16f - kotlin.math.round(it * 16f)) < 0.01f },
+            boostCut = boostCut?.takeIf { it in 0.3f..0.95f },
+        )
+    }
+
+    @Volatile var romIam = RomIam()
 
     /** One IAM reading per drive, with the date: shows after which refill it went down. */
     private fun logIam(now: Long, iam: Float) {

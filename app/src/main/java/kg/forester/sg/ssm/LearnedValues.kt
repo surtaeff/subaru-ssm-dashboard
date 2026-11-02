@@ -9,7 +9,7 @@ import org.json.JSONObject
  * range and the whole fine learning knock correction (FLKC) table by RPM and load.
  *
  * The values sit in RAM at the addresses the RomRaider logger knows for the ROM (IAM, A/F Learning #1/#2 A–D).
- * The FLKC table follows IAM: 0x14 bytes on in a 32-bit ECU (floats, every second one), 2 bytes on in a 16-bit
+ * The FLKC table starts at E173 where the ROM lists it, else it follows IAM: 0x14 bytes on in a 32-bit ECU (floats, every second one), 2 bytes on in a 16-bit
  * one (a byte per cell); RomRaider finds it the same way. The axes (airflow limits, RPM rows, load columns) are
  * in the ROM, at the addresses of assets/learning_axes.json (from SubaruDefs, see tools/romraider/build_learning.py),
  * or of the driver's own ECUFlash definition for the ROM ([EcuFlashDefs], first: a custom ROM may have them moved).
@@ -30,6 +30,10 @@ object LearnedValues {
         val loadStarts: List<Double>?,
         /** FLKC degrees, rows × columns; null when the table can't be placed. */
         val flkc: List<List<Double>>?,
+        /** Why [flkc] is missing when the table could be placed but not read, for the driver. */
+        val flkcError: String? = null,
+        /** How many of IAM and the A/F trims didn't answer: they stay empty, for the driver to know why. */
+        val missed: Int = 0,
     ) {
         fun toJson(): JSONObject = JSONObject().apply {
             put("rom", romId); put("cal", cal ?: ""); put("t", timeMs)
@@ -122,11 +126,48 @@ object LearnedValues {
         return Axes(r.cal, bits, axis(r.af, 0.004577637), axis(r.rpm, 0.1953125), axis(r.load, 6.103515625e-05))
     }
 
+    /** Frame sizes to fall back to: the whole list in one request, then 16 addresses, then 4. */
+    private val STEPS = intArrayOf(16, 4)
+
+    /** The whole Learning read holds the link's lock: past this the rest is reported as not read, so live gauges don't stall. */
+    private const val BUDGET_MS = 8_000L
+    private const val TIMEOUT_MSG = "Таблицу FLKC прочитать не удалось: чтение заняло слишком много времени, остальное не прочитано"
+
+    /**
+     * [a] over [c] in one request (what the transport takes at most), else in pieces of each of [steps] in turn; null when
+     * none of them is answered or [expired]. A step that is not smaller than the last attempt's frame would send the same
+     * request again and is skipped. Some 16-bit units answer short requests only.
+     */
+    private fun readAll(c: SsmClient, a: IntArray, steps: IntArray, expired: () -> Boolean = { false }): ByteArray? {
+        if (expired()) return null
+        c.read(a)?.let { return it }
+        var last = minOf(a.size, c.transport.maxReadAddrs.coerceAtLeast(1))
+        steps@ for (step in steps) {
+            if (step >= last) continue
+            last = step
+            val out = java.io.ByteArrayOutputStream(a.size)
+            for (i in a.indices step step) {
+                if (expired()) return null
+                out.write(c.read(a.copyOfRange(i, minOf(i + step, a.size))) ?: continue@steps)
+            }
+            return out.toByteArray()
+        }
+        return null
+    }
+
     /** [params]: the ROM's extended parameters by id; [ax]: its axes, null when unknown. */
-    internal fun read(client: SsmClient, init: EcuInit, params: Map<String, RrParam>, ax: Axes?): Result {
+    internal fun read(client: SsmClient, init: EcuInit, params: Map<String, RrParam>, ax: Axes?, clock: () -> Long = System::currentTimeMillis): Result {
+        val end = clock() + BUDGET_MS
+        val expired = { clock() > end }
+        var missed = 0
+        var asked = 0
         fun value(id: String): Double? {
             val p = params[id] ?: return null
-            val raw = client.read(p.addresses) ?: throw IllegalStateException("ЭБУ не ответил")
+            if (expired()) return null
+            asked++
+            // one more try: a single missed answer (an ELM327 under load) is not a dead ECU
+            // and one address that never answers (a second bank's, one taken from a neighbouring ROM) costs that value only
+            val raw = client.read(p.addresses) ?: client.read(p.addresses) ?: run { missed++; return null }
             return p.expr?.eval(p.raw(raw)) { _, _ -> null }
         }
         val iam32 = params["E31"]
@@ -140,44 +181,56 @@ object LearnedValues {
             .let { found -> listOfNotNull(found.firstOrNull { it[0] != "E62" }, found.firstOrNull { it[0] == "E62" }) }
             .map { ids -> ids.map { value(it) } }
 
+        // not one answer: the ECU isn't talking, there is no point in waiting through a table
+        if (asked > 0 && missed == asked) throw IllegalStateException("ЭБУ не ответил")
+
         // an axis without its count: the rising run at its start, within what such an axis can be
         fun readAxis(a: Axis?, hi: Double): List<Double>? = a?.let { x ->
-            client.read(x.addresses)?.let(x::values)?.let { v -> if (!x.auto) v else EcuFlashDefs.risingRun(v, 0.0, hi)?.let { v.take(it) } }
+            readAll(client, x.addresses, STEPS, expired)?.let(x::values)?.let { v -> if (!x.auto) v else EcuFlashDefs.risingRun(v, 0.0, hi)?.let { v.take(it) } }
         }
         val afLimits = readAxis(ax?.af, 1000.0)
         val rpmLimits = readAxis(ax?.rpm, 12000.0)
         val loadLimits = readAxis(ax?.load, 10.0)
 
         var flkc: List<List<Double>>? = null
+        var flkcError: String? = null
         if (rpmLimits != null && loadLimits != null) {
             val rows = rpmLimits.size + 1
             val cols = loadLimits.size + 1
             val n = rows * cols
-            flkc = if (iam32 != null) {
-                // floats, each followed by its check copy: every 8 bytes
-                val base = iam32.addr + 0x14
-                val addrs = IntArray(n * 4) { base + (it / 4) * 8 + it % 4 }
-                val raw = client.read(addrs) ?: throw IllegalStateException("ЭБУ не ответил")
-                List(n) { i ->
-                    var u = 0
-                    for (k in 0 until 4) u = (u shl 8) or (raw[i * 4 + k].toInt() and 0xFF)
-                    java.lang.Float.intBitsToFloat(u).toDouble()
-                }
-            } else {
-                val base = iam16!!.addr + 2
-                val raw = client.read(IntArray(n) { base + it }) ?: throw IllegalStateException("ЭБУ не ответил")
-                val conv = params["E12"]?.expr
-                List(n) { i ->
-                    val x = (raw[i].toInt() and 0xFF).toDouble()
-                    conv?.eval(x) { _, _ -> null } ?: (x * 0.3515625 - 45)
-                }
-            }.chunked(cols)
+            // unreadable (in one frame, in 16 addresses, in 4): the IAM and the A/F trims stay, the driver is told which part failed
+            flkc = try {
+                if (iam32 != null) {
+                    // floats, each followed by its check copy: every 8 bytes
+                    // the table's own address when the ROM lists it (E173): the offset from IAM differs between ROMs
+                    val base = params["E173"]?.addr ?: (iam32.addr + 0x14)
+                    val addrs = IntArray(n * 4) { base + (it / 4) * 8 + it % 4 }
+                    val raw = readAll(client, addrs, STEPS, expired) ?: throw IllegalStateException("нет ответа")
+                    List(n) { i ->
+                        var u = 0
+                        for (k in 0 until 4) u = (u shl 8) or (raw[i * 4 + k].toInt() and 0xFF)
+                        java.lang.Float.intBitsToFloat(u).toDouble()
+                    }
+                } else {
+                    val base = iam16!!.addr + 2
+                    val raw = readAll(client, IntArray(n) { base + it }, STEPS, expired) ?: throw IllegalStateException("нет ответа")
+                    val conv = params["E12"]?.expr
+                    List(n) { i ->
+                        val x = (raw[i].toInt() and 0xFF).toDouble()
+                        conv?.eval(x) { _, _ -> null } ?: (x * 0.3515625 - 45)
+                    }
+                }.chunked(cols)
+            } catch (e: IllegalStateException) {
+                flkcError = if (expired()) TIMEOUT_MSG else "Таблицу FLKC прочитать не удалось: ЭБУ не ответил на чтение таблицы, IAM и коррекции A/F показаны"
+                null
+            }
         }
+        if (flkc == null && flkcError == null && expired()) flkcError = TIMEOUT_MSG
         val starts = { l: List<Double>? -> l?.let { listOf(0.0) + it } }
         return Result(
             romId = init.romId, cal = ax?.cal, timeMs = System.currentTimeMillis(), iam = iam,
             afStarts = starts(afLimits), afBanks = banks,
-            rpmStarts = starts(rpmLimits), loadStarts = starts(loadLimits), flkc = flkc,
+            rpmStarts = starts(rpmLimits), loadStarts = starts(loadLimits), flkc = flkc, flkcError = flkcError, missed = missed,
         )
     }
 }

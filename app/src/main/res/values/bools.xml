@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Up to Android 7.1 a bitmap counts in the Java heap, and the car's frames are bitmaps. -->
+    <bool name="large_heap">true</bool>
+</resources>

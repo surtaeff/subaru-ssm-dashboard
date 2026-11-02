@@ -4,21 +4,32 @@ import kg.forester.sg.data.Derived
 import kg.forester.sg.data.KnockMap
 import kg.forester.sg.data.KnockStats
 import kg.forester.sg.ssm.EcuSnapshot
+import kg.forester.sg.ssm.EngineProfile
+import kg.forester.sg.ssm.EngineProfiles
+import kg.forester.sg.ssm.GasketMode
 import kg.forester.sg.ssm.TcuSnapshot
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
+/** Timing pulled further than this many degrees (FBKC, the live knock pull) is knock: the rules and every screen go by it. */
+const val KNOCK_WARN_DEG = -2f
+
 /** One sample for the rules: the engine, the transmission and what the guard worked out from them. */
 data class RuleInput(
     val e: EcuSnapshot,
     val t: TcuSnapshot? = null,
     val now: Long = e.timeMs,
+    /** Merged frames of the dyno's fast poll were left out before this one (see [DynoPoll]): a pull around them has holes. */
+    val skippedMerged: Boolean = false,
     /** IAM 0…1, knock corrections in degrees (negative = timing pulled), from the guard's roles. */
     val iam: Float? = null,
     val fbkc: Float? = null,
     val flkc: Float? = null,
+    /** The ROM's own IAM Initial (what IAM starts from after a reset) and Boost Cut IAM; null = not read. */
+    val iamInitial: Float? = null,
+    val iamBoostCut: Float? = null,
     /** Oil temperature, read or estimated by the guard. */
     val oilC: Float? = null,
     val turbo: Boolean = false,
@@ -40,8 +51,12 @@ data class RuleInput(
     val automatic: Boolean = false,
     /** Engine displacement, litres; null = not known. */
     val displacementL: Float? = null,
+    /** What is normal for this engine; [EngineProfiles.GENERIC] = not known. */
+    val profile: EngineProfile = EngineProfiles.GENERIC,
     /** This trip's average consumption, l/100 km, once 20 km are behind; null = not yet. */
     val tripPer100: Float? = null,
+    /** Another make over OBD-II known to have a turbo: this car's VIN ("" if none given) for [kg.forester.sg.data.BoostNorm]; else null. */
+    val boostNormCar: String? = null,
 )
 
 /** SensorBox readings by role: fuel rail and oil pressure in bar (over the atmosphere), air before and after the intercooler, the pump's volts. */
@@ -63,6 +78,8 @@ interface RuleStore {
     var iamResetMs: Long
     /** This car's usual peak boost on a full-throttle pull, kPa, 0 = not learned yet. */
     var boostBase: Float
+    /** Another make's learned pulls ([kg.forester.sg.data.BoostNorm.format]), "" = nothing yet. */
+    var boostNorm: String
     /** The A/F learning last seen on a warm engine, NaN = unknown: exactly 0 after it says the ECU was reset. */
     var lastAfLearn: Float
     /** Outside air by the intake after a long park, and when; 0 = never. */
@@ -72,6 +89,9 @@ interface RuleStore {
     var gears: String
     var spool: String
     var knockMap: String
+    /** Drives with a sudden coolant rise on a steady cruise (see Analyzer.spike), and when the last was counted; 0 = never. */
+    var spikeDrives: Int
+    var spikeLastMs: Long
     /** The last refill, for «after the refill» in the knock warnings; null = unknown. */
     fun lastRefillMs(): Long? = null
     /** IAM at the start of the last drive before [timeMs] (the IAM log), null = unknown. */
@@ -83,12 +103,15 @@ class MemoryRuleStore : RuleStore {
     override var lastIam = Float.NaN
     override var iamResetMs = 0L
     override var boostBase = 0f
+    override var boostNorm = ""
     override var lastAfLearn = Float.NaN
     override var ambientC = 0f
     override var ambientMs = 0L
     override var gears = ""
     override var spool = ""
     override var knockMap = ""
+    override var spikeDrives = 0
+    override var spikeLastMs = 0L
     var refillMs: Long? = null
     /** IAM log for the tests: time to value. */
     val iamLog = ArrayList<Pair<Long, Float>>()
@@ -148,6 +171,9 @@ class Analyzer(
 
     // knock
     private var iamStart: Float? = null
+    private var iamPrevTrip = Float.NaN
+    private var flkcLearned = false
+    private var knockEvidenceMs = Long.MIN_VALUE
     private var tripRefill: Long? = null
     private var fbkcEvents = 0
     private var fbkcInEvent = false
@@ -170,6 +196,11 @@ class Analyzer(
     // cooling
     private var jamHotPeak = 0
     private var jamMoveStart = 0L
+    /** Coolant on the last minute: whether it was a real move (40+ km/h), and the air flow. */
+    private class CoolSample(val t: Long, val c: Int, val moving: Boolean, val maf: Float?)
+    private val coolWin = ArrayDeque<CoolSample>()
+    private var warmSince = 0L
+    private var spikeThisDrive = false
     // ATF
     private var lastAtf: Pair<Long, Int>? = null
     /** Times the ATF reading leapt by more than 20° in a second: one is a misread byte, several are a sensor. */
@@ -217,10 +248,12 @@ class Analyzer(
     private var cruiseLearnS = 0.0; private var cruiseLearnSum = 0.0
     // boost: the pull's target, spool and wobble
     private var spool = SpoolTrend.fromJson(store.spool)
+    private var boostNorm = kg.forester.sg.data.BoostNorm.parse(store.boostNorm)
     private var lastPull: PullSummary? = null
     private var pullStartRpm = 0; private var pullStartGauge = 0f
     private var pullGear: Int? = null; private var pullGearMixed = false
     private var pullSpoolRpm: Int? = null
+    private var pullHoles = false
     private var pullTargetAtPeak: Float? = null
     private var pullMaxErr: Float? = null
     private var prevBoost: Pair<Int, Float>? = null
@@ -235,7 +268,7 @@ class Analyzer(
     private var diagSentMs = 0L
 
     private val idleHold = Hold(); private val cruiseHold = Hold(); private val wotHold = Hold()
-    private val belowMaxHold = Hold(); private val leanBoostHold = Hold(); private val learnHold = Hold(); private val railHold = Hold()
+    private val belowMaxHold = Hold(); private val iamLowHold = Hold(); private val iamDropHold = Hold(); private val leanBoostHold = Hold(); private val learnHold = Hold(); private val railHold = Hold()
     private val frozenHold = Hold(); private val atmHold = Hold(); private val mapHold = Hold(); private val overboostHold = Hold()
     private val cutHold = Hold(); private val wgdcHold = Hold(); private val dutyHold = Hold(); private val idleHighHold = Hold()
     private val idleLowHold = Hold(); private val avcsHold = Hold(); private val warm102Hold = Hold(); private val speedHold = Hold()
@@ -259,6 +292,7 @@ class Analyzer(
     fun reset() {
         lastSampleMs = Long.MIN_VALUE; runningSince = 0L; lastIamSeen = null
         gearSense = GearSense.fromJson(store.gears); spool = SpoolTrend.fromJson(store.spool); allKnock = KnockMap.fromJson(store.knockMap)
+        boostNorm = kg.forester.sg.data.BoostNorm.parse(store.boostNorm)
         lastPull = null; mapPull = null; diagDirty = true
     }
     private fun say(id: String, text: String, level: Alerts.Level, cooldownMs: Long) = sink.raise(id, text, level, cooldownMs)
@@ -366,10 +400,10 @@ class Analyzer(
     }
 
     private fun newDrive(e: EcuSnapshot, now: Long) {
-        iamStart = null; fbkcEvents = 0; fbkcInEvent = false
+        iamStart = null; flkcLearned = false; fbkcEvents = 0; fbkcInEvent = false
         trims.clear(); idleTrimS = 0.0; idleTrimSum = 0.0; cruiseTrimS = 0.0; cruiseTrimSum = 0.0; idleLeanDone = false
         tyreS = 0.0; tyreFront = 0.0; tyreRear = 0.0; tyresDone = false
-        jamHotPeak = 0; jamMoveStart = 0L; atfJumps.clear(); lastAtf = null; g3Start = 0L; pullStart = 0L
+        jamHotPeak = 0; jamMoveStart = 0L; coolWin.clear(); warmSince = 0L; spikeThisDrive = false; atfJumps.clear(); lastAtf = null; g3Start = 0L; pullStart = 0L
         tripRefill = store.lastRefillMs()
         tripKnock = KnockMap(now); mapPull = null; shiftPulls = 0; shiftRpmMin = Int.MAX_VALUE; shiftRpmMax = 0
         ksLast = null; ksCount.fill(0); ksRead = false; iamFuelSaid = false
@@ -444,13 +478,16 @@ class Analyzer(
     private fun knock(x: RuleInput, now: Long, warm: Boolean, transient: Boolean, pull: Boolean, load: Float?, rpm: Int, thr: Float?, gauge: Float?) {
         if (!on("knock")) return
         val iam = x.iam
+        // where IAM starts after a reset: the ROM's own value when it is read, else the typical one (11/16)
+        val initial = x.iamInitial ?: 0.70f
         if (iam != null) {
             if (iamStart == null) {
                 iamStart = iam
                 // lower than at the end of the last drive: IAM never drops with the engine off, so the ECU was reset
                 val before = store.lastIam
+                iamPrevTrip = before
                 if (iam <= 0.8f && ((!before.isNaN() && before - iam >= 0.2f) || x.e.afLearnPct == 0f)) store.iamResetMs = now
-            } else if (iamStart!! <= 0.65f && iam - iamStart!! >= 0.05f && store.iamResetMs == 0L) {
+            } else if (iamStart!! <= initial && iam - iamStart!! >= 0.05f && store.iamResetMs == 0L) {
                 store.iamResetMs = now // climbing from an initial-looking value during the drive: the ECU relearns after a reset
             } else if (iam < iamStart!! - 0.04f && store.iamResetMs != 0L) {
                 store.iamResetMs = 0L // falling, not relearning: knock again, the low-IAM warnings apply
@@ -459,10 +496,21 @@ class Analyzer(
         val reset = afterReset(iam, now)
         if (iam != null && reset) {
             say("iamRelearn", "После сброса ЭБУ заново подбирает угол зажигания, IAM сейчас %.2f. Это нормально. ".format(iam) +
-                "Первые 50–100 км поездите спокойно, без полного газа на холодном моторе", Alerts.Level.INFO, 24 * 3600_000L)
+                kg.forester.sg.data.DistanceUnits.prose("Первые 50–100 км поездите спокойно, без полного газа на холодном моторе"), Alerts.Level.INFO, 24 * 3600_000L)
         }
+        // knock counts only where it means something: warm, not a light-load tap, not a throttle stab or a shift
+        val c = x.e.coolantC ?: 0
+        val loaded = if (load != null) !(load < 0.75f && rpm < 3000) else (thr ?: 0f) >= 40f || rpm >= 3000
+        val valid = warm && c >= 60 && loaded && !transient
+        if (valid && ((x.fbkc ?: 0f) < KNOCK_WARN_DEG || (x.flkc ?: 0f) <= -1.4f)) knockEvidenceMs = now
+        if ((x.flkc ?: 0f) != 0f) flkcLearned = true
         if (iam != null && warm && !reset) {
             val start = iamStart ?: iam
+            // the trip began at the initial value, and not after a higher one, with no FLKC learned since: the ECU is
+            // relearning (or never learned), not pulling timing for knock; knock seen overrides it
+            val parked = start <= initial && iamPrevTrip.let { it.isNaN() || it <= initial } && !flkcLearned
+            // low IAM is a danger only with knock behind it, seen in the last ten minutes
+            val knocking = now - knockEvidenceMs in 0..10 * 60_000L
             // lower than before the last refill (within three days of it): the new fuel is worse, or the ROM wants a
             // higher octane than the pump gave (engine-ej K15)
             val refill = tripRefill?.takeIf { now - it in 0..3 * 24 * 3600_000L }
@@ -473,25 +521,30 @@ class Analyzer(
                     "Этот бензин хуже прошлого, или прошивка настроена под бензин с большим октановым числом. Не давите в пол до заправки на проверенной АЗС",
                     Alerts.Level.WARN, 24 * 3600_000L)
             }
+            // a few seconds, not one sample: a glitch of the reading is not a drop
+            val lowHeld = iamLowHold.ms(iam < 0.75f && (!parked || knocking), now) >= 5000L
+            val dropHeld = iamDropHold.ms(start - iam >= 0.1f, now) >= 5000L
             when {
-                iam < 0.75f -> say("iam", "IAM упал до %.2f: ЭБУ сильно урезал угол зажигания из-за детонации. ".format(iam) +
-                    "Не давите газ в пол и не грузите мотор, пока не заправитесь хорошим бензином", if (x.turbo) Alerts.Level.DANGER else Alerts.Level.WARN, 30 * 60_000L)
-                start - iam >= 0.1f && !iamFuelSaid -> {
+                lowHeld -> if (knocking) {
+                    say("iam", "IAM упал до %.2f, и мотор недавно детонировал: ЭБУ убирает угол зажигания. ".format(iam) +
+                        "Не давите газ в пол и не грузите мотор, пока не заправитесь хорошим бензином", if (x.turbo) Alerts.Level.DANGER else Alerts.Level.WARN, 30 * 60_000L)
+                } else {
+                    say("iam", "IAM держится на %.2f, это ниже нормы: ЭБУ когда-то слышал детонацию и убавил угол. ".format(iam) +
+                        (if (x.fbkc == 0f && x.flkc == 0f) "Откатов сейчас нет. " else "") +
+                        "Заправьтесь хорошим бензином и понаблюдайте", Alerts.Level.WARN, 30 * 60_000L)
+                }
+                dropHeld && !iamFuelSaid -> {
                     val fuel = tripRefill?.let { now - it < 2 * 24 * 3600_000L } == true
                     say("iamDrop", "IAM снизился с %.2f до %.2f за поездку: была детонация.".format(start, iam) +
                         if (fuel) " Вы недавно заправлялись, скорее всего дело в бензине" else " Проверьте бензин", Alerts.Level.WARN, 30 * 60_000L)
                 }
             }
-            if (belowMaxHold.ms(iam < 0.95f, now) >= 10 * 60_000L) {
-                say("iamBelow", "IAM %.2f, ниже максимума: ЭБУ уменьшил угол на всех режимах, потому что раньше слышал детонацию. ".format(iam) +
-                    "Мотор тянет хуже и расходует больше. Чаще всего помогает хороший бензин", Alerts.Level.INFO, 24 * 3600_000L)
+            if (belowMaxHold.ms(iam < 0.95f && (!parked || knocking), now) >= 10 * 60_000L) {
+                say("iamBelow", "IAM %.2f, ниже максимума: ЭБУ раньше слышал детонацию и убавил угол в таблице опережения от детонации. ".format(iam) +
+                    "Заметно это мало: при %.2f на клетке в 6° это около %.1f°. Чаще всего помогает хороший бензин".format(iam, 6f * (1f - iam)), Alerts.Level.INFO, 24 * 3600_000L)
             }
         } else belowMaxHold.ms(false, now)
 
-        // knock counts only where it means something: warm, not a light-load tap, not a throttle stab or a shift
-        val c = x.e.coolantC ?: 0
-        val loaded = if (load != null) !(load < 0.75f && rpm < 3000) else (thr ?: 0f) >= 40f || rpm >= 3000
-        val valid = warm && c >= 60 && loaded && !transient
         val heavy = load?.let { it >= 1.0f } ?: ((thr ?: 0f) >= 60f)
         val hot = x.e.intakeC?.takeIf { it >= if (x.turbo) 50 else 55 }
         val hotNote = hot?.let { " Воздух во впуске очень горячий ($it°), от этого мотор склонен к детонации. Дайте машине проехать спокойно, чтобы впуск остыл" } ?: ""
@@ -515,12 +568,12 @@ class Analyzer(
                 say("fbkc", "Сильный откат зажигания %.1f° под наддувом".format(fbkc) +
                     (if (bad) ", и не первый раз за поездку. Не разгоняйтесь в пол до проверки бензина и смеси" else "") + ".$hotNote",
                     if (bad) Alerts.Level.DANGER else Alerts.Level.WARN, if (bad) 10 * 60_000L else 5 * 60_000L)
-            } else if (pull && heavy && fbkc <= -2f) {
+            } else if (pull && heavy && fbkc <= KNOCK_WARN_DEG) {
                 say("fbkcPull", "Во время разгона мотор детонировал, ЭБУ убрал %.1f°. Если повторяется на тех же оборотах, ".format(fbkc) +
                     "не разгоняйтесь в пол до проверки бензина и смеси.$hotNote", Alerts.Level.WARN, 10 * 60_000L)
             }
         }
-        if ((fbkc ?: 0f) > -2f) fbkcInEvent = false
+        if ((fbkc ?: 0f) > KNOCK_WARN_DEG) fbkcInEvent = false
 
         // lean under boost: the stock sensor is poor there and reads rich at worst, so lean is worth a warning
         val lean = x.turbo && (gauge ?: 0f) > 50f && (thr ?: 0f) >= 90f && (x.e.lambda ?: 0f) > 0.85f
@@ -689,7 +742,7 @@ class Analyzer(
         // starts from zero: said once, nothing alarmed (afFrozen keeps quiet meanwhile)
         val corr = e.afCorrPct
         if (resetLoopHold.ms(freshReset(now) && warm && corr == 0f && speed >= 20, now) >= 60_000L) {
-            say("resetLoop", "После сброса ЭБУ коррекция смеси включается не сразу, от пары минут до 20 минут езды, а обучение набирается первые 50 км. " +
+            say("resetLoop", "После сброса ЭБУ коррекция смеси включается не сразу, от пары минут до 20 минут езды, а обучение набирается первые ${kg.forester.sg.data.DistanceUnits.distanceText(50.0)}. " +
                 "Пока ЭБУ держит смесь по своим таблицам, это нормально", Alerts.Level.INFO, 24 * 3600_000L)
         }
         // trims swinging rail to rail at a steady throttle below 3000 rpm: a dying A/F sensor or an exhaust leak before it
@@ -722,7 +775,7 @@ class Analyzer(
         if (cruiseLearnS >= 300 && per100 != null) {
             val mean = cruiseLearnSum / cruiseLearnS
             if (mean in -14.5..-7.0 && per100 >= 15f) {
-                say("mafHigh", "ЭБУ постоянно убирает около %.0f%% топлива, а расход за поездку %.1f л/100. Так бывает, когда датчик расхода воздуха завышает: ".format(-mean, per100) +
+                say("mafHigh", kg.forester.sg.data.DistanceUnits.prose("ЭБУ постоянно убирает около %.0f%% топлива, а расход за поездку %.1f л/100. Так бывает, когда датчик расхода воздуха завышает: ".format(-mean, per100)) +
                     "не тот датчик или трубка, грязный датчик, неверная калибровка в прошивке. Почистите датчик и сравните расход", Alerts.Level.WARN, 24 * 3600_000L)
             }
         }
@@ -778,21 +831,40 @@ class Analyzer(
 
     // ---------------------------------------------------------------- boost (B01…B05, B09…B13, turbo only)
 
+    /** Another make over OBD-II: no target to compare with, so against what this car usually makes (see BoostNorm). */
+    private fun learnedBoost(car: String, e: EcuSnapshot, now: Long, rpm: Int) {
+        val n = boostNorm
+        val before = n.revision
+        n.forCar(car)
+        val over = n.sample(now, e.mapKpa, e.atmKpa, rpm)
+        if (n.revision != before) store.boostNorm = n.format()
+        if (over != null) {
+            say("overboost", "Наддув выше обычного для этой машины: %.0f кПа абсолютного давления при обычных %.0f. "
+                .format(over.mapKpa, over.normKpa) + "Если машину не перенастраивали, проверьте управление наддувом: это нагружает мотор",
+                Alerts.Level.WARN, 10 * 60_000L)
+        }
+    }
+
     private fun boost(x: RuleInput, now: Long, rpm: Int, thr: Float?, gauge: Float?, wot: Boolean, c: Int?, gear: Int?) {
         val e = x.e
         if (gauge != null) {
             gauges.addLast(now to gauge)
             while (gauges.isNotEmpty() && now - gauges.first().first > 1500L) gauges.removeFirst()
         }
+        x.boostNormCar?.let { car -> learnedBoost(car, e, now, rpm) }
         val target = x.targetBoostKpa
         val wgdc = e.wastegatePct
-        if (target != null && gauge != null && gauge > target + 15f) overboostAt = now
-        if (target != null && gauge != null && overboostHold.ms(gauge > target + 20f, now) >= 1000L) {
+        // over a target only means something on real boost, with a target that is one: no gate here once sounded at idle
+        val overPlausible = target != null && gauge != null && target >= 30f && gauge >= 15f && rpm >= 2500
+        if (overPlausible && gauge!! > target!! + 15f) overboostAt = now
+        if (overboostHold.ms(overPlausible && gauge!! > target!! + 20f, now) >= 1000L) {
             // over the target with the solenoid nearly letting the wastegate open: it can't bleed enough (creep)
             val text = if (wgdc != null && wgdc <= 20f)
-                "Наддув выше цели: %.2f бар при цели %.2f, хотя соленоид почти отпустил вестгейт (%.0f%%). ".format(gauge / 100f, target / 100f, wgdc) +
+                "Наддув выше цели: %.2f бар при цели %.2f, хотя соленоид почти отпустил вестгейт (%.0f%%). ".format(gauge!! / 100f, target!! / 100f, wgdc) +
                     "Вестгейт не стравливает: пружина или сам актуатор, ось калитки; на прямотоке так бывает крип. Это нагружает поршни"
-            else "Наддув выше нормы: %.2f бар при цели %.2f. Это нагружает поршни. Проверьте шланги к актуатору вестгейта и соленоиду".format(gauge / 100f, target / 100f)
+            else if (wgdc != null) "Наддув выше нормы: %.2f бар при цели %.2f. Это нагружает поршни. Проверьте шланги к актуатору вестгейта и соленоиду".format(gauge!! / 100f, target!! / 100f)
+            // no duty read: nothing here says what the wastegate is doing
+            else "Наддув выше нормы: %.2f бар при цели %.2f. Это нагружает поршни. Проверьте управление наддувом".format(gauge!! / 100f, target!! / 100f)
             say("overboost", text, Alerts.Level.WARN, 10 * 60_000L)
         }
         // fuel cut: full throttle, the injectors suddenly off, right after high boost
@@ -812,9 +884,14 @@ class Analyzer(
             say("springBoost", "После перенаддува ЭБУ отключил управление наддувом, и машина едет на одной пружине вестгейта (%.2f бар). ".format((gauge ?: 0f) / 100f) +
                 "Управление вернётся после сброса газа. Причина в самом перенаддуве: проверьте вестгейт, его актуатор и шланги соленоида", Alerts.Level.WARN, 30 * 60_000L)
         }
-        // underboost: each full-throttle pull compared with this car's usual peak; its target, spool point and wobble
+        // underboost: each full-throttle pull compared with this car's usual peak; its target, spool point and wobble.
+        // A pull with merged frames left out (the dyno's fast poll takes a full read only now and then) says nothing of
+        // its peak or spool point: it isn't judged, nor kept. By that cause, not by the time between samples: a slow
+        // cable's pull is judged as ever
+        if (pullStart != 0L && x.skippedMerged) pullHoles = true
         if (wot) {
             if (pullStart == 0L) {
+                pullHoles = x.skippedMerged
                 pullStart = now; pullPeak = 0f; pullMaxRpm = 0; pullMaxWgdc = 0f
                 pullStartRpm = rpm; pullStartGauge = gauge ?: 0f; pullGear = gear; pullGearMixed = false; pullSpoolRpm = null
                 pullTargetAtPeak = null; pullMaxErr = null; prevBoost = null
@@ -844,8 +921,8 @@ class Analyzer(
         } else if (pullStart != 0L && (thr ?: 0f) < 80f) {
             val long = now - pullStart >= 1500L
             pullStart = 0L
-            if (long) endPull(x, now, c)
-            if (long && pullMaxRpm >= 4000 && (c ?: 0) >= 70) judgePull(x)
+            if (long && !pullHoles) endPull(x, now, c)
+            if (long && !pullHoles && pullMaxRpm >= 4000 && (c ?: 0) >= 70) judgePull(x)
         }
         // short of the target with the solenoid near its top: the turbo, a leak or the wastegate (B09)
         val short = pullStart != 0L && now - pullStart >= 1500L && rpm in 3500..6000 && target != null && target >= 30f &&
@@ -905,7 +982,8 @@ class Analyzer(
             val usual = t.base[g]
             if (late && usual != null) {
                 say("spoolLate", "Турбина стала выходить на наддув позже: на $g-й передаче %.1f бар теперь на $sp об/мин, обычно было на $usual. ".format(level / 100f) +
-                    "Так бывает при износе втулки вестгейта (калитка неплотно закрывается), утечке во впуске или прорыве выхлопа до турбины. " +
+                    (if (pullMaxWgdc > 0f || x.e.wastegatePct != null) "Так бывает при износе втулки вестгейта (калитка неплотно закрывается), утечке во впуске или прорыве выхлопа до турбины. "
+                    else "Так бывает при утечке во впуске или прорыве выхлопа до турбины. ") +
                     "Проверьте впуск опрессовкой и прокладки выпускного коллектора", Alerts.Level.WARN, 24 * 3600_000L)
             }
         }
@@ -931,7 +1009,7 @@ class Analyzer(
                 x.sportEcu -> "Наддув на разгоне ниже обычного: %.2f бар вместо %.2f. Проверьте впуск на утечки, шланги соленоида и буст-контроль в настройке Link".format(pullPeak / 100f, base / 100f)
                 pullMaxWgdc >= 70f -> "Турбина не даёт положенного наддува (%.2f бар вместо обычных %.2f), хотя ЭБУ его просит. ".format(pullPeak / 100f, base / 100f) +
                     "Обычно это утечка во впуске после турбины или заклинивший вестгейт: проверьте хомуты и патрубки интеркулера"
-                (x.iam ?: 1f) < 0.75f || pullMaxWgdc < 20f -> "ЭБУ сам ограничивает наддув (%.2f бар вместо %.2f). Чаще всего после детонации или из-за ошибки: ".format(pullPeak / 100f, base / 100f) +
+                (x.iam ?: 1f) < (x.iamBoostCut ?: 0.75f) || pullMaxWgdc < 20f -> "ЭБУ сам ограничивает наддув (%.2f бар вместо %.2f). Чаще всего после детонации или из-за ошибки: ".format(pullPeak / 100f, base / 100f) +
                     "посмотрите коды и IAM, заправьтесь хорошим бензином"
                 else -> "Наддув на разгоне ниже обычного: %.2f бар вместо %.2f. Проверьте впуск на утечки и шланги соленоида наддува".format(pullPeak / 100f, base / 100f)
             }
@@ -999,7 +1077,7 @@ class Analyzer(
 
     private fun cooling(x: RuleInput, now: Long, c: Int, speed: Int, runMs: Long) {
         // a hot restart: the coolant by the sensor reads 103–108° for a minute or so (heat soak), not overheating
-        if (runMs < 90_000L) { warm102Hold.ms(false, now); jamHold.ms(false, now); return }
+        if (runMs < 90_000L) { warm102Hold.ms(false, now); jamHold.ms(false, now); coolWin.clear(); warmSince = 0L; return }
         when {
             c >= 110 -> say("hot", "Перегрев! ОЖ $c°. Остановитесь в безопасном месте и дайте мотору остыть, проверьте уровень антифриза", Alerts.Level.DANGER, 2 * 60_000L)
             c >= 105 -> say("hot", "Перегрев! ОЖ $c°. Сбросьте нагрузку, следите за стрелкой, при 110° остановитесь", Alerts.Level.DANGER, 2 * 60_000L)
@@ -1008,9 +1086,11 @@ class Analyzer(
             say("warm102", "Мотор горячее обычного: ОЖ $c°. Снизьте нагрузку и следите за температурой", Alerts.Level.WARN, 10 * 60_000L)
         }
         if (speedHold.ms(speed >= 70, now) >= 60_000L && c >= 100) {
-            say("hotSpeed", "На скорости мотор не должен греться выше 100°, а сейчас $c°. Проверьте уровень антифриза. Если он уходит без видимых потёков, нужна проверка прокладки ГБЦ",
+            say("hotSpeed", "На скорости мотор не должен греться выше 100°, а сейчас $c°. Проверьте уровень антифриза" +
+                (if (x.profile.key == EngineProfiles.GENERIC.key) "" else ". Если он уходит без видимых потёков, нужна проверка прокладки ГБЦ"),
                 Alerts.Level.WARN, 30 * 60_000L)
         }
+        spike(x, now, c, speed)
         // hot only in traffic and cooling down on the move: the radiator fans don't switch on (they should cut in at 97–99°)
         if (jamHold.ms(c >= 100 && speed < 20, now) >= 60_000L) { jamHotPeak = maxOf(jamHotPeak, c); jamMoveStart = 0L }
         if (jamHotPeak > 0 && speed > 30) {
@@ -1030,7 +1110,7 @@ class Analyzer(
             while (trafficEct.isNotEmpty() && now - trafficEct.first().first > 70_000L) trafficEct.removeFirst()
         } else trafficEct.clear()
         val minuteAgo = trafficEct.firstOrNull()?.takeIf { now - it.first >= 60_000L }?.second
-        val rising = minuteAgo != null && c >= 92 && c - minuteAgo >= 2
+        val rising = minuteAgo != null && c >= x.profile.fanCreepFromC && c - minuteAgo >= 2
         val cmd = x.fanLow ?: x.fan
         val fanLong = fanOnHold.ms(cmd == true, now) >= 60_000L
         if (traffic && rising && (fanLong || (cmd == null && x.ac == true))) {
@@ -1038,6 +1118,50 @@ class Analyzer(
                 ". Похоже, вентилятор не крутится на первой скорости: часто это окисленные ножки реле первой скорости или его предохранитель. " +
                 "Проверьте, крутятся ли вентиляторы, когда включён кондиционер", Alerts.Level.INFO, 6 * 3600_000L)
         }
+    }
+
+    /**
+     * A sudden coolant rise on a warm engine. Up to 95–97° it is the thermostat's band and the fan's switch-on point,
+     * so the fan must be on by now (it cuts in during the rise, so only this sample is asked), or not known and the
+     * coolant 3° over the fan's point; the A/C alone runs the fan, which is why that isn't enough without
+     * [EngineProfile.spikeFromC]. A rise counts only on a real move (40+ km/h, the radiator in the airflow) at a steady
+     * load: standing, crawling or climbing it is no fault. One drive says only what to look at; the gasket is named
+     * from the third drive. Drives count 6 hours apart at least (a restart or a lost link is the same drive), and
+     * start over after 90 days without one (air left by a coolant change must not make every later rise a WARN). The
+     * 8° and the minute have no source, to be checked on logs.
+     */
+    private fun spike(x: RuleInput, now: Long, c: Int, speed: Int) {
+        val p = x.profile
+        coolWin.addLast(CoolSample(now, c, speed >= 40, x.e.mafGs))
+        while (coolWin.isNotEmpty() && now - coolWin.first().t > 60_000L) coolWin.removeFirst()
+        // right after reaching 80° the thermostat may still be opening and the coolant overshoots: no check then
+        if (c < 80) warmSince = 0L else if (warmSince == 0L) warmSince = now
+        val first = coolWin.first()
+        if (now - first.t < 50_000L || now - warmSince <= 5 * 60_000L) return
+        val fanSays = x.fan == true || (x.fan == null && c >= p.fanHighC + 3)
+        if (!fanSays || c < p.spikeFromC || c - first.c < p.spikeRiseC || !coolWin.all { it.moving }) return
+        val mafs = coolWin.map { it.maf ?: return }
+        if (mafs.max() > mafs.min() * 1.3f) return
+        if (!spikeThisDrive) { spikeThisDrive = true; countSpikeDrive(now) }
+        val rise = "ОЖ выросла с ${first.c}° до $c° за минуту на ровном ходу" + if (x.fan == true) " при работающем вентиляторе" else ""
+        val drives = store.spikeDrives
+        if (drives < 3) say("spike", "$rise. Проверьте уровень антифриза, когда мотор остынет", Alerts.Level.INFO, 20 * 60_000L)
+        else say("spike", "$rise, поездок с таким ростом уже $drives. " + when {
+            p.key == EngineProfiles.GENERIC.key -> "Так бывает при воздухе в системе охлаждения. Проверьте уровень антифриза и нет ли пузырей в расширительном бачке"
+            p.gasketMode == GasketMode.INTERNAL -> "Так бывает при воздухе в системе охлаждения и при прорыве газов через прокладку ГБЦ. Проверьте уровень антифриза и нет ли пузырей в расширительном бачке"
+            p.gasketMode == GasketMode.EXTERNAL -> "На этом моторе прокладка ГБЦ обычно течёт наружу: проверьте уровень антифриза и нет ли потёков на стыке головки и блока"
+            else -> "Так бывает при воздухе в системе охлаждения, реже из-за прокладки ГБЦ. Проверьте уровень антифриза и нет ли пузырей в расширительном бачке"
+        }, Alerts.Level.WARN, 20 * 60_000L)
+    }
+
+    private fun countSpikeDrive(now: Long) {
+        val since = now - store.spikeLastMs
+        // a clock set back (head units lose it until they get the time again) tells nothing: no count, nothing written,
+        // or the correction would look like 90 days gone by
+        if (since < 0L || (store.spikeLastMs != 0L && since < 6 * 3600_000L)) return
+        if (since > 90 * 24 * 3600_000L) store.spikeDrives = 0
+        store.spikeDrives += 1
+        store.spikeLastMs = now
     }
 
     // ---------------------------------------------------------------- intake heat (A08)

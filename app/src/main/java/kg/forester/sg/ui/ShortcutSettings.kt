@@ -17,12 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
@@ -57,13 +52,14 @@ fun ShortcutSettings() {
 
     Row(Modifier.fillMaxSize()) {
         Panel(Modifier.width(470.dp).fillMaxHeight()) {
-            PanelTitle(Lucide.LayoutGrid, "Кнопки быстрого запуска")
-            Spacer(Modifier.height(4.dp))
-            T("Появляются в боковой панели и внизу компактного режима. «Рядом» — открыть в половине экрана рядом с приборами.", 12.sp, C.Sub)
-            Spacer(Modifier.height(8.dp))
-            SplitServiceRow()
-            Spacer(Modifier.height(10.dp))
-            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            ListWithHead({
+                PanelTitle(Lucide.LayoutGrid, "Кнопки быстрого запуска")
+                Spacer(Modifier.height(4.dp))
+                SettingHint("Появляются в боковой панели и внизу компактного режима. «Рядом» — открыть в половине экрана рядом с приборами.")
+                Spacer(Modifier.height(8.dp))
+                SplitServiceRow()
+                Spacer(Modifier.height(10.dp))
+            }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(items, key = { it.id }) { sc ->
                     val i = items.indexOf(sc)
                     Row(
@@ -78,11 +74,14 @@ fun ShortcutSettings() {
                             T(sc.label, 15.sp, maxLines = 1)
                             T("${Shortcuts.appLabel(ctx, sc.pkg)} · ${if (sc.split) "рядом" else "весь экран"}", 11.sp, C.Sub, maxLines = 1)
                         }
-                        SmallIcon(Lucide.ArrowUp, i > 0) { Shortcuts.save(ctx, items.toMutableList().apply { add(i - 1, removeAt(i)) }) }
-                        SmallIcon(Lucide.ArrowDown, i < items.size - 1) { Shortcuts.save(ctx, items.toMutableList().apply { add(i + 1, removeAt(i)) }) }
-                        SmallIcon(Lucide.Trash2, true) {
-                            Shortcuts.save(ctx, items.filter { it.id != sc.id }); if (editing?.id == sc.id) editing = null
-                        }
+                        IconTap(Lucide.ArrowUp, "Выше", { Shortcuts.save(ctx, items.toMutableList().apply { add(i - 1, removeAt(i)) }) }, enabled = i > 0)
+                        IconTap(Lucide.ArrowDown, "Ниже", { Shortcuts.save(ctx, items.toMutableList().apply { add(i + 1, removeAt(i)) }) }, enabled = i < items.size - 1)
+                        var ask by remember(sc.id) { mutableStateOf(false) }
+                        IconTap(Lucide.Trash2, "Удалить", { ask = true })
+                        if (ask) ConfirmDialog(
+                            "Убрать кнопку «${sc.label}»?", "Кнопка уйдёт из боковой панели и компактного режима. Добавить её можно заново.",
+                            "Убрать", { Shortcuts.save(ctx, items.filter { it.id != sc.id }); if (editing?.id == sc.id) editing = null }, { ask = false },
+                        )
                     }
                 }
             }
@@ -135,7 +134,8 @@ private fun ShortcutEditor(initial: Shortcut, apps: List<InstalledApp>, onSave: 
             )
             Spacer(Modifier.height(6.dp))
             val filtered = apps.filter { query.isBlank() || it.label.contains(query, true) || it.pkg.contains(query, true) }
-            LazyColumn(Modifier.weight(1f)) {
+            val found = androidx.compose.foundation.lazy.rememberLazyListState()
+            LazyColumn(Modifier.weight(1f).scrollCue(found), state = found) {
                 items(filtered, key = { it.pkg }) { a ->
                     Row(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
@@ -154,6 +154,8 @@ private fun ShortcutEditor(initial: Shortcut, apps: List<InstalledApp>, onSave: 
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.width(300.dp).fillMaxHeight()) {
+            // «Сохранить» stays in sight, what is above it scrolls: on 7" it can't all fit
+            Column(Modifier.weight(1f).cueScroll()) {
             OutlinedTextField(
                 value = label, onValueChange = { label = it }, singleLine = true,
                 label = { FieldLabel("Название кнопки") },
@@ -181,8 +183,8 @@ private fun ShortcutEditor(initial: Shortcut, apps: List<InstalledApp>, onSave: 
             Spacer(Modifier.height(6.dp))
             T("Иконка", 13.sp, C.Sub)
             Spacer(Modifier.height(4.dp))
-            LazyVerticalGrid(GridCells.Fixed(6), Modifier.weight(1f)) {
-                items(Shortcuts.icons.keys.toList()) { k ->
+            Shortcuts.icons.keys.toList().chunked(6).forEach { row -> Row {
+                row.forEach { k ->
                     Box(
                         Modifier.padding(3.dp).size(42.dp).clip(RoundedCornerShape(10.dp))
                             .background(if (k == icon) C.Purple.copy(alpha = 0.3f) else C.CardHi)
@@ -191,6 +193,7 @@ private fun ShortcutEditor(initial: Shortcut, apps: List<InstalledApp>, onSave: 
                         contentAlignment = Alignment.Center,
                     ) { Icon(Shortcuts.icon(k), null, tint = if (k == icon) C.Violet else C.Sub, modifier = Modifier.size(20.dp)) }
                 }
+            } }
             }
             Spacer(Modifier.height(8.dp))
             ActionButton("Сохранить", pkg.isNotBlank() && label.isNotBlank()) {
@@ -198,14 +201,6 @@ private fun ShortcutEditor(initial: Shortcut, apps: List<InstalledApp>, onSave: 
             }
         }
     }
-}
-
-@Composable
-private fun SmallIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, enabled: Boolean, onClick: () -> Unit) {
-    Box(
-        Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) { Icon(icon, null, tint = if (enabled) C.Sub else C.Border, modifier = Modifier.size(18.dp)) }
 }
 
 /**
@@ -226,8 +221,8 @@ private fun SplitServiceRow() {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             T("«Рядом» без root: " + if (on) "включено" else "выключено", 13.sp, if (on) C.Green else C.Orange)
-            T("Служба специальных возможностей «CarPulse: разделение экрана» только включает и выключает " +
-                "разделение экрана. Приборы встают в одну половину, приложение — в другую.", 11.sp, C.Sub)
+            SettingHint("Служба специальных возможностей «CarPulse: разделение экрана» только включает и выключает " +
+                "разделение экрана. Приборы встают в одну половину, приложение — в другую.")
         }
         if (!on) {
             Spacer(Modifier.width(8.dp))

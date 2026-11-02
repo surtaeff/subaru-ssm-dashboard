@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,10 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import com.composables.icons.lucide.*
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -57,7 +55,8 @@ data class DtcHit(val def: DtcDef, val current: Boolean, val memorized: Boolean)
 object DtcRepo {
     private val cache = HashMap<String, List<DtcDef>>()
 
-    fun load(ctx: Context, asset: String): List<DtcDef> = cache.getOrPut(asset) {
+    /** Reads a big JSON the first time: off the main thread. */
+    fun load(ctx: Context, asset: String): List<DtcDef> = synchronized(cache) { cache.getOrPut(asset) {
         val text = runCatching { ctx.assets.open(asset).bufferedReader().readText() }.getOrNull() ?: "[]"
         val arr = JSONArray(text)
         val out = ArrayList<DtcDef>(arr.length())
@@ -69,11 +68,11 @@ object DtcRepo {
                 tmpAddr = o.getString("tmp").removePrefix("0x").toInt(16),
                 memAddr = o.getString("mem").removePrefix("0x").toInt(16),
                 bit = o.getInt("bit"),
-                descRu = o.optString("ru"),
+                descRu = o.optString("ru").also { kg.forester.sg.data.I18n.learn(it, o.optString("desc")) },
             )
         }
         out
-    }
+    } }
 
     @Volatile private var hints: Map<String, String>? = null
 
@@ -176,6 +175,7 @@ object DtcRepo {
         val subaru = make?.slug == kg.forester.sg.data.Brands.SUBARU
         val t = generic(ctx).describe(code, if (subaru) ssm else null, make?.name)
         if (!t.known && !kg.forester.sg.ssm.GenericDtc.isManufacturer(code)) ssm[code]?.let { (en, ru) -> return DtcDef(code, en, 0, 0, 0, ru) }
+        kg.forester.sg.data.I18n.learn(t.ru, t.en)
         return DtcDef(code, t.en, 0, 0, 0, t.ru)
     }
 
@@ -216,6 +216,20 @@ object DtcRepo {
     }
 
     /**
+     * Only the "current" bytes of [defs], for the check-engine icon: half of what a read by hand asks. Null with no answer.
+     */
+    suspend fun readCurrent(defs: List<DtcDef>, dest: Int): Int? {
+        if (defs.isEmpty()) return 0
+        val addrs = defs.map { it.tmpAddr }.distinct().sorted()
+        val values = HashMap<Int, Int>()
+        for (chunk in addrs.chunked(30)) {
+            val raw = EcuLink.use { it.read(chunk.toIntArray(), dest) } ?: return null
+            chunk.forEachIndexed { i, a -> values[a] = raw[i].toInt() and 0xFF }
+        }
+        return kg.forester.sg.service.currentCodes(defs.map { it.tmpAddr to it.bit }, values)
+    }
+
+    /**
      * SSM2 "clear memory": write 0x40 to 0x000060 (also resets learned values); the unit echoes the byte it took.
      * The codes are gone only after the ignition has been off for a few seconds (FreeSSM asks for the same).
      */
@@ -236,7 +250,14 @@ fun DtcScreen() {
     if ((obdMode || other) && unitTcu) unitTcu = false
     val init = if (unitTcu) tcuInit else ecuInit
     val dest = if (unitTcu) SsmClient.TCU else SsmClient.ECU
-    val defs = remember(init, unitTcu) { init?.let { DtcRepo.defs(ctx, it) } ?: emptyList() }
+    fun tableOf() = init?.let { DtcRepo.defs(ctx, it) } ?: emptyList()
+    val defs by androidx.compose.runtime.produceState(emptyList<DtcDef>(), init, unitTcu) { value = withContext(Dispatchers.IO) { tableOf() } }
+    // the hints' JSON once, before a list of codes wants it line by line
+    var hintsRead by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { DtcRepo.hint(ctx, "", false, false) }
+        hintsRead = true
+    }
     var hits by remember { mutableStateOf<List<DtcHit>?>(null) }
     var status by remember { mutableStateOf("Нажмите «Прочитать ошибки»") }
     var busy by remember { mutableStateOf(false) }
@@ -263,8 +284,11 @@ fun DtcScreen() {
         }
         busy = true; status = "Чтение…"
         scope.launch {
+            // the table may not have come yet when the button is pressed
+            val defs = withContext(Dispatchers.IO) { tableOf() }
             val r = withContext(Dispatchers.IO) { if (obdMode) DtcRepo.readObd(ctx) else DtcRepo.read(defs, dest) }
             hits = r
+            kg.forester.sg.service.CodeWatch.ask()
             // readiness, freeze frame and the unit's ids come along on OBD-II
             if (obdMode && r != null) diag = withContext(Dispatchers.IO) { DtcRepo.readObdDiag() }
             status = when {
@@ -278,8 +302,9 @@ fun DtcScreen() {
         }
     }
 
+    ScrollWhenLow(500.dp) {
     Row(Modifier.fillMaxSize()) {
-        Panel(Modifier.width(320.dp).fillMaxHeight()) {
+        Panel(Modifier.width(if (LocalCar.current.small) 390.dp else 320.dp).fillMaxHeight()) {
             var manual by remember { mutableStateOf(false) }
             PanelTitle(Lucide.TriangleAlert, "Коды ошибок") {
                 Box(
@@ -291,7 +316,7 @@ fun DtcScreen() {
             Spacer(Modifier.height(10.dp))
             if (!obdMode && !other) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip("Двигатель", !unitTcu, { unitTcu = false; hits = null; status = "Нажмите «Прочитать ошибки»" }, modifier = Modifier.weight(1f))
-                Chip("АКПП", unitTcu, {
+                Chip(kg.forester.sg.data.I18n.pick("АКПП", "Gearbox"), unitTcu, {
                     if (!obdMode) { unitTcu = true; hits = null; status = "Нажмите «Прочитать ошибки»" }
                 }, modifier = Modifier.weight(1f))
             }
@@ -304,7 +329,11 @@ fun DtcScreen() {
             init?.let { i -> kg.forester.sg.ssm.EcuIds.car(ctx, i.romId)?.let { T(it, 13.sp, C.Sub) } }
             val vin by Repo.vin.collectAsState()
             if (!unitTcu && vin.isNotEmpty()) T("VIN: $vin", 13.sp, C.Sub)
-            if (obdMode) remember(vin) { DtcRepo.make(ctx)?.name }?.let { T("Марка по VIN: $it", 13.sp, C.Sub) }
+            // an empty line of the same height until the tables have said
+            val vinMake by androidx.compose.runtime.produceState<String?>(if (vin.isNotEmpty()) "" else null, vin) {
+                value = withContext(Dispatchers.IO) { DtcRepo.make(ctx)?.name }
+            }
+            if (obdMode) vinMake?.let { T(if (it.isEmpty()) " " else "Марка по VIN: $it", 13.sp, C.Sub) }
             if (obdMode) T("Режим OBD-II: стандартные коды, АКПП недоступна", 13.sp, C.Sub)
             else if (init != null) T(
                 (if (init!!.supports(37, 7)) "Коды Subaru (2-значные)" else "Коды OBD-II") + ", в таблице: ${defs.size}", 13.sp, C.Sub,
@@ -354,9 +383,9 @@ fun DtcScreen() {
                         T(h.def.code, 15.sp, C.Orange, FontWeight.Bold, Modifier.weight(0.6f))
                         Column(Modifier.weight(2.4f)) {
                             T(h.def.descRu.ifBlank { h.def.desc }, 14.sp)
-                            if (h.def.descRu.isNotBlank()) T(h.def.desc, 11.sp, C.Sub)
+                            if (h.def.descRu.isNotBlank() && !kg.forester.sg.data.I18n.english) T(h.def.desc, 11.sp, C.Sub)
                             val twoDigit = !h.def.code.startsWith("P") && !h.def.code.startsWith("U") && !h.def.code.startsWith("C") && !h.def.code.startsWith("B")
-                            DtcRepo.hint(ctx, h.def.code, unitTcu, twoDigit)?.let { T("Что проверить: $it", 12.sp, C.Violet) }
+                            if (hintsRead) DtcRepo.hint(ctx, h.def.code, unitTcu, twoDigit)?.let { T("Что проверить: $it", 12.sp, C.Violet) }
                         }
                         T(if (h.current) "да" else "—", 14.sp, if (h.current) C.Red else C.Sub, modifier = Modifier.weight(0.5f))
                         T(if (h.memorized) "да" else "—", 14.sp, modifier = Modifier.weight(0.5f))
@@ -392,9 +421,10 @@ fun DtcScreen() {
             }
         }
     }
+    }
 
     if (confirmClear) {
-        AlertDialog(
+        CarAlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Сбросить ошибки?") },
             text = {
@@ -409,6 +439,7 @@ fun DtcScreen() {
                     scope.launch {
                         val ok = withContext(Dispatchers.IO) { if (obdMode) DtcRepo.clearObd() else DtcRepo.clear(dest) }
                         hits = null
+                        kg.forester.sg.service.CodeWatch.ask()
                         status = if (ok) "Блок принял команду. Теперь выключите зажигание минимум на 5–10 секунд, включите снова, " +
                             "дождитесь связи и прочитайте ошибки: до этого коды могут ещё показываться." else "Блок не подтвердил сброс"
                         busy = false
@@ -426,7 +457,7 @@ private fun DtcEmpty(read: Boolean, busy: Boolean, status: String, modifier: Mod
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         // green only for a unit that answered and has no codes; no link or a Link ECU says why in the line below
         val clean = read && !busy && status.endsWith("ошибок нет", ignoreCase = true)
-        androidx.compose.material3.Icon(
+        Icon(
             if (clean) Lucide.CircleCheck else Lucide.ScanSearch, null,
             tint = if (clean) C.Green else C.Sub, modifier = Modifier.size(48.dp),
         )
@@ -496,16 +527,3 @@ private fun ObdDiagView(d: DtcRepo.ObdDiag) {
     }
 }
 
-@Composable
-fun ActionButton(text: String, enabled: Boolean, danger: Boolean = false, onClick: () -> Unit) {
-    Box(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-            .background(
-                if (!enabled) androidx.compose.ui.graphics.SolidColor(C.Border)
-                else if (danger) androidx.compose.ui.graphics.SolidColor(C.Red.copy(alpha = 0.8f)) else C.Accent
-            )
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(14.dp),
-        contentAlignment = Alignment.Center,
-    ) { T(text, 15.sp, Color.White, FontWeight.SemiBold) }
-}

@@ -35,7 +35,7 @@ object FuelCalc {
         if (obdCut(s, rpm)) return 0.0
         val maf = s.mafGs ?: return byInjectors(pw, rpm, k, s.batteryV, cylinders)
         source = "maf"
-        val measured = s.afr?.toDouble()
+        val measured = s.afr?.toDouble() ?: estimatedEnrichedAfr(s)
         val closedLoop = measured == null || measured in 13.5..16.0
         val fuelGs = if (closedLoop) {
             // stoichiometric target corrected by the short + long term trims (real ones stay within ±25 %)
@@ -46,6 +46,17 @@ object FuelCalc {
             maf / measured!!.coerceIn(10.0, 18.5)
         } * k
         return fuelGs * 3600.0 / GASOLINE_G_PER_L
+    }
+
+    /**
+     * The AFR to assume without a wideband or an A/F sensor reading: only at full throttle under boost, where the ECU
+     * richens the mixture (about 12.5 at the start of boost to 11.5 from 80 kPa); null elsewhere, where 14.7 holds.
+     */
+    private fun estimatedEnrichedAfr(s: EcuSnapshot): Double? {
+        val boost = s.boostKpa ?: return null
+        val wot = (s.throttlePct ?: s.pedalPct ?: 0f) >= 90f
+        if (!wot || boost < 20f) return null
+        return (12.5 - (boost - 20.0) / 60.0).coerceIn(11.5, 12.5)
     }
 
     /** How the last [litersPerHour] got its number: "maf", "inj" (no MAF, by the injectors), "obd" (the unit's own PID 5E) or "" (none). */
@@ -386,7 +397,7 @@ class TripTracker(ctx: android.content.Context, private val onNewTrip: (Long) ->
         val avg = FuelCalc.rangePer100(t, past)
         Repo.trip.value = TripState(
             trip = t,
-            instLh = lh,
+            instLh = lh, instKnown = true,
             // below 20 km/h litres per 100 km shoot past 100 when pulling away: show litres per hour there
             instPer100 = if (speed >= 20) lh / speed * 100 else null,
             fuelLeftL = left,

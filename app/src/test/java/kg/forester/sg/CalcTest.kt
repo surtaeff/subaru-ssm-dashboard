@@ -1,5 +1,6 @@
 package kg.forester.sg
 
+import kg.forester.sg.data.Derived
 import kg.forester.sg.service.EngineGuard
 import kg.forester.sg.service.FuelCalc
 import kg.forester.sg.service.Gears
@@ -207,5 +208,25 @@ class CalcTest {
         assertFalse(EngineGuard.mapAtLimit(255f, direct = true))
         assertFalse(EngineGuard.mapAtLimit(240f, direct = false))
         assertFalse(EngineGuard.mapAtLimit(null, direct = false))
+    }
+
+    @Test fun vePctMatchesFormula() {
+        val want = 20f * 60 / 3000 * 2 * 287.05f * (30f + 273.15f) / (100f * 2.5f * 1000) * 100
+        assertEquals(want, Derived.vePct(20f, 3000, 30, 100f, 2.5f)!!, 1e-3f)
+    }
+
+    @Test fun vePctNullBelow800Rpm() {
+        assertNull(Derived.vePct(20f, 799, 30, 100f, 2.0f))
+        assertEquals(true, Derived.vePct(20f, 800, 30, 100f, 2.0f) != null)
+    }
+
+    @Test fun vePctNullWithoutMaf() {
+        assertNull(Derived.vePct(null, 3000, 30, 100f, 2.0f))
+        assertNull(Derived.vePct(20f, 3000, 30, 100f, null))
+    }
+
+    @Test fun vePctNullWithMapUnder20() {
+        assertNull(Derived.vePct(20f, 3000, 30, 19.9f, 2.0f))
+        assertNull(Derived.vePct(20f, 3000, 30, null, 2.0f))
     }
 }

@@ -34,7 +34,14 @@ object NavGuidance {
         "com.here.app.maps", "com.mapswithme.maps.pro",
     )
 
-    fun posted(ctx: Context, sbn: StatusBarNotification) = runCatching {
+    /** A navigator's layout and pictures take long on a weak unit: off the main thread, one after the other. */
+    private val worker by lazy { android.os.Handler(android.os.HandlerThread("nav hints").apply { start() }.looper) }
+
+    fun onWorker(block: () -> Unit) { worker.post { runCatching(block) } }
+
+    fun posted(ctx: Context, sbn: StatusBarNotification) = onWorker { read(ctx, sbn) }
+
+    private fun read(ctx: Context, sbn: StatusBarNotification) = runCatching {
         val n = sbn.notification ?: return@runCatching
         if (sbn.packageName !in NavApps && n.category != Notification.CATEGORY_NAVIGATION) return@runCatching
         // guidance runs as an ongoing notification; reviews, offers and traffic news are not
@@ -113,7 +120,7 @@ object NavGuidance {
         lastViews = ""
     }
 
-    fun removed(sbn: StatusBarNotification) {
+    fun removed(sbn: StatusBarNotification) = onWorker {
         if (sbn.key == key) clear()
     }
 

@@ -37,6 +37,13 @@ class PerfCalcTest {
     // 4 m/s² from a standstill at t = 2 s
     private fun standing(t: Double) = if (t < 2) 0.0 else 4.0 * (t - 2) * 3.6
 
+    @Test fun aRealSixtyMphComesFromTheSameSamples() {
+        // 4 m/s²: 60 mph is 26.82 m/s, 6.7 s from the start; it is timed whichever unit is chosen, 0-100 stays as it was
+        val r = PerfCalc.measure(trace(12.0, ::standing), Interval.list("0-100")).results()
+        assertEquals(6.7, r.getValue("0-60mi").toDouble(), 0.15)
+        assertEquals(6.94, r.getValue("0-100").toDouble(), 0.15)
+    }
+
     @Test
     fun standingIntervalInterpolatesTheCrossings() {
         val m = PerfCalc.measure(trace(12.0, ::standing), Interval.list("0-60,0-100"))
@@ -304,5 +311,27 @@ class PerfCalcTest {
         assertNull(old.gps[0].sats)
         assertNull(old.gps[0].cn0)
         assertEquals(200f, old.gps[0].alt!!, 0.01f)
+    }
+
+    @Test
+    fun distanceCorrectionUsesCubeRoot() {
+        // 92 kPa, 25 C: sae 1.090; a distance time goes as P^(-1/3), not 1 / P
+        val cf = PerfCalc.sae(25.0, 92.0)
+        assertEquals(1.090, cf, 0.001)
+        assertEquals(15.06, PerfCalc.correctedDistance(15.50, 25.0, 92.0)!!, 0.02)
+        assertEquals(15.50 / Math.cbrt(cf), PerfCalc.correctedDistance(15.50, 25.0, 92.0)!!, 1e-9)
+        // the time to a speed stays 1 / sae
+        assertEquals(15.50 / cf, PerfCalc.corrected(15.50, 25.0, 92.0)!!, 1e-9)
+        assertNull(PerfCalc.correctedDistance(15.5, null, 92.0))
+        assertNull(PerfCalc.correctedDistance(15.5, 90.0, 92.0))
+    }
+
+    @Test
+    fun trapSpeedCorrectionGoesTheOtherWay() {
+        // speed over a distance goes as P^(1/3): in thin air the car trapped slower, the standard-air speed is higher
+        val cf = PerfCalc.sae(25.0, 92.0)
+        assertEquals(154.3, PerfCalc.correctedSpeed(150.0, 25.0, 92.0)!!, 0.1)
+        assertEquals(150.0 * Math.cbrt(cf), PerfCalc.correctedSpeed(150.0, 25.0, 92.0)!!, 1e-9)
+        assertNull(PerfCalc.correctedSpeed(150.0, null, 92.0))
     }
 }

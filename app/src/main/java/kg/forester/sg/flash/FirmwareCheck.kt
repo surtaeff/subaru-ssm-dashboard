@@ -53,7 +53,8 @@ class FirmwareCheck(
             val img = try {
                 IntelHex.parse(text, spec.maxSketch)
             } catch (e: Exception) {
-                val why = e.message ?: e.toString()
+                kg.forester.sg.ssm.SsmTrace.log("firmware check: $e")
+                val why = kg.forester.sg.data.Failure.link(e, "файл не читается")
                 val l = if (why.contains("загрузчик")) "Не помещается в ${board.short}: $why. Возможно, файл собран для другой платы"
                 else "Это не прошивка в формате Intel HEX или файл испорчен: $why"
                 return FirmwareCheck(null, listOf(false to l), null, null)

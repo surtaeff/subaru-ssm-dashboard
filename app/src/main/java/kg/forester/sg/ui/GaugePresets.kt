@@ -490,4 +490,72 @@ val PresetDialStyles: List<DialStyle> = listOf(
         rings = listOf(Triple(182f, 128f, Color(0xFFF59E0B)), Triple(112f, 52f, Color(0xFF8BD82B))),
         readout = Readout(Color(0xFFC9A35A), Color(0xFF1B1608), Color(0x2A1B1608), Color(0xFF6B5A2A)),
     ),
+
+    // --- With built-in indicators: see GaugeDesigns.kt; defaults don't change, each is chosen like any other
+    DialStyle(
+        "hud_amber", "HUD янтарь",
+        face = listOf(Color(0xFF17090A), Color(0xFF0D0506), Color(0xFF040203)), rim = Color(0xFF7A1F12), track = Color(0xFF3A1210),
+        arc = listOf(Color(0xFFFFB02E), Color(0xFFFF7A1A), Color(0xFFFFB02E)), red = Color(0xFFFF2A1F),
+        tickMajor = Color(0xFFFF8A3A), tickMinor = Color(0xFF8A3A1A), numbers = Color(0xFFFFA04A),
+        value = Color(0xFFFFC07A), unit = Color(0xFFD08A4A), needle = Color(0xFFFF7A1A), glow = Color(0xFFFF7A1A),
+        design = GaugeDesign.HUD_AMBER,
+    ),
+    DialStyle(
+        "hud_blue", "HUD синий",
+        face = listOf(Color(0xFF0A1826), Color(0xFF071019), Color(0xFF03070C)), rim = Color(0xFF2FC6E8), track = Color(0xFF0E2A3A),
+        arc = listOf(Color(0xFF2FC6E8), Color(0xFF8FE6F7)), red = Color(0xFFFF3B3B),
+        tickMajor = Color(0xFFBEEFFA), tickMinor = Color(0xFF3B7F96), numbers = Color(0xFFBEEFFA),
+        value = Color.White, unit = Color(0xFF7FD3E6), needle = Color(0xFFE8FBFF), hub = Color(0xFF12445A),
+        design = GaugeDesign.HUD_BLUE,
+    ),
+    DialStyle(
+        "red_line", "Красная линия",
+        face = listOf(Color(0xFF16090B), Color(0xFF0C0506), Color(0xFF050304)), rim = Color(0xFFE5232A), track = Color(0xFF2A1012),
+        arc = null, red = Color(0xFFFF3B2F),
+        tickMajor = Color(0xFFFF6A5A), tickMinor = Color(0xFF7A2A2A), numbers = Color(0xFFFF8A7A),
+        value = Color.White, unit = Color(0xFFFFA59A), needle = Color(0xFFFFE9D0), hub = Color(0xFF2A1012),
+        design = GaugeDesign.RED_LINE,
+    ),
+    DialStyle(
+        "blue_glow", "Синее свечение",
+        face = listOf(Color(0xFF0E2A52), Color(0xFF081A36), Color(0xFF040B18)), rim = Color(0xFF3FA9F5), track = Color(0xFF0F2F55),
+        arc = listOf(Color(0xFF1E8CFF), Color(0xFF7FD4FF), Color(0xFF1E8CFF)), red = Color(0xFFFF3B3B),
+        tickMajor = Color(0xFFE0F2FF), tickMinor = Color(0xFF4F86B8), numbers = Color(0xFFFFB347),
+        value = Color.White, unit = Color(0xFF8FC8F0), needle = Color(0xFFBFE8FF), hub = Color(0xFF123D70), glow = Color(0xFF2F9BFF),
+        design = GaugeDesign.BLUE_GLOW,
+    ),
+    DialStyle(
+        "chrome_black", "Классика в хроме",
+        face = listOf(Color(0xFF26282C), Color(0xFF17181B), Color(0xFF0B0C0E)), rim = Color(0xFFD9DCE1), track = Color(0xFF2A2C31),
+        arc = null, red = Color(0xFFE5232A),
+        tickMajor = Color.White, tickMinor = Color(0xFFB8BCC2), numbers = Color.White,
+        value = Color.White, unit = Color(0xFFBFC3C9), needle = Color(0xFFFF2E2E), hub = Color(0xFF26282D),
+        design = GaugeDesign.CHROME,
+    ),
+    DialStyle(
+        "double_needle", "Две стрелки",
+        face = listOf(Color(0xFF232529), Color(0xFF15161A), Color(0xFF0A0B0D)), rim = Color(0xFFD9DCE1), track = Color(0xFF2A2C31),
+        arc = null, red = Color(0xFFE5232A),
+        tickMajor = Color.White, tickMinor = Color(0xFF8A8E95), numbers = Color.White,
+        value = Color(0xFF40E0D0), unit = Color(0xFF7FE8DC), needle = Color(0xFFFF2E2E),
+        design = GaugeDesign.DOUBLE,
+    ),
+    DialStyle(
+        "sport_white", "Спорт белое кольцо",
+        face = listOf(Color(0xFF07080C), Color(0xFF07080C), Color(0xFF0B0C12)), rim = Color(0xFFE8EAEE), track = Color(0xFF2B2D33),
+        arc = null, red = Color(0xFFF0253A),
+        tickMajor = Color.White, tickMinor = Color(0xFFEDEFF3), numbers = Color(0xFF111217),
+        value = Color.White, unit = Color(0xFFC6CAD2), needle = Color(0xFFFF3B46), sweep = 300f, bandText = Color(0xFF111217),
+        design = GaugeDesign.SPORT_WHITE,
+    ),
+
+    // --- A dark glossy lens with a crescent of light, no scale and no needle: see LensDial.kt.
+    // face: disk, crown of the lens, plate; track: the ring; tickMinor: hatching and the outer arc; arc: the crescent, tail to head
+    DialStyle(
+        "lens", "Линза",
+        face = listOf(Color(0xFF080A14), Color(0xFF23273A), Color(0xFF05070F)), rim = Color(0xBFFFFFFF), track = Color(0xFF0B1238),
+        arc = listOf(Color(0xFF0F2FB8), Color(0xFF2E6BFF), Color(0xFFD6E6FF)), red = Color(0xFFFF4A1F),
+        tickMajor = Color.White, tickMinor = Color(0x6B8FA8FF), numbers = Color(0xFFBFCBEA),
+        value = Color.White, unit = Color(0xFF8AA0E0), needle = Color.Transparent, lens = true,
+    ),
 )

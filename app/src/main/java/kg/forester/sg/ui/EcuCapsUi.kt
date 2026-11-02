@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -27,7 +26,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kg.forester.sg.data.EcuCaps
 import kg.forester.sg.data.Repo
@@ -44,21 +42,18 @@ fun EcuCapsDialog(onClose: () -> Unit) {
     val rom = raw?.romId ?: return
     val hidden = remember(raw) { EcuCaps.hidden(ctx) }
     val forced = EcuCaps.forced(rom)
-    Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            Modifier.width(720.dp).heightIn(max = 600.dp).clip(RoundedCornerShape(16.dp)).background(C.Card)
-                .border(1.dp, C.Border, RoundedCornerShape(16.dp)).padding(16.dp),
-        ) {
+    CarSheet(onClose, 720.dp, 600.dp, head = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T("Датчики, которые ЭБУ скрывает", 18.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 Chip("Готово", true, onClose)
             }
             Spacer(Modifier.height(6.dp))
-            T("ЭБУ $rom говорит, что этих датчиков у него нет, и приложение их не читает: без датчика ЭБУ отдаёт по адресу мусор. " +
+    }) {
+            SettingHint("ЭБУ $rom говорит, что этих датчиков у него нет, и приложение их не читает: без датчика ЭБУ отдаёт по адресу мусор. " +
                 "Старые ЭБУ (JECS) так скрывают и то, что есть: MAF, воздух на впуске, дроссель. Включите то, что у машины точно есть, " +
-                "и проверьте значения на «Датчиках»: если там ерунда, выключите обратно. Связь переподключится сама.", 12.sp, C.Sub)
+                "и проверьте значения на «Датчиках»: если там ерунда, выключите обратно. Связь переподключится сама.")
             Spacer(Modifier.height(10.dp))
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+            Column {
                 hidden.forEach { h ->
                     val on = (h.byte to h.bit) in forced
                     Row(
@@ -74,6 +69,6 @@ fun EcuCapsDialog(onClose: () -> Unit) {
                     }
                 }
             }
-        }
+        
     }
 }

@@ -61,18 +61,18 @@ private fun runPicture(run: PerfRun, m: Measured, keys: List<String>): Bitmap {
     fun paint(color: androidx.compose.ui.graphics.Color, size: Float, bold: Boolean = false) = Paint().apply {
         this.color = color.toArgb(); textSize = size; isAntiAlias = true; isFakeBoldText = bold
     }
-    c.drawText("Разгон  ·  " + SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(run.timeMs)), 48f, 72f, paint(C.Text, 44f, true))
-    c.drawText(condLine(run), 48f, 118f, paint(C.Sub, 28f))
+    c.drawText(kg.forester.sg.data.tr("Разгон  ·  " + SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(run.timeMs))), 48f, 72f, paint(C.Text, 44f, true))
+    c.drawText(kg.forester.sg.data.tr(condLine(run)), 48f, 118f, paint(C.Sub, 28f))
     // the times on the left
     var y = 190f
     for (k in keys) {
         val v = run.results[k] ?: continue
         if (y > h - 120) break
-        c.drawText(resultShort(k), 48f, y, paint(C.Sub, 32f))
-        val trap = run.results[k.replace("m", "v")]?.takeIf { k.endsWith("m") && k != "18m" }?.let { "  %.0f км/ч".format(it) }
+        c.drawText(kg.forester.sg.data.tr(resultShort(k)), 48f, y, paint(C.Sub, 32f))
+        val trap = run.results[k.replace("m", "v")]?.takeIf { k.endsWith("m") && k != "18m" }?.let { "  " + kg.forester.sg.data.DistanceUnits.speedText(it) }
             ?: run.results[k + PerfCalc.DIST]?.let { "  %.1f м".format(it) } ?: ""
-        c.drawText("%.2f с".format(v) + trap, 230f, y, paint(if (run.clean(k)) C.Text else C.Orange, 38f, true))
-        corrected(run, k)?.let { c.drawText("SAE %.2f".format(it), 230f, y + 30f, paint(C.Sub, 22f)) }
+        c.drawText(kg.forester.sg.data.tr("%.2f с".format(v) + trap), 230f, y, paint(if (run.clean(k)) C.Text else C.Orange, 38f, true))
+        correctedText(run, k)?.let { c.drawText(kg.forester.sg.data.tr("SAE " + it.removeSuffix(" с")), 230f, y + 30f, paint(C.Sub, 22f)) }
         y += 68f
     }
     // the graph on the right
@@ -87,10 +87,10 @@ private fun runPicture(run: PerfRun, m: Measured, keys: List<String>): Bitmap {
         fun yg(v: Double) = (gy + gh - (v - gMin) / (gMax - gMin) * gh).toFloat()
         val grid = paint(C.Border, 22f).apply { strokeWidth = 2f }
         var lv = 0.0
-        while (lv <= gMax) { c.drawLine(gx, yg(lv), gx + gw, yg(lv), grid); c.drawText("%.1f g".format(lv), gx + 6f, yg(lv) - 6f, paint(C.Sub, 22f)); lv += 0.2 }
+        while (lv <= gMax) { c.drawLine(gx, yg(lv), gx + gw, yg(lv), grid); c.drawText(kg.forester.sg.data.tr("%.1f g".format(lv)), gx + 6f, yg(lv) - 6f, paint(C.Sub, 22f)); lv += 0.2 }
         for (sh in m.shifts) {
             c.drawRect(x(sh.from), gy, maxOf(x(sh.to), x(sh.from) + 3f), gy + gh, paint(C.Orange.copy(alpha = 0.18f), 0f))
-            c.drawText("%.2f с".format(sh.sec), x(sh.from) + 6f, gy + 28f, paint(C.Orange, 24f))
+            c.drawText(kg.forester.sg.data.tr("%.2f с".format(sh.sec)), x(sh.from) + 6f, gy + 28f, paint(C.Orange, 24f))
         }
         fun curve(color: androidx.compose.ui.graphics.Color, width: Float, py: (kg.forester.sg.service.GPt) -> Float) {
             val p = Path()
@@ -100,9 +100,9 @@ private fun runPicture(run: PerfRun, m: Measured, keys: List<String>): Bitmap {
         curve(C.Blue.copy(alpha = 0.7f), 3f) { (gy + gh - it.kmh / vMax * gh).toFloat() }
         curve(C.Violet, 5f) { yg(it.g) }
         var s = 0
-        while (a + s <= t1) { c.drawText("$s с", x(a + s) + 4f, gy + gh + 30f, paint(C.Sub, 22f)); s += if (b - a > 20) 5 else 2 }
-        c.drawText("— ускорение, g     — скорость, до %.0f км/ч".format(g.maxOf { it.kmh }), gx, gy + gh + 70f, paint(C.Sub, 24f))
+        while (a + s <= t1) { c.drawText(kg.forester.sg.data.tr("$s с"), x(a + s) + 4f, gy + gh + 30f, paint(C.Sub, 22f)); s += if (b - a > 20) 5 else 2 }
+        c.drawText(kg.forester.sg.data.tr("— ускорение, g     — скорость, до " + kg.forester.sg.data.DistanceUnits.speedText(g.maxOf { it.kmh })), gx, gy + gh + 70f, paint(C.Sub, 24f))
     }
-    c.drawText(runFacts(run, m), 48f, h - 40f, paint(C.Sub, 26f))
+    c.drawText(kg.forester.sg.data.tr(runFacts(run, m)), 48f, h - 40f, paint(C.Sub, 26f))
     return bmp
 }

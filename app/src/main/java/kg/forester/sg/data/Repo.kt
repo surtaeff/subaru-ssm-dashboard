@@ -2,6 +2,7 @@ package kg.forester.sg.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import kg.forester.sg.service.LogUpload
 import kg.forester.sg.ssm.EcuInit
 import kg.forester.sg.ssm.EcuSnapshot
 import kg.forester.sg.ssm.TcuSnapshot
@@ -21,7 +22,23 @@ data class GpsFix(
     val lon: Double? = null,
     /** Signal of the 4 strongest satellites in the fix, mean C/N0 dB-Hz (Dragy qualifies its runs on it); null unknown. */
     val cn0: Float? = null,
-)
+    /** False when the source gives no speed: [speedKmh] then says nothing. */
+    val speedKnown: Boolean = true,
+    /** When it got here, elapsedRealtime; 0 not known. Unlike [timeMs], free of the source's clock. */
+    val arrivedMs: Long = 0L,
+    /** From the network provider, not GPS: good for the map only, passed over when poor soon after a good fix. */
+    val network: Boolean = false,
+) {
+    companion object {
+        /** A network fix: a place and no speed ([speedKnown] false), never better than 50 m. */
+        fun fromNetwork(lat: Double, lon: Double, altitudeM: Double, accuracyM: Float, hasAccuracy: Boolean, satellites: Int, timeMs: Long, arrivedMs: Long) =
+            GpsFix(
+                speedKmh = 0f, altitudeM = altitudeM, accuracyM = if (hasAccuracy) maxOf(accuracyM, 50f) else 99f,
+                satellites = satellites, timeMs = timeMs, bearing = null, lat = lat, lon = lon,
+                speedKnown = false, arrivedMs = arrivedMs, network = true,
+            )
+    }
+}
 
 data class BatteryState(
     val restingV: Float? = null,
@@ -48,6 +65,8 @@ data class BatteryState(
 data class TripState(
     val trip: Trip? = null,
     val instLh: Double = 0.0,
+    /** False after the link was lost: [instLh] says nothing then. */
+    val instKnown: Boolean = true,
     val instPer100: Double? = null,
     val fuelLeftL: Double? = null,
     /** [fuelLeftL] comes from the ECU's fuel sender, not from counting since the refill. */
@@ -55,10 +74,16 @@ data class TripState(
     val rangeKm: Double? = null,
 )
 
+/** The trip's totals stay, the readings of the moment go: no instantaneous consumption without a car. */
+fun TripState.afterLinkLoss() = copy(instLh = 0.0, instKnown = false, instPer100 = null)
+
+/** The instantaneous consumption in l/h, null when there is none (the link was lost). */
+val TripState.lhNow: Double? get() = if (instKnown) instLh else null
+
 class Settings(ctx: Context) {
     private val p: SharedPreferences = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
     /** A phone leaves the car with its owner: there the service should not start on its own. */
-    private val phone = ctx.resources.configuration.smallestScreenWidthDp < 600
+    private val phone = kg.forester.sg.isPhone(ctx)
 
     init {
         // installs from before the currency setting priced fuel in KGS: keep that for them
@@ -148,6 +173,16 @@ class Settings(ctx: Context) {
     var navPosition: String
         get() = p.getString("navPos", "left")!!
         set(v) { p.edit().putString("navPos", v).apply(); Repo.navPosition.value = v }
+
+    /** The driver's menu: order and hidden screens; nothing stored is the factory's (see [NavMenu]). */
+    var navMenu: NavMenu
+        get() = NavMenu.parse(p.getString("navOrder", "")!!, p.getString("navHidden", "")!!)
+        set(v) { p.edit().putString("navOrder", v.orderText()).putString("navHidden", v.hiddenText()).apply(); Repo.navMenu.value = v }
+
+    /** The mini player: "bottom", "top", "off". */
+    var miniPlayer: String
+        get() = p.getString("miniPlayer", "bottom")!!
+        set(v) { p.edit().putString("miniPlayer", v).apply(); Repo.miniPlayer.value = v }
 
     /** Screens a sideways swipe goes through, in order (Screen names); empty: no carousel. */
     var carousel: List<String>
@@ -327,6 +362,21 @@ class Settings(ctx: Context) {
         get() = p.getString("learnedLast", "")!!
         set(v) = p.edit().putString("learnedLast", v).apply()
 
+    /** Sending the log to the owner by itself: off until the person turns it on. */
+    var logUploadEnabled: Boolean
+        get() = p.getBoolean("logUpload", LogUpload.DEFAULT_ENABLED)
+        set(v) = p.edit().putBoolean("logUpload", v).apply()
+
+    /** Where the log goes: from latest.json ("logUrl"), empty until the owner has a receiver up. */
+    var logEndpoint: String
+        get() = p.getString("logEndpoint", "")!!
+        set(v) = p.edit().putString("logEndpoint", v).apply()
+
+    /** When the log went by itself in the last day (ms, comma separated): the hour and day limits. */
+    var logUploadHistory: String
+        get() = p.getString("logUploadHistory", "")!!
+        set(v) = p.edit().putString("logUploadHistory", v).apply()
+
     /** Last automatic look for a newer release. */
     var lastUpdateCheckMs: Long
         get() = p.getLong("updCheck", 0L)
@@ -359,7 +409,8 @@ class Settings(ctx: Context) {
         get() = p.getBoolean("shiftLight", false)
         set(v) = p.edit().putBoolean("shiftLight", v).apply()
     var shiftRpm: Int
-        get() = p.getInt("shiftRpm", 6300)
+        // until the driver sets it: a little under this engine's redline when it is known
+        get() = p.getInt("shiftRpm", Repo.engineProfile.value.redlineRpm?.let { it - 200 } ?: 6300)
         set(v) = p.edit().putInt("shiftRpm", v).apply()
 
     /** Car with driver and fuel, kg: for the "dyno" power estimate. */
@@ -395,6 +446,11 @@ class Settings(ctx: Context) {
         get() = str("iamLog", "[]")
         set(v) = putStr("iamLog", v)
 
+    /** Per ROM id: the IAM constants read from it, or that the reads were refused (EcuService.readRomIam), JSON object. */
+    var romIamCache: String
+        get() = str("romIamCache", "{}")
+        set(v) = putStr("romIamCache", v)
+
     /** Acceleration runs, JSON list (newest first). */
     var perfRuns: String
         get() = str("perfRuns", "[]")
@@ -422,6 +478,11 @@ class Settings(ctx: Context) {
     var perfSpool: String
         get() = str("perfSpool", "[]")
         set(v) = putStr("perfSpool", v)
+
+    /** What the kept dyno pulls were driven in, JSON list (newest first); their samples are files (see DynoStore). */
+    var perfDyno: String
+        get() = str("perfDyno", "[]")
+        set(v) = putStr("perfDyno", v)
 
     /** Lap timer start/finish line "lat,lon", "" = not set. */
     var lapLine: String
@@ -500,12 +561,12 @@ class Settings(ctx: Context) {
 
     /** 3D car on the home screen: "SG" or "SH" (see CarModels3d). */
     var car3d: String
-        get() = p.getString("car3d", "SG")!!
+        get() = kg.forester.sg.ui.car3dStoredId(p.getString("car3d", "SG")!!)
         set(v) { p.edit().putString("car3d", v).apply(); Repo.car3d.value = v }
     /** The driver picked the 3D car himself: the ECU's car doesn't replace it. */
     var car3dCustom: Boolean
         get() = p.getBoolean("car3dCustom", false)
-        set(v) = p.edit().putBoolean("car3dCustom", v).apply()
+        set(v) { p.edit().putBoolean("car3dCustom", v).apply(); Repo.car3dCustom.value = v }
 
     /** «Тип машины»: "auto" (by the ECU and the VIN), "subaru", "other" (any car on plain OBD-II, see CarKind). */
     var carKind: String
@@ -527,11 +588,11 @@ class Settings(ctx: Context) {
         get() = p.getString("logoImage", "")!!
         set(v) { p.edit().putString("logoImage", v).apply(); Repo.carVersion.value++ }
     /**
-     * «Экран загрузки»: "route" (the neon road picture, the default since 0.9-beta21), "subaru" (the Subaru picture of
+     * «Экран загрузки»: "carpulse" (the app's own picture, the default for whoever never picked one), "route" (the neon road picture, stays for whoever picked it), "subaru" (the Subaru picture of
      * earlier versions), "car" (the car's logo), "custom" (own picture, [splashImage]), "name".
      */
     var splashMode: String
-        get() = p.getString("splashMode", "route")!!
+        get() = p.getString("splashMode", "carpulse")!!
         set(v) { p.edit().putString("splashMode", v).apply(); Repo.carVersion.value++ }
     var splashImage: String
         get() = p.getString("splashImage", "")!!
@@ -561,6 +622,11 @@ class Settings(ctx: Context) {
     var carPaint: String
         get() = p.getString("carPaint", "chameleon")!!
         set(v) { p.edit().putString("carPaint", v).apply(); Repo.carPaint.value = v }
+
+    /** What this app last wrote as another make's home layout (see OtherLayoutMark); "" = nothing. */
+    var otherLayoutMark: String
+        get() = p.getString("otherLayoutMark", "")!!
+        set(v) { p.edit().putString("otherLayoutMark", v).apply() }
 
     /** Home screen cards (see HomeLayout), "" = factory layout. */
     var homeTiles: String
@@ -625,7 +691,17 @@ class Settings(ctx: Context) {
         get() = p.getInt("clusterSize", 1)
         set(v) { p.edit().putInt("clusterSize", v).apply(); Repo.clusterSize.value = v }
 
+    /** The click of the menu's buttons (service/TapSound). */
+    var buttonSound: Boolean
+        get() = p.getBoolean("buttonSound", true)
+        set(v) { p.edit().putBoolean("buttonSound", v).apply(); kg.forester.sg.service.TapSound.setEnabled(v) }
+
     /** Interface colour theme: an ui.AccentTheme id or "custom:RRGGBB". */
+    /** The look of the interface (ui/Palette); the hue is [accentTheme], kept when the look changes. */
+    var uiTheme: String
+        get() = p.getString("uiTheme", kg.forester.sg.ui.Palette.NEON.id)!!
+        set(v) { p.edit().putString("uiTheme", v).apply(); kg.forester.sg.ui.C.applyPalette(v) }
+
     var accentTheme: String
         get() = p.getString("accentTheme", "violet")!!
         set(v) { p.edit().putString("accentTheme", v).apply(); kg.forester.sg.ui.C.applyTheme(v) }
@@ -660,9 +736,96 @@ class Settings(ctx: Context) {
         set(v) { p.edit().putBoolean("trace", v).apply(); kg.forester.sg.ssm.SsmTrace.enabled = v }
 
     /** Interface scale in percent, 0 = automatic (fit a 1280×720-like layout). */
+    /** «Мощность магнитолы»: auto, low, mid, high. */
+    /** The language of the screens, [I18n.RU] or [I18n.EN]. */
+    var language: String
+        get() = p.getString("language", I18n.RU) ?: I18n.RU
+        set(v) { p.edit().putString("language", v).apply() }
+
+    var tierChoice: String
+        get() = p.getString("tierChoice", "auto") ?: "auto"
+        set(v) { p.edit().putString("tierChoice", v).apply(); DeviceTier.choiceChanged() }
+
+    /** The GPU's name, asked once per firmware ([gpuBuild]). */
+    var gpuName: String?
+        get() = p.getString("gpuName", null)
+        set(v) { p.edit().putString("gpuName", v).apply() }
+    var gpuBuild: String
+        get() = p.getString("gpuBuild", "") ?: ""
+        set(v) { p.edit().putString("gpuBuild", v).apply() }
+
+    /** «Размер текста», percent of the design's: text only, the rest of the interface stays. */
+    /** «Единицы расстояния»: what the driver sees; everything stays stored in metric (see [DistanceUnits]). */
+    var distanceUnit: String
+        get() = p.getString("distanceUnit", DistanceUnits.KM) ?: DistanceUnits.KM
+        set(v) { p.edit().putString("distanceUnit", v).apply(); DistanceUnits.miles = v == DistanceUnits.MI }
+
+    var textScale: Int
+        get() = p.getInt("textScale", 100)
+        set(v) { p.edit().putInt("textScale", v.coerceIn(80, 150)).apply(); Repo.textScale.value = v.coerceIn(80, 150) }
+    /** [kg.forester.sg.ssm.RomRaider.CARBERRY_VE] was ticked by itself: unticking it stays. */
+    var carberryVeTicked: Boolean
+        get() = p.getBoolean("carberryVeTicked", false)
+        set(v) = p.edit().putBoolean("carberryVeTicked", v).apply()
+    /** «Показывать результаты замеров»: a banner and voice for each run caught by itself; off, they only go to Замеры. */
+    var perfResults: Boolean
+        get() = p.getBoolean("perfResults", false)
+        set(v) = p.edit().putBoolean("perfResults", v).apply()
+    /** «Поправка оценки масла», °C: added to the estimated oil temperature only. */
+    var oilCorrection: Int
+        get() = p.getInt("oilCorrection", 0)
+        set(v) { p.edit().putInt("oilCorrection", v.coerceIn(-15, 15)).apply() }
     var uiScale: Int
         get() = p.getInt("uiScale", 0)
         set(v) { p.edit().putInt("uiScale", v).apply(); Repo.uiScale.value = v }
+
+    /** The one-time reset of a percent from before the sizes went by the panel is done (see migrateScale). */
+    var scaleMigrated: Boolean
+        get() = p.getBoolean("scaleMigrated", false)
+        set(v) { p.edit().putBoolean("scaleMigrated", v).apply() }
+    /** That reset took place and the driver hasn't been told yet. */
+    var scaleResetNotice: Boolean
+        get() = p.getBoolean("scaleResetNotice", false)
+        set(v) { p.edit().putBoolean("scaleResetNotice", v).apply() }
+    /** The prompt for the diagonal was shown and closed, or the first setup asked. */
+    var inchesAsked: Boolean
+        get() = p.getBoolean("inchesAsked", false)
+        set(v) { p.edit().putBoolean("inchesAsked", v).apply() }
+
+    /**
+     * Whether the car has a turbo, for the factory «Динамика» on a small screen: written once per connection when it
+     * begins (see HomeLayout.carHasTurbo), kept for the next start, so the screen doesn't change in a drive.
+     */
+    /** The ROM ID real boost was last seen on: a ROM nobody knows is a turbo from the next connection on, too. */
+    var boostRom: String
+        get() = p.getString("boostRom", "") ?: ""
+        set(v) = p.edit().putString("boostRom", v).apply()
+
+    var carTurbo: Boolean
+        get() = p.getBoolean("carTurbo", true)
+        set(v) { p.edit().putBoolean("carTurbo", v).apply(); Repo.carTurbo.value = v }
+
+    /** What is known of another make's turbo (see [OtherTurbo]). */
+    val otherTurbo: OtherTurbo
+        get() = OtherTurbo.parse(p.getString("otherTurbo", "") ?: "")
+
+    private val turboLock = Any()
+
+    /**
+     * The one way to change [otherTurbo]: read, change and write under one lock, since the car-kind watcher, the engine
+     * guard and a new connection all write it. Returns the new value.
+     */
+    fun updateOtherTurbo(f: (OtherTurbo) -> OtherTurbo): OtherTurbo = synchronized(turboLock) {
+        val old = otherTurbo
+        val new = f(old)
+        if (new != old) p.edit().putString("otherTurbo", new.format()).apply()
+        new
+    }
+
+    /** The screen's diagonal in inches as the driver told it; 0 = not told. */
+    var screenInches: Float
+        get() = p.getFloat("screenInches", 0f)
+        set(v) { p.edit().putFloat("screenInches", v).apply(); Repo.screenInches.value = v }
 
     var currentTripId: Long
         get() = p.getLong("tripId", 0)
@@ -677,6 +840,8 @@ object Repo {
     val link = MutableStateFlow(LinkState.NO_CABLE)
     val linkMessage = MutableStateFlow("")
     val ecuInit = MutableStateFlow<EcuInit?>(null)
+    /** What is normal for this engine (RulesHost.profile), for the rev scales and the shift light. */
+    val engineProfile = MutableStateFlow(kg.forester.sg.ssm.EngineProfiles.GENERIC)
     /** The init as the ECU sent it, before the bits turned on by hand (EcuCaps). */
     val ecuInitRaw = MutableStateFlow<EcuInit?>(null)
     /** Bumped when those bits change: the connection starts over with them. */
@@ -692,14 +857,16 @@ object Repo {
     val logFile = MutableStateFlow<String?>(null)
 
     /** Last ~60 s of samples for the live charts. */
-    val history = MutableStateFlow<List<EcuSnapshot>>(emptyList())
+    val history = SampleLog<EcuSnapshot>(300)
     val tcuInit = MutableStateFlow<EcuInit?>(null)
     val tcu = MutableStateFlow<TcuSnapshot?>(null)
-    val tcuHistory = MutableStateFlow<List<TcuSnapshot>>(emptyList())
+    val tcuHistory = SampleLog<TcuSnapshot>(600)
     val tcuStatus = MutableStateFlow("АКПП: ожидание")
     val battery = MutableStateFlow(BatteryState())
     val knock = MutableStateFlow(KnockStats())
     val navPosition = MutableStateFlow("left")
+    val miniPlayer = MutableStateFlow("bottom")
+    val navMenu = MutableStateFlow(NavMenu.FACTORY)
     val carousel = MutableStateFlow<List<String>>(emptyList())
     val freeGrid = MutableStateFlow("10x6")
     val bottomBar = MutableStateFlow("")
@@ -713,7 +880,11 @@ object Repo {
     /** Another car's engine unit by OBD mode 09: its name and calibration id ("ECM-EngineControl · CALID …"), "" = unknown. */
     val obdEcu = MutableStateFlow("")
     val uiScale = MutableStateFlow(0)
+    val textScale = MutableStateFlow(100)
+    val screenInches = MutableStateFlow(0f)
+    val carTurbo = MutableStateFlow(true)
     val car3d = MutableStateFlow("SG")
+    val car3dCustom = MutableStateFlow(false)
     val carPaint = MutableStateFlow("chameleon")
     val homeTiles = MutableStateFlow("")
     val driveTiles = MutableStateFlow("")
@@ -742,8 +913,14 @@ object Repo {
     val internalWatch = MutableStateFlow<Set<String>>(emptySet())
     val guard = MutableStateFlow(kg.forester.sg.service.GuardState())
     val peaks = MutableStateFlow(kg.forester.sg.service.Peaks())
+    /** What the units last said about trouble codes (see [kg.forester.sg.service.CodeWatch]); null: not known. */
+    val checkEngine = MutableStateFlow<kg.forester.sg.service.CheckEngine?>(null)
+    /** A screen asked for from inside a card or the header: its name in MainActivity's Screen, with a stamp so the same one can be asked twice. */
+    val openScreen = MutableStateFlow<Pair<Long, String>?>(null)
     val motion = MutableStateFlow(kg.forester.sg.service.MotionState())
     val perf = MutableStateFlow(kg.forester.sg.service.PerfState())
+    /** The dyno is on the screen: a pull is polled fast (see kg.forester.sg.service.DynoPoll). */
+    val dynoTab = MutableStateFlow(false)
     val tyres = MutableStateFlow<Map<String, kg.forester.sg.service.TyreReading>>(emptyMap())
     val shift = MutableStateFlow(false)
     /** Lowest and highest value of each home card since the trip started, by card id. */
@@ -766,6 +943,8 @@ object Repo {
      * «Подключиться» or the next start of the app.
      */
     val adapterReleased = MutableStateFlow(false)
+    /** "Auto"'s Bluetooth tries; starts over whenever the driver or the car gives a reason to try now. */
+    val autoBtPause = autoBtRetryPause()
 
     /** «Демо Link» (adb only, till the app restarts): a made-up Link G4X on a CANable, see LinkDemo. */
     val linkDemo = MutableStateFlow(false)
@@ -780,9 +959,18 @@ object Repo {
             perfDemoFiles = java.io.File(ctx.cacheDir, "perf-demo").also { it.deleteRecursively() }
             db = Db(ctx.applicationContext)
             settings = Settings(ctx.applicationContext)
+            I18n.init(ctx, settings.language)
+            DeviceTier.init(ctx.applicationContext)
+            // made at the first launch, whether the log upload is on or not
+            Thread { DeviceId.get(ctx.applicationContext) }.start()
+            // the rev scales and the shift light of the last connected engine until this drive's first sample; CarKind
+            // isn't started yet, so its decision with no car answering: the driver's setting, else the last car's kind
+            engineProfile.value = kg.forester.sg.ssm.EngineProfiles.seed(kg.forester.sg.ssm.EngineId.saved(ctx),
+                CarKind.decide(settings.carKind, null, obd = false, ssm = false, link = false, lastOther = settings.carKindLast == "other"))
             // older versions saved it: a leftover "on" must not start the demo by itself
             ctx.applicationContext.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().remove("demo").apply()
-            BoxPresets.load(ctx.applicationContext)
+            // a big JSON from the assets, not needed for the first picture: the built-in list stands in until it is read
+            Thread({ BoxPresets.load(ctx.applicationContext) }, "box presets").start()
             SensorBox.load()
             Wideband.load()
             Relays.load()
@@ -790,12 +978,24 @@ object Repo {
             UsbScreen.load()
             FuelLine.load()
             navPosition.value = settings.navPosition
+            miniPlayer.value = settings.miniPlayer
+            navMenu.value = settings.navMenu
             carousel.value = settings.carousel
             freeGrid.value = settings.freeGrid
             bottomBar.value = settings.bottomBar
             topBar.value = settings.topBar
+            kg.forester.sg.ui.migrateScale(settings.uiScale, kg.forester.sg.isPhone(ctx), settings.scaleMigrated).let { m ->
+                if (m.scale != settings.uiScale) settings.uiScale = m.scale
+                settings.scaleMigrated = m.done
+                if (m.notice) settings.scaleResetNotice = true
+            }
             uiScale.value = settings.uiScale
+            textScale.value = settings.textScale
+            DistanceUnits.miles = settings.distanceUnit == DistanceUnits.MI
+            screenInches.value = settings.screenInches
+            carTurbo.value = settings.carTurbo
             car3d.value = settings.car3d
+            car3dCustom.value = settings.car3dCustom
             carPaint.value = settings.carPaint
             homeTiles.value = settings.homeTiles
             driveTiles.value = settings.board("driveTiles")
@@ -803,6 +1003,7 @@ object Repo {
             tcuTiles.value = settings.board("tcuTiles")
             dialStyles.value = settings.tachStyle to settings.speedoStyle
             clusterSize.value = settings.clusterSize
+            kg.forester.sg.ui.C.applyPalette(settings.uiTheme)
             kg.forester.sg.ui.C.applyTheme(settings.accentTheme)
             kg.forester.sg.ssm.SsmTrace.enabled = settings.traceEnabled
             CustomGauges.init(ctx)

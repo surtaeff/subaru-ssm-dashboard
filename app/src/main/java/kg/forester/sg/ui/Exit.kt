@@ -7,8 +7,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,17 +35,14 @@ fun exitApp(ctx: Context) {
 @Composable
 fun ExitButton(size: Dp) {
     var ask by remember { mutableStateOf(false) }
-    Box(
-        Modifier.clip(RoundedCornerShape(10.dp)).clickable { ask = true }.padding(6.dp),
-        contentAlignment = Alignment.Center,
-    ) { Icon(Lucide.Power, "Выход", tint = C.Sub, modifier = Modifier.size(size)) }
+    IconTap(Lucide.Power, kg.forester.sg.data.I18n.pick("Выход", "Exit"), { ask = true }, tint = C.Sub, iconSize = size)
     if (ask) ExitDialog { ask = false }
 }
 
 @Composable
 fun ExitDialog(onClose: () -> Unit) {
     val ctx = LocalContext.current
-    androidx.compose.material3.AlertDialog(
+    CarAlertDialog(
         onDismissRequest = onClose,
         containerColor = C.Card, titleContentColor = C.Text, textContentColor = C.Text,
         icon = { Icon(Lucide.Power, null, tint = C.Red, modifier = Modifier.size(26.dp)) },
@@ -55,9 +50,9 @@ fun ExitDialog(onClose: () -> Unit) {
         text = { T("Опрос ЭБУ, подсчёт расхода, запись логов и музыка остановятся до следующего запуска.", 14.sp) },
         confirmButton = {
             androidx.compose.material3.TextButton({ onClose(); exitApp(ctx) }) {
-                androidx.compose.material3.Text("Выйти", color = C.Red)
+                Text("Выйти", color = C.Red)
             }
         },
-        dismissButton = { androidx.compose.material3.TextButton(onClose) { androidx.compose.material3.Text("Отмена", color = C.Sub) } },
+        dismissButton = { androidx.compose.material3.TextButton(onClose) { Text("Отмена", color = C.Sub) } },
     )
 }

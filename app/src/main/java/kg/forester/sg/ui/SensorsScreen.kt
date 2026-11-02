@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -77,6 +75,18 @@ fun SensorsScreen() {
     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Panel(Modifier.weight(1f).fillMaxHeight()) {
             var own by remember { mutableStateOf(false) }
+            val q = query.trim().lowercase()
+            val shown = avail.filter { p ->
+                when (filter) {
+                    "ecu" -> p.target != 2 && p.kind != RrParam.Kind.SWITCH
+                    "tcu" -> p.target == 2
+                    "sw" -> p.kind == RrParam.Kind.SWITCH
+                    "ext" -> p.kind == RrParam.Kind.EXT
+                    "own" -> p.desc == "свой адрес"
+                    else -> true
+                } && (q.isEmpty() || p.name.lowercase().contains(q) || p.nameEn.lowercase().contains(q) || p.id.lowercase() == q)
+            }
+            ListWithHead({
             PanelTitle(Lucide.ListChecks, "Все параметры ЭБУ") {
                 Chip("Свой адрес", false, { own = true }, Lucide.Plus)
                 Spacer(Modifier.width(6.dp))
@@ -88,7 +98,7 @@ fun SensorsScreen() {
                     obd -> "Машина отвечает только по стандартному OBD-II: параметров Subaru нет, а стандартных у неё ${avail.count { it.id.startsWith("OBD_") }}. " +
                         "Отметьте, что смотреть (каждый отмеченный замедляет опрос, особенно на K-Line)."
                     kg.forester.sg.data.CanEcu.active -> "Спортивный ЭБУ по CAN: ${avail.size} значений из его потока и своих значений из CAN " +
-                        "(Настройки, Авто и адаптер). Отметьте, что смотреть."
+                        "(Настройки, Машина и адаптер). Отметьте, что смотреть."
                     init == null -> "Список зависит от ЭБУ и его прошивки: подключитесь к машине (в демо-режиме его нет)."
                     else -> "ROM ${init?.romId}: доступно ${avail.size} (база RomRaider). Отметьте, что смотреть."
                 },
@@ -110,18 +120,7 @@ fun SensorsScreen() {
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(6.dp))
-            val q = query.trim().lowercase()
-            val shown = avail.filter { p ->
-                when (filter) {
-                    "ecu" -> p.target != 2 && p.kind != RrParam.Kind.SWITCH
-                    "tcu" -> p.target == 2
-                    "sw" -> p.kind == RrParam.Kind.SWITCH
-                    "ext" -> p.kind == RrParam.Kind.EXT
-                    "own" -> p.desc == "свой адрес"
-                    else -> true
-                } && (q.isEmpty() || p.name.lowercase().contains(q) || p.nameEn.lowercase().contains(q) || p.id.lowercase() == q)
-            }
-            LazyColumn(Modifier.weight(1f)) {
+            }) {
                 items(shown, key = { it.id + it.target }) { p ->
                     val on = p.id in watch
                     Row(
@@ -141,7 +140,7 @@ fun SensorsScreen() {
                         Column(Modifier.weight(1f)) {
                             T(p.name, 14.sp, maxLines = 2)
                             T(listOfNotNull(
-                                p.id, p.nameEn.takeIf { it != p.name }, p.unitsRu.ifEmpty { null },
+                                p.id, p.nameEn.takeIf { it != p.name && !kg.forester.sg.data.I18n.english }, p.unitsRu.ifEmpty { null },
                                 if (p.target == 2) "АКПП" else null,
                             ).joinToString(" · "), 11.sp, C.Sub, maxLines = 1)
                         }
@@ -150,6 +149,9 @@ fun SensorsScreen() {
             }
         }
         Panel(Modifier.weight(1.25f).fillMaxHeight()) {
+            val stacked = LocalCar.current.small
+            val ticked = avail.filter { it.id in watch }
+            ListWithHead({
             PanelTitle(Lucide.Activity, "Выбранные параметры") {
                 Box(
                     Modifier.clip(RoundedCornerShape(8.dp)).background(C.CardHi)
@@ -158,31 +160,45 @@ fun SensorsScreen() {
                 Spacer(Modifier.width(6.dp))
             }
             Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                T("Параметр", 12.sp, C.Sub, modifier = Modifier.weight(2.4f))
-                T("Мин", 12.sp, C.Sub, modifier = Modifier.weight(0.8f))
-                T("Сейчас", 12.sp, C.Sub, modifier = Modifier.weight(0.9f))
-                T("Макс", 12.sp, C.Sub, modifier = Modifier.weight(0.8f))
-                T("Ед.", 12.sp, C.Sub, modifier = Modifier.weight(0.8f))
+            if (stacked) Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                FitText("Мин", LocalCar.current.secondary, Modifier.weight(1f), C.Sub)
+                FitText("Сейчас", LocalCar.current.secondary, Modifier.weight(1.4f), C.Sub)
+                FitText("Макс", LocalCar.current.secondary, Modifier.weight(1f), C.Sub)
+            } else Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                FitText("Параметр", LocalCar.current.secondary, Modifier.weight(2.4f), C.Sub)
+                FitText("Мин", LocalCar.current.secondary, Modifier.weight(0.8f), C.Sub)
+                FitText("Сейчас", LocalCar.current.secondary, Modifier.weight(0.9f), C.Sub)
+                FitText("Макс", LocalCar.current.secondary, Modifier.weight(0.8f), C.Sub)
+                FitText("Ед.", LocalCar.current.secondary, Modifier.weight(0.8f), C.Sub)
             }
-            val ticked = avail.filter { it.id in watch }
             if (ticked.isEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 T("Отметьте параметры слева. Они опрашиваются отдельным запросом и попадают в CSV-лог. " +
                     "На K-Line каждый параметр добавляет к циклу опроса примерно 15 мс, так что выбирайте нужное.", 13.sp, C.Sub)
             }
-            LazyColumn(Modifier.weight(1f)) {
+            }) {
                 items(ticked, key = { "w" + it.id + it.target }) { p ->
                     val reading = polled.any { it.id == p.id }
-                    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (stacked) {
+                        // the numbers under the name: at this size of text, in a row with it, they went to «…»
+                        Column(Modifier.fillMaxWidth().padding(vertical = 7.dp)) {
+                            T(p.name, 14.sp, maxLines = 2)
+                            if (!reading && init != null) T("ЭБУ не отдаёт этот параметр", 11.sp, C.Orange)
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                FitText(p.shownText(mins[p.id]), LocalCar.current.secondary, Modifier.weight(1f), C.Sub)
+                                FitText(p.shownText(values[p.id]) + " " + p.shownUnit, LocalCar.current.secondary, Modifier.weight(1.4f), C.Text, FontWeight.SemiBold)
+                                FitText(p.shownText(maxs[p.id]), LocalCar.current.secondary, Modifier.weight(1f), C.Sub)
+                            }
+                        }
+                    } else Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(2.4f)) {
                             T(p.name, 14.sp, maxLines = 2)
                             if (!reading && init != null) T("ЭБУ не отдаёт этот параметр", 11.sp, C.Orange)
                         }
-                        T(p.text(mins[p.id]), 13.sp, C.Sub, modifier = Modifier.weight(0.8f), maxLines = 1)
-                        T(p.text(values[p.id]), 15.sp, C.Text, FontWeight.SemiBold, Modifier.weight(0.9f), maxLines = 1)
-                        T(p.text(maxs[p.id]), 13.sp, C.Sub, modifier = Modifier.weight(0.8f), maxLines = 1)
-                        T(p.unitsRu, 12.sp, C.Sub, modifier = Modifier.weight(0.8f), maxLines = 1)
+                        FitText(p.shownText(mins[p.id]), LocalCar.current.secondary, Modifier.weight(0.8f), C.Sub)
+                        FitText(p.shownText(values[p.id]), LocalCar.current.secondary, Modifier.weight(0.9f), C.Text, FontWeight.SemiBold)
+                        FitText(p.shownText(maxs[p.id]), LocalCar.current.secondary, Modifier.weight(0.8f), C.Sub)
+                        FitText(p.shownUnit, LocalCar.current.secondary, Modifier.weight(0.8f), C.Sub)
                     }
                 }
             }

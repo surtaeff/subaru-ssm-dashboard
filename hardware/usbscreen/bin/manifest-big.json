@@ -1,0 +1,34 @@
+{
+ "src_sha256": "236b4fc5da856392f2adc886a566812398b0a8597ab565414846a8992161faf2",
+ "core": "esp32:esp32@3.3.10",
+ "files": {
+  "ws_s3_lcd_43": {
+   "sha256": "952bc38b89170d40726df62bb7b09d5dfef9cdc7bfff97965e51bd7208d81c69",
+   "bytes": 483328
+  },
+  "ws_s3_lcd_5": {
+   "sha256": "2a46ef7327869d89d55726099993c52d13eaae4f5f4198ac8f7670fd8de97155",
+   "bytes": 483328
+  },
+  "ws_s3_lcd_7": {
+   "sha256": "ea277f2a45abc79a5642dbf6cc22ea2b50241ffc7194d5e7412025445cd341a0",
+   "bytes": 483328
+  },
+  "ws_p4_7b": {
+   "sha256": "d1fea11fac0bac43ae468f716fdb949f8d0106c5e2a2ed11e9dc03ff27e20aee",
+   "bytes": 487424
+  },
+  "ws_p4_7b-pre3": {
+   "sha256": "f1f026fa668e70190443559d343b64bfdf3c11f3ef429b7a8af2c1a1700a1ef3",
+   "bytes": 487424
+  },
+  "ws_p4_101": {
+   "sha256": "f1311869696cd091a464fa1111e556b6754af798862b6e1ec06769cbad312363",
+   "bytes": 552960
+  },
+  "ws_p4_101-pre3": {
+   "sha256": "4d71706152442ebf89a4ea1426ff87b6580173c6e20e5dffe527f00da9e97619",
+   "bytes": 548864
+  }
+ }
+}

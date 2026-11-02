@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -49,11 +50,11 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.BatteryCharging
 import com.composables.icons.lucide.Fuel
@@ -62,7 +63,6 @@ import kg.forester.sg.data.Repo
 import kg.forester.sg.data.Shortcuts
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import kotlin.math.cos
 import kotlin.math.sin
@@ -231,8 +231,9 @@ fun MiniMapCard(styleText: String, modifier: Modifier, onStyle: (String) -> Unit
         onDispose { map.onPause(); map.onDetach() }
     }
     val lat = gps?.lat
-    val lon = gps?.lon
-    val heading = gps?.bearing
+    val rig = remember { CameraRig(map) }
+    DisposableEffect(rig) { onDispose { SmoothDriver.drop(rig) } }
+    LaunchedEffect(gps) { gps?.let { rig.onFix(it) } }
     val fuel = fuelFraction()
     val volts by Repo.live.collectAsState()
     val armour = volts.batteryV?.let { ((it - 11.5f) / 3f).coerceIn(0f, 1f) }
@@ -242,14 +243,24 @@ fun MiniMapCard(styleText: String, modifier: Modifier, onStyle: (String) -> Unit
         val shape: Shape = if (look.square) RoundedCornerShape(d * 0.06f) else CircleShape
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(d).clip(shape).background(look.bg), contentAlignment = Alignment.Center) {
-                AndroidView({ map }, Modifier.fillMaxSize()) { v ->
-                    v.overlayManager.tilesOverlay.setColorFilter(look.tiles)
-                    v.overlayManager.tilesOverlay.loadingBackgroundColor = look.bg.toArgb()
-                    v.overlayManager.tilesOverlay.loadingLineColor = look.bg.toArgb()
-                    if (v.zoomLevelDouble != cfg.zoom) v.controller.setZoom(cfg.zoom)
-                    if (lat != null && lon != null) v.controller.setCenter(GeoPoint(lat, lon))
-                    v.mapOrientation = if (cfg.northUp) 0f else heading?.let { -it } ?: v.mapOrientation
+                // the tile colours are worked out once per look, not for each recomposition
+                DisposableEffect(look) {
+                    map.overlayManager.tilesOverlay.setColorFilter(look.tiles)
+                    map.overlayManager.tilesOverlay.loadingBackgroundColor = look.bg.toArgb()
+                    map.overlayManager.tilesOverlay.loadingLineColor = look.bg.toArgb()
+                    map.invalidate()
+                    onDispose {}
                 }
+                // the map view is larger than the card and moved by a layer between its real moves (see CameraRig)
+                val dPx = with(LocalDensity.current) { d.toPx() }
+                val fit = remember(dPx) { CameraAnchor(dPx.toInt(), dPx.toInt(), dPx / 2, dPx / 2) }
+                DisposableEffect(cfg.zoom, cfg.northUp, fit) {
+                    if (map.zoomLevelDouble != cfg.zoom) map.controller.setZoom(cfg.zoom)
+                    rig.use(fit, cfg.northUp)
+                    onDispose {}
+                }
+                val moved = remember(rig, fit) { Modifier.cameraMap(rig, fit) }
+                AndroidView({ map }, moved)
                 if (lat == null) {
                     val why by Repo.gpsStatus.collectAsState()
                     androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -259,8 +270,8 @@ fun MiniMapCard(styleText: String, modifier: Modifier, onStyle: (String) -> Unit
                 }
                 // frame and arrow on top of the map, so they also take the taps (the map itself never pans)
                 Canvas(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { openNavigator(ctx) }, onLongPress = { picking = true }) }) {
-                    val turn = if (cfg.northUp) 0f else heading ?: 0f
-                    drawMapFrame(look, turn, if (cfg.northUp) heading ?: 0f else 0f, fuel, armour)
+                    val heading = rig.heading.floatValue
+                    drawMapFrame(look, if (cfg.northUp) 0f else heading, if (cfg.northUp) heading else 0f, fuel, armour)
                 }
                 if (look.bars == MapBars.ARC) {
                     // what the GTA IV ring halves mean: fuel on the left, battery on the right
@@ -297,7 +308,7 @@ private fun fuelFraction(): Float? {
 @Composable
 private fun BarIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, col: Color, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
     Box(modifier.size(size).clip(CircleShape).background(Color(0xE60D0F11)), contentAlignment = Alignment.Center) {
-        androidx.compose.material3.Icon(icon, null, tint = col, modifier = Modifier.size(size * 0.62f))
+        Icon(icon, null, tint = col, modifier = Modifier.size(size * 0.62f))
     }
 }
 
@@ -380,11 +391,11 @@ private fun DrawScope.drawMapFrame(look: MapStyle, mapTurn: Float, arrowTurn: Fl
 @Composable
 fun MapStylePicker(current: String, onPick: (String) -> Unit, onClose: () -> Unit) {
     val cfg = remember(current) { MapCfg.parse(current) }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    CarDialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
-            Modifier.clip(RoundedCornerShape(16.dp)).background(C.Card).border(1.dp, C.Purple, RoundedCornerShape(16.dp))
-                .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.92f).dp)
-                .verticalScroll(rememberScrollState()).padding(14.dp),
+            Modifier.clip(kg.forester.sg.ui.RoundedCornerShape(16.dp)).background(C.Sheet).border(1.dp, C.Purple, kg.forester.sg.ui.RoundedCornerShape(16.dp))
+                .heightIn(max = (canvasScreen().screenHeightDp * 0.92f).dp)
+                .cueScroll().padding(14.dp),
         ) {
             T("Дизайн карты", 16.sp, weight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
@@ -418,7 +429,7 @@ fun MapStylePicker(current: String, onPick: (String) -> Unit, onClose: () -> Uni
                         Column(
                             Modifier.clip(RoundedCornerShape(12.dp))
                                 .background(if (on) C.Purple.copy(alpha = 0.25f) else Color.Transparent)
-                                .border(if (on) 2.dp else 1.dp, if (on) C.Purple else C.Border, RoundedCornerShape(12.dp))
+                                .border(if (on) 2.dp else 1.dp, if (on) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(12.dp))
                                 .clickable { onPick(cfg.copy(style = st.id).format()); onClose() }
                                 .padding(8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -475,7 +486,7 @@ fun mapApps(ctx: Context): List<kg.forester.sg.data.InstalledApp> {
     }
 }
 
-/** Choice of the app a tap on the mini-map opens (Settings → Основные and the map design window). */
+/** Choice of the app a tap on the mini-map opens (Settings → Система and the map design window). */
 @Composable
 fun MapAppChooser() {
     val ctx = LocalContext.current

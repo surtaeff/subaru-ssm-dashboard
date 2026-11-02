@@ -8,8 +8,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -30,6 +28,7 @@ import com.composables.icons.lucide.Pencil
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,8 +87,14 @@ data class DialStyle(
     val bandText: Color = Color.Black,
     val outer: Pair<Color, Color>? = null, // two-tone ring outside the scale, left half / right half (Most Wanted)
     val readout: Readout? = null,
+    /** The driver asked for a plain number, not the design's own way of showing it. */
+    val numberOnly: Boolean = false,
     /** The number in the middle left out (the driver reads the needle only); the style id ends in [NO_NUMBER]. */
     val hideValue: Boolean = false,
+    /** The driver's own numbers on the scale in place of the usual ones (see [DialOptions]). */
+    val marks: List<Float> = emptyList(),
+    /** The size of the numbers against the design's. */
+    val numberScale: Float = 1f,
     val pattern: FacePattern = if (carbon) FacePattern.CARBON else FacePattern.NONE,
     val patternColor: Color = Color(0x22FFFFFF),
     val hub: Color? = null,            // needle cap; null = rim colour
@@ -103,7 +108,19 @@ data class DialStyle(
      * They are live: the first fills with the engine speed, the second with the fuel left in the tank.
      */
     val rings: List<Triple<Float, Float, Color>> = emptyList(),
+    /** Not a scale with a needle but the gauge «Линза» (LensDial.kt); the colours below say what each is there. */
+    val lens: Boolean = false,
+    /** One of the designs with built-in indicators (GaugeDesigns.kt); the colours above say what each is there. */
+    val design: GaugeDesign? = null,
 )
+
+/** How a design with built-in indicators shows its number; the other dials go by [DialStyle.readout] as they always did. */
+internal fun DialStyle.numberMode(): NumberMode = when {
+    numberOnly -> NumberMode.PLAIN
+    readout == null -> NumberMode.DESIGN
+    readout.segments -> NumberMode.LCD
+    else -> NumberMode.FRAME
+}
 
 private val WarmLcd = Readout(Color(0xFFB9A46A), Color(0xFF1B1608), Color(0x2A1B1608), Color(0xFF6B5A2A))
 
@@ -113,10 +130,10 @@ val DialStyles: List<DialStyle> by lazy { CoreDialStyles + PresetDialStyles }
 private val CoreDialStyles = listOf(
     DialStyle(
         "neon", "Неон",
-        face = listOf(Color(0xE60B0F1C), Color(0xCC0B0F1C), Color(0x660B0F1C)), rim = C.Border, track = Color(0xFF1E2438),
-        arc = listOf(C.Blue, C.Violet, C.Purple, C.Blue), red = C.Red.copy(alpha = 0.55f),
+        face = listOf(Color(0xE60B0F1C), Color(0xCC0B0F1C), Color(0x660B0F1C)), rim = Palette.NEON.border, track = Color(0xFF1E2438),
+        arc = listOf(Palette.NEON.blue, AccentTheme.VIOLET.main, AccentTheme.VIOLET.deep, Palette.NEON.blue), red = Palette.NEON.red.copy(alpha = 0.55f),
         tickMajor = Color(0xFFCBD5E1), tickMinor = Color(0xFF475069), numbers = Color(0xFFAAB2C8),
-        value = Color.White, unit = C.Sub, needle = Color(0xFFFF4D6D),
+        value = Color.White, unit = Palette.NEON.sub, needle = Color(0xFFFF4D6D),
     ),
     DialStyle(
         "underground", "Underground",
@@ -288,12 +305,78 @@ private val PhotoStyle = DialStyle(
 const val NO_NUMBER = "|n"
 
 fun dialStyle(id: String): DialStyle = when {
-    id.endsWith(NO_NUMBER) -> dialStyle(id.removeSuffix(NO_NUMBER)).copy(hideValue = true)
+    '|' in id -> DialOptions.parse(id).let { o ->
+        // only a bar that is no option at all (a picture's name) comes back the same: on with the design
+        if (o.base == id) designStyle(id)
+        else dialStyle(o.base).let { st ->
+            st.copy(hideValue = o.noNumber || st.hideValue, marks = o.marks, numberScale = o.numberPct?.let { it / 100f } ?: st.numberScale)
+        }
+    }
+    else -> designStyle(id)
+}
+
+private fun designStyle(id: String): DialStyle = when {
     id.startsWith("photo:") -> PhotoStyle.copy(id = id, image = id.removePrefix("photo:"))
     id.startsWith("custom:") -> kg.forester.sg.data.CustomGauges.byStyleId(id)?.toStyle() ?: DialStyles.first()
     else -> (DialStyles.firstOrNull { it.id == id } ?: DialStyles.first()).let { st ->
         // the default design is drawn in the interface colours, so it follows the chosen theme
-        if (st.id == "neon") st.copy(arc = listOf(C.theme.second, C.Violet, C.Purple, C.theme.second)) else st
+        if (st.id == "neon") themedDial(st) else st
+    }
+}
+
+/** The default design in the interface's colours and, outside Неон, on a face of the theme; a preset the driver chose stays as it is. */
+private fun themedDial(st: DialStyle): DialStyle {
+    val arc = listOf(C.theme.second, C.Violet, C.Purple, C.theme.second)
+    return when (C.palette.id) {
+        Palette.LIGHT.id -> st.copy(
+            arc = arc, face = listOf(Color(0xFFFFFFFF), Color(0xFFF7F9FC), Color(0xFFEDF1F6)), rim = C.Border, track = Color(0xFFDDE3EC), red = C.Red,
+            tickMajor = Color(0xFF334155), tickMinor = Color(0xFF94A3B8), numbers = Color(0xFF334155), value = C.Ink, unit = C.Sub, needle = C.Red,
+        )
+        Palette.STUDIO.id -> st.copy(
+            arc = listOf(Color(0xFFA9CBE6), Color.White, Color(0xFFDCEAF5), Color(0xFFA9CBE6)), face = listOf(Color(0x4014232B), Color(0x2614232B), Color(0x0D14232B)),
+            rim = C.Border, track = Color(0x2EFFFFFF), red = C.Red, tickMajor = Color(0xE6FFFFFF), tickMinor = Color(0x66FFFFFF), numbers = C.Sub, value = C.Ink, unit = C.Sub, needle = Color.White,
+        )
+        Palette.MIDNIGHT.id -> st.copy(
+            arc = arc, face = listOf(Color(0xFF0B1530), Color(0xF00E1A3A), Color(0xB316264F)), rim = C.Border, track = Color(0xFF1A2A55), red = C.Red,
+            tickMajor = Color(0xFFD5DEF2), tickMinor = Color(0xFF4A5B82), numbers = C.Sub, value = C.Ink, unit = C.Sub, needle = Color(0xFF86ABFF),
+        )
+        Palette.NIGHT_RACE.id -> st.copy(
+            arc = listOf(Color(0xFF1E9AA8), Color(0xFF5CCBDD), Color(0xFF1E9AA8), Color(0xFF1E9AA8)), face = listOf(Color(0xE6071C26), Color(0xCC0B2A38), Color(0x800F4A63)), rim = C.Border, track = Color(0xFF0D3A4E), red = C.Red,
+            tickMajor = Color(0xFFD7EEF6), tickMinor = Color(0xFF3F7D96), numbers = C.Sub, value = C.Ink, unit = C.Sub, needle = Color(0xFFE8D21E),
+        )
+        Palette.MINT.id -> st.copy(
+            arc = listOf(Color(0xFF2E8B6B), Color(0xFF1F6F54), Color(0xFF1E4D3F), Color(0xFF2E8B6B)), face = listOf(Color(0xFFFFFFFF), Color(0xFFF6FAF8), Color(0xFFEAF2EE)), rim = C.Border, track = Color(0xFFD9E7E0), red = C.Red,
+            tickMajor = Color(0xFF2B4A41), tickMinor = Color(0xFF8AA399), numbers = Color(0xFF2B4A41), value = C.Ink, unit = C.Sub, needle = Color(0xFF1E4D3F),
+        )
+        Palette.NOIR.id -> st.copy(
+            arc = listOf(Color(0xFFBDBDBD), Color.White, Color(0xFFE6E6E6), Color(0xFFBDBDBD)), face = listOf(Color(0xFF0E0E10), Color(0xFF0A0A0C), Color(0xFF000000)), rim = C.Border, track = Color(0xFF1E1E20), red = C.Red,
+            tickMajor = Color(0xFFD8D8D8), tickMinor = Color(0xFF4A4A4C), numbers = C.Sub, value = C.Ink, unit = C.Sub, needle = Color.White,
+        )
+        Palette.LAGOON.id -> st.copy(
+            arc = listOf(Color(0xFF2FD6C3), Color(0xFF2FE0A8), Color(0xFF2FD6C3), Color(0xFF2FD6C3)), face = listOf(Color(0x8C082A2E), Color(0x66082A2E), Color(0x26082A2E)), rim = C.Border, track = Color(0x332FD6C3), red = C.Red,
+            tickMajor = Color(0xFFE2F5F2), tickMinor = Color(0xFF5FA7A1), numbers = C.Sub, value = C.Ink, unit = C.Sub, needle = Color(0xFF2FE0A8),
+        )
+        Palette.SHOWROOM.id -> st.copy(
+            arc = listOf(Color(0xFF138A52), Color(0xFF0F7D48), Color(0xFF138A52), Color(0xFF138A52)), face = listOf(Color(0xFFFFFFFF), Color(0xFFFBFBFC), Color(0xFFF1F1F3)), rim = C.Border, track = Color(0xFFE5E6E8), red = C.Red,
+            tickMajor = Color(0xFF2A2D32), tickMinor = Color(0xFF9A9DA3), numbers = Color(0xFF2A2D32), value = C.Ink, unit = C.Sub, needle = Color(0xFF16181B),
+        )
+        Palette.PURSUIT.id -> st.copy(
+            arc = listOf(Color(0xFFD9AA12), Color(0xFFF2C21A), Color(0xFFF2C21A), Color(0xFFD9AA12)), face = listOf(Color(0xF0000000), Color(0xE60A0B07), Color(0xB3000000)), rim = C.Border, track = Color(0xFF26261E), red = C.Red,
+            tickMajor = Color(0xFFEDEBD8), tickMinor = Color(0xFF6E6C57), numbers = C.Sub, value = C.Ink, unit = C.Sub, needle = Color(0xFFF2C21A),
+        )
+        Palette.CANYON.id -> st.copy(
+            arc = listOf(Color(0xFF25BFAE), Color(0xFF39E6D2), Color(0xFF39E6D2), Color(0xFF25BFAE)), face = listOf(Color(0xB30A1216), Color(0x800A1216), Color(0x330A1216)), rim = C.Border, track = Color(0x332FB8AA), red = C.Red,
+            tickMajor = Color(0xFFD5E5EA), tickMinor = Color(0xFF55696F), numbers = C.Sub, value = C.Ink, unit = C.Sub, needle = Color(0xFF39E6D2),
+        )
+        Palette.RALLY.id -> st.copy(
+            arc = listOf(Color(0xFF0C8385), Color(0xFF0A5658), Color(0xFF0A5658), Color(0xFF0C8385)), face = listOf(Color(0xE6FFFFFF), Color(0xB3FFFFFF), Color(0x66FFFFFF)), rim = C.Border, track = Color(0x4D0A5658), red = C.Red,
+            tickMajor = Color(0xFF0F2E2E), tickMinor = Color(0xFF3D6462), numbers = Color(0xFF0F2E2E), value = C.Ink, unit = C.Sub, needle = Color(0xFF0F2E2E),
+        )
+        Palette.WANTED.id -> st.copy(
+            arc = listOf(Color(0xFFC8141E), Color(0xFFE01A24), Color(0xFFE01A24), Color(0xFFC8141E)), face = listOf(Color(0xFF1A1B1D), Color(0xFF141517), Color(0xFF0E0E0F)), rim = C.Border, track = Color(0xFF2C2D30), red = C.Orange,
+            tickMajor = Color(0xFFE6E6E6), tickMinor = Color(0xFF5C5D61), numbers = Color(0xFFE6E6E6), value = C.Ink, unit = Color(0xFFB9BABD), needle = Color(0xFFE01A24),
+        )
+        else -> st.copy(arc = arc)
     }
 }
 
@@ -312,19 +395,53 @@ fun Dial(
     /** The trip's lowest and highest value, marked on the scale like the telltale needles of a real gauge. */
     range: Pair<Float, Float>? = null, minMark: Boolean = true,
 ) {
-    // the animated value is read only while drawing: the needle's frames redraw the dial without recomposing it
-    val anim = animateFloatAsState((value ?: min).coerceIn(min, max), tween(240), label = "dial")
-    val text = value?.let { format.format(it) } ?: "—"
+    val v = androidx.compose.runtime.rememberUpdatedState(value)
+    val peaks = androidx.compose.runtime.rememberUpdatedState(range)
+    Dial(v, max, step, labelDiv, unit, scaleNote, redFrom, modifier, style, min, format, { peaks.value }, minMark)
+}
+
+/**
+ * The same on a State read only where it is needed: a new reading moves the needle and the number, with no
+ * recomposition of the dial or of what is round it. [range] is called while drawing.
+ */
+@Composable
+fun Dial(
+    value: androidx.compose.runtime.State<Float?>, max: Float, step: Float, labelDiv: Float, unit: String, scaleNote: String?,
+    redFrom: Float?, modifier: Modifier, style: DialStyle = DialStyles.first(),
+    min: Float = 0f, format: String = "%.0f",
+    range: () -> Pair<Float, Float>? = { null }, minMark: Boolean = true,
+    /** For the design «Линза»: the value's name, its warning line, its gear when it is the speed. Others don't show them. */
+    name: String? = null, warn: WarnRule? = null, gear: (() -> String?)? = null,
+) {
+    // a dial's text goes by its own size, also on a parked screen and as a small picture in a picker
+    androidx.compose.runtime.CompositionLocalProvider(LocalTextFloor provides null) {
+        if (style.lens && style.image == null) LensDial(value, max, step, labelDiv, unit, redFrom, modifier, style, min, format, name, warn, gear)
+        else if (style.design != null && style.image == null) DesignDial(style.design, value, max, step, labelDiv, unit, redFrom, modifier, style, min, format, warn)
+        else DialBody(value, max, step, labelDiv, unit, scaleNote, redFrom, modifier, style, min, format, range, minMark)
+    }
+}
+
+@Composable
+private fun DialBody(
+    value: androidx.compose.runtime.State<Float?>, max: Float, step: Float, labelDiv: Float, unit: String, scaleNote: String?,
+    redFrom: Float?, modifier: Modifier, style: DialStyle = DialStyles.first(),
+    min: Float = 0f, format: String = "%.0f",
+    range: () -> Pair<Float, Float>? = { null }, minMark: Boolean = true,
+) {
+    val reading = remember(value, min, max) { androidx.compose.runtime.derivedStateOf { (value.value ?: min).coerceIn(min, max) } }
+    // the smoothed value is read only while drawing: the needle's frames redraw the dial without recomposing it
+    val anim = rememberSmooth(reading, max - min) { value.value != null }
+    val text by rememberDigits { value.value?.let { format.format(it) } ?: "—" }
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val photo = remember(style.image) { style.image?.let { kg.forester.sg.data.GaugeImages.bitmap(ctx, it)?.asImageBitmap() } }
-    val rings = androidx.compose.runtime.rememberUpdatedState(if (style.rings.isEmpty()) emptyList() else ringValues())
+    val rings = if (style.rings.isEmpty()) NoRings else rememberRingFill()
     val peaks = androidx.compose.runtime.rememberUpdatedState(range)
     val ro = style.readout
     // The face and the scale with its numbers stay the same while the needle moves: they are drawn once into two
     // offscreen layers (again only for a new size or design) and every frame of the needle puts those two pictures
     // down, drawing anew only the lit arc, the outer bars and the needle. Before, the gradients, the face artwork,
     // ~30 ticks and the numbers were all drawn again on each of the 15 frames a reading takes.
-    val dial = remember(style, photo, min, max, step, labelDiv, redFrom, minMark) {
+    val dial = remember(style, photo, min, max, step, labelDiv, redFrom, minMark, rings, reading, anim) {
         Modifier.drawWithCache {
             fun cached(layer: DialLayer) = obtainGraphicsLayer().apply {
                 compositingStrategy = androidx.compose.ui.graphics.layer.CompositingStrategy.Offscreen
@@ -332,13 +449,22 @@ fun Dial(
             }
             val face = cached(DialLayer.BASE)
             val scale = cached(DialLayer.TICKS)
+            // one brush per dial and size: a new sweep gradient on each frame would make a new shader for each
+            val mid = Offset(size.width / 2f, size.height / 2f)
+            val arcBrush = style.arc?.let { Brush.sweepGradient(it, mid) }
+            val hotBrush = Brush.sweepGradient(listOf(C.Orange, C.Red), mid)
             onDrawBehind {
+                // half a pixel at the needle's tip: a reading trembling less than that costs no frame
+                anim.quantum = (max - min) * 0.5f / (size.minDimension * 1.9f).coerceAtLeast(1f)
+                val at = anim.value.floatValue.coerceIn(min, max)
                 drawLayer(face)
-                drawDial(anim.value, min, max, step, labelDiv, redFrom, style, photo, rings.value, DialLayer.LIVE)
+                // red by the reading itself: a warning does not wait for the needle to get there
+                val hot = redFrom != null && reading.value >= redFrom
+                drawDial(at, min, max, step, labelDiv, redFrom, style, photo, rings(), DialLayer.LIVE, arcBrush, hotBrush, hot)
                 drawLayer(scale)
                 // a read-out sits below the hub, where the needle passes at the bottom of the scale: the needle goes over it
-                if (ro == null) drawDial(anim.value, min, max, step, labelDiv, redFrom, style, photo, layer = DialLayer.NEEDLE)
-                peaks.value?.let { drawPeakMarks(it, min, max, style, minMark) }
+                if (ro == null) drawDial(at, min, max, step, labelDiv, redFrom, style, photo, layer = DialLayer.NEEDLE)
+                peaks.value()?.let { drawPeakMarks(it, min, max, style, minMark) }
             }
         }
     }
@@ -352,15 +478,15 @@ fun Dial(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     // sized by the scale's widest number, so the digits keep their size from «99» to «100»
-                    if (!style.hideValue) ReadoutBox(text, ro, d * 0.44f, style.value, widest = format.format(max).let { hi ->
+                    if (!style.hideValue) ReadoutBox(text, ro, d * 0.44f * style.numberScale.coerceAtMost(1.3f), style.value, widest = format.format(max).let { hi ->
                         format.format(min).let { lo -> if (lo.length > hi.length) lo else hi } })
                     T(unit, (d.value * 0.075f).coerceIn(8f, 13f).sp, style.unit, maxLines = 1)
                 }
             }
-            Canvas(Modifier.fillMaxSize()) { drawDial(anim.value, min, max, step, labelDiv, redFrom, style, photo, layer = DialLayer.NEEDLE) }
+            Canvas(Modifier.fillMaxSize()) { drawDial(anim.value.floatValue.coerceIn(min, max), min, max, step, labelDiv, redFrom, style, photo, layer = DialLayer.NEEDLE) }
         } else {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top = 4.dp)) {
-                BoxWithConstraints(Modifier.fillMaxWidth(if (style.minimal) 0.62f else 0.5f)) {
+                BoxWithConstraints(Modifier.fillMaxWidth(((if (style.minimal) 0.62f else 0.5f) * style.numberScale).coerceAtMost(0.9f))) {
                     val d = LocalDensity.current
                     val sp = with(d) { (maxWidth / 3.1f).toSp() }
                     if (!style.hideValue) T(text, sp, style.value, FontWeight.Bold, maxLines = 1, modifier = Modifier.align(Alignment.Center))
@@ -372,13 +498,20 @@ fun Dial(
     }
 }
 
-/** Live values for the outer bars of a design: engine speed of 7000 rpm, fuel left of the tank (null = unknown). */
+private val NoRings: () -> List<Float?> = { emptyList() }
+
+/** Live values for the outer bars of a design, called while drawing: engine speed of this engine's rev scale (smoothed like the needle), fuel left of the tank (null = unknown). */
 @Composable
-private fun ringValues(): List<Float?> {
-    val e by kg.forester.sg.data.Repo.live.collectAsState()
-    val ts by kg.forester.sg.data.Repo.trip.collectAsState()
+private fun rememberRingFill(): () -> List<Float?> {
+    val e = kg.forester.sg.data.Repo.live.collectAsState()
+    val ts = kg.forester.sg.data.Repo.trip.collectAsState()
     val tank = kg.forester.sg.data.Repo.settings.tankL
-    return listOf(e.rpm?.let { it / 7000f }, ts.fuelLeftL?.takeIf { tank > 0 }?.let { (it / tank).toFloat() })
+    val profile = kg.forester.sg.data.Repo.engineProfile.collectAsState()
+    val rpmShare = remember { androidx.compose.runtime.derivedStateOf { ((e.value.rpm ?: 0) / profile.value.rpmTop).coerceIn(0f, 1f) } }
+    val rpm = rememberSmooth(rpmShare, 1f) { e.value.rpm != null }
+    return remember(tank) {
+        { listOf(e.value.rpm?.let { rpm.value.floatValue }, ts.value.fuelLeftL?.takeIf { tank > 0 }?.let { (it / tank).toFloat() }) }
+    }
 }
 
 /**
@@ -399,8 +532,8 @@ private fun ReadoutBox(text: String, ro: Readout, width: androidx.compose.ui.uni
         if (ro.segments) {
             // a "1" is as wide as an "8" in DSEG, so the ghost lines up digit for digit
             val ghost = text.map { if (it.isDigit() || it == '—' || it == '-') '8' else it }.joinToString("").padStart(digits, '8')
-            androidx.compose.material3.Text(ghost, color = ro.ghost, fontSize = sp, fontFamily = SegmentFont, maxLines = 1)
-            androidx.compose.material3.Text(text.replace('—', '-'), color = ro.fg, fontSize = sp, fontFamily = SegmentFont, maxLines = 1)
+            Text(ghost, color = ro.ghost, fontSize = sp, fontFamily = SegmentFont, maxLines = 1)
+            Text(text.replace('—', '-'), color = ro.fg, fontSize = sp, fontFamily = SegmentFont, maxLines = 1)
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 T(text, sp * 1.15f, plainColor, FontWeight.Bold, maxLines = 1)
@@ -411,8 +544,8 @@ private fun ReadoutBox(text: String, ro: Readout, width: androidx.compose.ui.uni
 
 /** The scale runs [min]..[max]; the lit arc starts at 0 when the scale has both signs (trims, timing). */
 /** Colours of the trip's min and max marks (cards and gauges). */
-val MinMarkColor = Color(0xFF60A5FA)
-val MaxMarkColor = Color(0xFFF59E0B)
+val MinMarkColor: Color get() = if (C.palette === Palette.NEON) Color(0xFF60A5FA) else C.Blue
+val MaxMarkColor: Color get() = C.Orange
 
 /**
  * The trip's min and max on the scale: a faint arc between them just outside the track and a small triangle at each
@@ -458,6 +591,8 @@ internal fun DrawScope.drawDial(
     ringFill: List<Float?> = emptyList(),
     /** [DialLayer.FACE] without the needle, [DialLayer.NEEDLE] the needle alone: a read-out goes between them. */
     layer: DialLayer = DialLayer.ALL,
+    /** The lit arc's brushes and whether it is in the red, when the caller keeps them; else made here from [v]. */
+    arcBrush: Brush? = null, hotBrush: Brush? = null, hotNow: Boolean? = null,
 ) {
     val r = size.minDimension / 2f * (if (st.outer != null || st.rings.isNotEmpty()) 0.9f else 1f)
     val c = center
@@ -555,8 +690,8 @@ internal fun DrawScope.drawDial(
             if (lit) st.glow?.let { drawArc(it.copy(alpha = 0.18f), a0, sweep / n - gap, false, tl, sz, style = Stroke(stroke * 3.4f)) }
         }
     } else if (live && !st.segments && arc != null && v != from) {
-        val hot = redFrom != null && v >= redFrom
-        val brush = if (hot) Brush.sweepGradient(listOf(C.Orange, C.Red), c) else Brush.sweepGradient(arc, c)
+        val hot = hotNow ?: (redFrom != null && v >= redFrom)
+        val brush = if (hot) hotBrush ?: Brush.sweepGradient(listOf(C.Orange, C.Red), c) else arcBrush ?: Brush.sweepGradient(arc, c)
         val a0 = ang(minOf(from, v))
         val a1 = ang(maxOf(from, v))
         st.glow?.let { drawArc(it.copy(alpha = 0.25f), a0, a1 - a0, false, tl, sz, style = Stroke(stroke * 2.4f, cap = StrokeCap.Round)) }
@@ -568,7 +703,7 @@ internal fun DrawScope.drawDial(
         reset()
         flags = android.graphics.Paint.ANTI_ALIAS_FLAG
         textAlign = android.graphics.Paint.Align.CENTER
-        textSize = r * (if (band != null) 0.15f else 0.13f)
+        textSize = r * (if (band != null) 0.15f else 0.13f) * st.numberScale
         color = (if (band != null) st.bandText else st.numbers).toArgb()
         typeface = DialFace
         if (st.italic) textSkewX = -0.2f
@@ -576,6 +711,8 @@ internal fun DrawScope.drawDial(
     }
     val minor = step / 2f
     val decimals = step / labelDiv < 1f
+    // the driver's own numbers instead of the usual ones, each with a major tick; none of them on this scale: the usual ones
+    val ownMarks = if (st.marks.isEmpty()) st.marks else DialOptions.onScale(st.marks, min, max)
     var i = 0
     while (true) {
         val x = min + minor * i++
@@ -598,12 +735,21 @@ internal fun DrawScope.drawDial(
                 drawPath(androidx.compose.ui.graphics.Path().apply { moveTo(tip.x, tip.y); lineTo(b1.x, b1.y); lineTo(b2.x, b2.y); close() }, col)
             } else drawLine(col, pt(a, tickR - stroke * 0.9f), pt(a, tickR - stroke * 1.5f), 1.4f)
         }
-        if (major && (step * 2 > (max - min) / 8 || (i / 2) % 2 == 0)) {
+        if (ownMarks.isEmpty() && major && (step * 2 > (max - min) / 8 || (i / 2) % 2 == 0)) {
             val p = pt(a, if (band != null) arcR else arcR - stroke * (if (st.minimal) 5.5f else 3.9f))
             val label = if (decimals) "%.1f".format(x / labelDiv) else kotlin.math.round(x / labelDiv).toInt().toString()
             if (low != null && band == null) paint.color = (if (red) st.red else lerp(low, st.numbers, (x - min) / (max - min))).toArgb()
-            drawContext.canvas.nativeCanvas.drawText(label, p.x, p.y + paint.textSize * 0.35f, paint)
+            drawContext.canvas.nativeCanvas.drawText(kg.forester.sg.data.tr(label), p.x, p.y + paint.textSize * 0.35f, paint)
         }
+    }
+    for (m in ownMarks.indices) {
+        val x = ownMarks[m]
+        val a = ang(x)
+        val red = redFrom != null && x >= redFrom
+        val tickR = if (band != null) arcR - r * 0.13f else arcR
+        drawLine(if (red && band == null) st.red else st.tickMajor, pt(a, tickR - stroke * 0.9f), pt(a, tickR - stroke * 2.6f), 2.5f)
+        val p = pt(a, if (band != null) arcR else arcR - stroke * (if (st.minimal) 5.5f else 3.9f))
+        drawContext.canvas.nativeCanvas.drawText(DialOptions.label(x, labelDiv), p.x, p.y + paint.textSize * 0.35f, paint)
     }
     if (layer == DialLayer.ALL) needle()
     if (st.readout?.segments == false) drawCircle(st.tickMajor, r * 0.5f, c, style = Stroke(2.5f))
@@ -812,7 +958,7 @@ fun DialStylePicker(which: String, modifier: Modifier, onClose: () -> Unit) {
         if (which == "tach") s.tachStyle else s.speedoStyle, plain = null, modifier, target = which,
         preview = { st, m ->
             if (which == "tach") Dial(3600f, 7000f, 1000f, 1000f, "об/мин", null, 6000f, m, st)
-            else Dial(96f, 200f, 20f, 1f, "км/ч", null, null, m, st)
+            else Dial(kg.forester.sg.data.DistanceUnits.speed(96f), kg.forester.sg.data.DistanceUnits.top(kg.forester.sg.data.DistanceUnits.Kind.SPEED, 200f), kg.forester.sg.data.DistanceUnits.speedStep(), 1f, kg.forester.sg.data.DistanceUnits.speedUnit, null, null, m, st)
         },
         onPick = { if (which == "tach") s.tachStyle = it else s.speedoStyle = it },
         onClose = onClose,
@@ -835,6 +981,8 @@ fun StylePicker(
     preview: @Composable (DialStyle, Modifier) -> Unit, onPick: (String) -> Unit, onClose: () -> Unit,
     /** Shown with a switch when given: whether the dial keeps the number in its middle. */
     numberShown: Boolean? = null, onNumber: (Boolean) -> Unit = {},
+    /** Given with a dial chosen: the card's own numbers on the scale and the size of its numbers. */
+    options: DialOptions? = null, onOptions: (DialOptions) -> Unit = {},
 ) {
     val pickPicture = LocalPickGaugeImage.current
     var designing by remember { mutableStateOf<kg.forester.sg.data.CustomGauge?>(null) }
@@ -843,15 +991,16 @@ fun StylePicker(
     }
     // a dialog, not a Popup: a popup anchored near the top of the screen gets shifted on screen while its touch
     // area stays put, so taps landed on the wrong design
-    androidx.compose.ui.window.Dialog(
+    CarDialog(
         onDismissRequest = onClose,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Column(
-            modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
-                .background(C.Card).border(1.dp, C.Purple, androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
-                .heightIn(max = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.92f).dp)
-                .verticalScroll(androidx.compose.foundation.rememberScrollState())
+            // the width of five designs, whatever the rows above them ask for: it stayed narrow until a design was selected
+            modifier.width(STYLE_PICKER_DP.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+                .background(C.Sheet).border(1.dp, C.Purple, androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+                .heightIn(max = (canvasScreen().screenHeightDp * 0.92f).dp)
+                .cueScroll()
                 .padding(14.dp),
         ) {
             androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
@@ -864,6 +1013,7 @@ fun StylePicker(
                         colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = C.Purple))
                 }
             }
+            if (options != null) DialOptionRows(options, onOptions)
             androidx.compose.foundation.layout.Spacer(Modifier.padding(4.dp))
             // "" = the card's plain look, then the designs, the user's own ones, a picture already in use,
             // CREATE = new own design, PICK = choose a picture
@@ -877,9 +1027,9 @@ fun StylePicker(
                         val own = kg.forester.sg.data.CustomGauges.byStyleId(id)
                         val on = id == current
                         Column(
-                            Modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            Modifier.width(STYLE_CELL_DP.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                                 .background(if (on) C.Purple.copy(alpha = 0.25f) else Color.Transparent)
-                                .border(if (on) 2.dp else 1.dp, if (on) C.Purple else C.Border, androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                                .border(if (on) 2.dp else 1.dp, if (on) C.activeEdge(C.Purple) else C.Border, androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                                 .clickable {
                                     when (id) {
                                         PICK -> { pickPicture(target); onClose() }
@@ -897,11 +1047,11 @@ fun StylePicker(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 when {
-                                    st != null -> preview(st, Modifier.fillMaxSize().padding(4.dp))
-                                    id == PICK -> androidx.compose.material3.Icon(
+                                    st != null -> androidx.compose.runtime.CompositionLocalProvider(LocalDialPreview provides true) { preview(st, Modifier.fillMaxSize().padding(4.dp)) }
+                                    id == PICK -> Icon(
                                         com.composables.icons.lucide.Lucide.ImagePlus, null, tint = C.Violet, modifier = Modifier.size(40.dp),
                                     )
-                                    id == CREATE -> androidx.compose.material3.Icon(
+                                    id == CREATE -> Icon(
                                         com.composables.icons.lucide.Lucide.Palette, null, tint = C.Violet, modifier = Modifier.size(40.dp),
                                     )
                                     else -> T("— — —", 22.sp, C.Violet, FontWeight.Bold)
@@ -910,9 +1060,9 @@ fun StylePicker(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 T(
                                     when { id == PICK -> "Своя картинка…"; id == CREATE -> "Свой дизайн…"; st != null -> st.name; else -> plain ?: "" },
-                                    12.sp, if (on) C.Text else C.Sub, maxLines = 1, modifier = Modifier.widthIn(max = 96.dp),
+                                    12.sp, if (on) C.Text else C.Sub, maxLines = 2, modifier = Modifier.widthIn(max = if (own != null) 92.dp else 112.dp),
                                 )
-                                if (own != null) androidx.compose.material3.Icon(
+                                if (own != null) Icon(
                                     com.composables.icons.lucide.Lucide.Pencil, "Изменить", tint = C.Violet,
                                     modifier = Modifier.padding(start = 4.dp).size(16.dp).clickable { designing = own },
                                 )
@@ -923,5 +1073,30 @@ fun StylePicker(
                 androidx.compose.foundation.layout.Spacer(Modifier.padding(4.dp))
             }
         }
+    }
+}
+
+/** A design in the chooser: its 112 dp preview with the cell's padding. */
+private const val STYLE_CELL_DP = 128
+/** Five of them, the gaps and the sheet's padding. */
+private const val STYLE_PICKER_DP = 5 * STYLE_CELL_DP + 4 * 10 + 2 * 14
+
+/** The card's own numbers on the scale and the size of its numbers. */
+@Composable
+private fun DialOptionRows(o: DialOptions, onChange: (DialOptions) -> Unit) {
+    var marks by remember { mutableStateOf(DialOptions.marksText(o.marks)) }
+    androidx.compose.foundation.layout.Spacer(Modifier.padding(4.dp))
+    TextBox("Свои отметки на шкале, например 40, 60, 90, 110", marks) {
+        marks = it
+        onChange(o.copy(marks = DialOptions.parseMarks(it)))
+    }
+    androidx.compose.foundation.layout.Spacer(Modifier.padding(2.dp))
+    androidx.compose.foundation.layout.Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
+    ) {
+        T("Размер цифр", 13.sp, C.Sub)
+        Chip("Как в дизайне", o.numberPct == null, { onChange(o.copy(numberPct = null)) })
+        listOf(80, 100, 120, 140).forEach { pct -> Chip("$pct%", o.numberPct == pct, { onChange(o.copy(numberPct = pct)) }) }
     }
 }

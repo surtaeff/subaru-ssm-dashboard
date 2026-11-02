@@ -73,7 +73,7 @@ object InnovateLink {
                         } catch (e: CancellationException) { throw e }
                         catch (e: Exception) {
                             SsmTrace.log("Innovate: $e")
-                            state(WidebandLinkState.ERROR, e.message ?: "Ошибка USB ШДК")
+                            state(WidebandLinkState.ERROR, kg.forester.sg.data.Failure.link(e, "Ошибка USB ШДК"))
                         } finally { lease.close() }
                         delay(500)
                     }

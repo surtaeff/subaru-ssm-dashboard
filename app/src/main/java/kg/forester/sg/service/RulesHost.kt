@@ -17,6 +17,10 @@ object RulesHost {
     val noWideband = MutableStateFlow(false)
 
     private var litresFor: Pair<String?, Float?>? = null
+    private var profileFor: Pair<String, kg.forester.sg.ssm.EngineProfile>? = null
+
+    /** The displacement [displacement] found for the connected ROM, for places without a Context (gauges, the log); null before it ran. */
+    fun displacementNow(): Float? = litresFor?.takeIf { it.first == Repo.ecuInit.value?.romId }?.second
 
     /** Engine displacement by what the ECU says (EJ20 2.0, EJ25 2.5…), null when the size isn't known; cached per ROM. */
     fun displacement(ctx: Context): Float? {
@@ -26,6 +30,21 @@ object RulesHost {
         val l = when (family) { "EJ20", "FA20" -> 2.0f; "EJ22" -> 2.2f; "EJ25" -> 2.5f; "EZ30" -> 3.0f; "EZ36" -> 3.6f; else -> null }
         litresFor = rom to l
         return l
+    }
+
+    /**
+     * What is normal for this engine, by what the ECU says; cached per ROM and for whatever else detect goes by (boost
+     * seen, a sports ECU, the demo). Another make never gets a Subaru's numbers, not even the last connected one's.
+     */
+    fun profile(ctx: Context): kg.forester.sg.ssm.EngineProfile {
+        val other = kg.forester.sg.data.CarKind.other.value
+        val state = "${Repo.ecuInit.value?.romId} ${Repo.guard.value.turboCar} $other ${kg.forester.sg.data.CanEcu.active} ${Repo.settings.demo}"
+        profileFor?.let { (s, p) -> if (s == state) return p }
+        val p = if (other) kg.forester.sg.ssm.EngineProfiles.GENERIC
+            else runCatching { kg.forester.sg.ssm.EngineProfiles.of(kg.forester.sg.ssm.EngineId.detect(ctx)) }.getOrDefault(kg.forester.sg.ssm.EngineProfiles.GENERIC)
+        profileFor = state to p
+        Repo.engineProfile.value = p
+        return p
     }
 
     /** IAM at the start of the last drive before [timeMs], from the guard's IAM log. */
@@ -65,6 +84,9 @@ object RulesHost {
         override var boostBase: Float
             get() = p.getFloat("boostBase", 0f)
             set(v) = p.edit().putFloat("boostBase", v).apply()
+        override var boostNorm: String
+            get() = p.getString("boostNorm", "")!!
+            set(v) = p.edit().putString("boostNorm", v).apply()
         override var lastAfLearn: Float
             get() = p.getFloat("lastAfLearn", Float.NaN)
             set(v) = p.edit().putFloat("lastAfLearn", v).apply()
@@ -84,6 +106,12 @@ object RulesHost {
         override var knockMap: String
             get() = p.getString("knockMap", "")!!
             set(v) = p.edit().putString("knockMap", v).apply()
+        override var spikeDrives: Int
+            get() = p.getInt("spikeDrives", 0)
+            set(v) = p.edit().putInt("spikeDrives", v).apply()
+        override var spikeLastMs: Long
+            get() = p.getLong("spikeLastMs", 0L)
+            set(v) = p.edit().putLong("spikeLastMs", v).apply()
         override fun lastRefillMs(): Long? = runCatching { Repo.db.refills().maxOfOrNull { it.timeMs } }.getOrNull()
         override fun iamBefore(timeMs: Long) = iamLogBefore(timeMs)
     }
@@ -105,12 +133,13 @@ object RulesHost {
     fun forgetCar(ctx: Context) {
         ctx.applicationContext.getSharedPreferences("analyzer", Context.MODE_PRIVATE).edit()
             .remove("lastIam").remove("iamReset").remove("boostBase").remove("lastRun").remove("lastAfLearn")
-            .remove("gears").remove("spool").remove("knockMap").apply()
+            .remove("gears").remove("spool").remove("knockMap").remove("spikeDrives").remove("spikeLastMs").apply()
         histPrefs(ctx).edit().clear().apply()
         idle.value = null
         idleHistory.value = emptyList()
         diag.value = DiagState()
         litresFor = null
+        profileFor = null
     }
 
     /** «Сбросить» under the all-time knock map: this car's map starts over (after a fix, another fuel). */
@@ -135,12 +164,15 @@ object RulesHost {
             override var lastIam: Float get() = s.lastIam; set(v) { s.lastIam = v }
             override var iamResetMs: Long get() = s.iamResetMs; set(v) { s.iamResetMs = v }
             override var boostBase: Float get() = s.boostBase; set(v) { s.boostBase = v }
+            override var boostNorm: String get() = s.boostNorm; set(v) { s.boostNorm = v }
             override var lastAfLearn: Float get() = s.lastAfLearn; set(v) { s.lastAfLearn = v }
             override var ambientC: Float get() = s.ambientC; set(v) { s.ambientC = v }
             override var ambientMs: Long get() = s.ambientMs; set(v) { s.ambientMs = v }
             override var gears: String get() = s.gears; set(v) { s.gears = v }
             override var spool: String get() = s.spool; set(v) { s.spool = v }
             override var knockMap: String get() = s.knockMap; set(v) { s.knockMap = v }
+            override var spikeDrives: Int get() = s.spikeDrives; set(v) { s.spikeDrives = v }
+            override var spikeLastMs: Long get() = s.spikeLastMs; set(v) { s.spikeLastMs = v }
             override fun lastRefillMs() = s.lastRefillMs()
             override fun iamBefore(timeMs: Long) = s.iamBefore(timeMs)
         }

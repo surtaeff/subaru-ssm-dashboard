@@ -67,4 +67,17 @@ object Derived {
     }
 
     const val MIN_BOOST_BAR = 0.3f
+
+    /**
+     * Volumetric efficiency, %: the air the engine took per cycle against what its displacement holds at the manifold's
+     * pressure and the intake temperature. On a turbo car the IAT is read before the intercooler, so it is relative.
+     */
+    fun vePct(mafGs: Float?, rpm: Int?, iatC: Int?, mapKpa: Float?, litres: Float?): Float? {
+        if (mafGs == null || rpm == null || iatC == null || mapKpa == null || litres == null) return null
+        if (mafGs.isNaN() || mapKpa.isNaN() || rpm < MIN_VE_RPM || mapKpa < MIN_VE_MAP_KPA || litres <= 0f) return null
+        return mafGs * 60f / rpm * 2f * 287.05f * (iatC + 273.15f) / (mapKpa * litres * 1000f) * 100f
+    }
+
+    const val MIN_VE_RPM = 800
+    const val MIN_VE_MAP_KPA = 20f
 }

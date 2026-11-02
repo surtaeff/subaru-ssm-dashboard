@@ -25,12 +25,30 @@ object SsmTrace {
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private const val KEEP = 3000
     private const val KEEP_POLL = 400
+    private const val KEEP_GAPS = 300
     /** Connecting, errors, everything but the steady polling: what shows why a car does not connect. */
     private val ring = ArrayDeque<String>(KEEP)
     /** The steady polling once connected: many lines a second, so only the latest are kept, apart. */
     private val pollRing = ArrayDeque<String>(KEEP_POLL)
+    /** How evenly fixes, samples and frames come. */
+    private val gapRing = ArrayDeque<String>(KEEP_GAPS)
     /** Set by the service while it polls a connected ECU. */
     @Volatile var polling = false
+
+    private val muteDepth = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * Nothing is logged while [block] runs (the normal log, the polling ring and the file alike): the frames of a read of
+     * the VIN carry the VIN in pieces that no pattern can put together again. The caller logs one line of its own
+     * ("VIN read ok, 17 bytes"). Every VIN read has to sit in one of these (LogMuteTest checks the sources).
+     */
+    inline fun <T> muted(block: () -> T): T {
+        muteEnter()
+        try { return block() } finally { muteExit() }
+    }
+
+    @PublishedApi internal fun muteEnter() { muteDepth.incrementAndGet() }
+    @PublishedApi internal fun muteExit() { muteDepth.decrementAndGet() }
 
     fun init(ctx: Context) {
         if (file != null) return
@@ -43,11 +61,19 @@ object SsmTrace {
     /** [keep]: a rare line from elsewhere (the radio's commands) that must not drown in the polling. */
     @Synchronized
     fun log(msg: String, keep: Boolean = false) {
-        val line = "${fmt.format(Date())} $msg"
+        if (muteDepth.get() > 0) return
+        add("${fmt.format(Date())} $msg", keep)
+    }
+
+    private fun add(line: String, keep: Boolean) {
         val poll = polling && !keep
         val r = if (poll) pollRing else ring
         if (r.size >= (if (poll) KEEP_POLL else KEEP)) r.removeFirst()
         r.addLast(line)
+        write(line)
+    }
+
+    private fun write(line: String) {
         if (!enabled) return
         val f = file ?: return
         runCatching {
@@ -60,6 +86,15 @@ object SsmTrace {
         }
     }
 
+    /** A line on how evenly things come (see GapLog): many a minute, so apart, and no connection line is pushed out. */
+    @Synchronized
+    fun gap(msg: String) {
+        val line = "${fmt.format(Date())} $msg"
+        if (gapRing.size >= KEEP_GAPS) gapRing.removeFirst()
+        gapRing.addLast(line)
+        write(line)
+    }
+
     fun log(dir: String, b: ByteArray, len: Int = b.size) = log("$dir ${b.copyOf(len).toHex(" ")}")
 
     /** The last [n] polling lines copied into the main log: what the ECU was asked just before it fell silent. */
@@ -68,7 +103,8 @@ object SsmTrace {
         if (pollRing.isEmpty()) return
         val tail = pollRing.takeLast(n)
         log("--- the last ${tail.size} polling lines ---", keep = true)
-        tail.forEach { log("  $it", keep = true) }
+        // the lines carry their own stamp already: not stamped a second time
+        tail.forEach { add("  $it", keep = true) }
     }
 
     @Synchronized
@@ -78,43 +114,49 @@ object SsmTrace {
         file?.delete()
         ring.clear()
         pollRing.clear()
+        gapRing.clear()
     }
 
     /** What the tester sends: the phone and settings first, then the recent exchange. */
-    @Synchronized
-    private fun report(ctx: Context, header: String): String {
+    /** The first line of a report: the build and the unit. */
+    fun sysLine(ctx: Context): String {
         val ver = runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull()
-        return buildString {
-            append("CarPulse $ver, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}), ")
-            append("${Build.MANUFACTURER} ${Build.MODEL}\n")
-            append(header).append("\n\n")
-            ring.forEach { append(it).append('\n') }
-            if (pollRing.isNotEmpty()) {
-                append("\n--- последние запросы опроса ---\n")
-                pollRing.forEach { append(it).append('\n') }
-            }
+        return "CarPulse $ver, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}"
+    }
+
+    /** The recent exchange as it goes into the report. */
+    @Synchronized
+    fun lines(): String = buildString {
+        ring.forEach { append(it).append('\n') }
+        if (gapRing.isNotEmpty()) {
+            append("\n--- интервалы GPS, опроса и кадров карты ---\n")
+            gapRing.forEach { append(it).append('\n') }
+        }
+        if (pollRing.isNotEmpty()) {
+            append("\n--- последние запросы опроса ---\n")
+            pollRing.forEach { append(it).append('\n') }
         }
     }
 
-    /** Share sheet (Telegram, mail…) with the report as a text file. */
-    fun share(ctx: Context, header: String) {
+    /** The share sheet for [text] (LogUpload.prepareNow: scrubbed, with the device id); writes the file, so not on the main thread. */
+    fun shareIntent(ctx: Context, text: String): Intent {
         val dir = File(ctx.cacheDir, "share").apply { mkdirs() }
         val f = File(dir, "carpulse-log.txt")
-        f.writeText(report(ctx, header))
+        f.writeText(text)
         val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".files", f)
         val send = Intent(Intent.ACTION_SEND)
             .setType("text/plain")
             .putExtra(Intent.EXTRA_STREAM, uri)
             .putExtra(Intent.EXTRA_SUBJECT, "CarPulse: журнал обмена")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        ctx.startActivity(Intent.createChooser(send, "Отправить журнал").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        return Intent.createChooser(send, "Отправить журнал").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 
     /** Copy into Download/CarPulse for head units without a messenger; returns where, or null. */
     @Suppress("DEPRECATION")
-    fun saveToDownloads(ctx: Context, header: String): String? = runCatching {
+    fun saveToDownloads(ctx: Context, report: String): String? = runCatching {
         val name = "log-" + SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date()) + ".txt"
-        val text = report(ctx, header).toByteArray()
+        val text = report.toByteArray()
         if (Build.VERSION.SDK_INT >= 29) {
             val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)

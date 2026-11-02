@@ -5,7 +5,6 @@ import kg.forester.sg.data.Repo
 import kg.forester.sg.ssm.EcuSnapshot
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.PI
 import kotlin.math.max
 
 /**
@@ -80,7 +79,16 @@ data class PerfState(
     /** Results of the run in progress. */
     val live: Map<String, Float> = emptyMap(),
     val runs: List<PerfRun> = emptyList(),
+    /** The curve of the last pull; empty from the start of a new one, and after one too short to count. */
     val dyno: List<DynoPoint> = emptyList(),
+    /** The pedal is down for a pull. */
+    val dynoPulling: Boolean = false,
+    /** The last pull gave no curve. */
+    val dynoRejected: Boolean = false,
+    /** The pulls kept, newest first: the car's, or the demo's in the demo (see [DynoStore]). */
+    val dynoRuns: List<DynoRun> = emptyList(),
+    /** The longest part of the last pull that was kept (the [DynoRun.startMs]): what the tab shows of it. */
+    val dynoShown: Long? = null,
     val lap: LapState = LapState(),
     /** The run being timed, or the last one, as driven. */
     val track: List<GeoPt> = emptyList(),
@@ -90,13 +98,13 @@ data class PerfState(
 )
 
 /**
- * Acceleration timer like a GPS performance meter, on the ECU speed (~12 samples a second with the fast poll) or on
+ * Acceleration timer like a GPS performance meter, on the ECU speed (more often with the fast poll) or on
  * GPS when it comes often enough, crossings interpolated on the real sample times: from a standstill (0–60, 0–100…,
  * 60 ft, 201 m and 402 m with the speed at the line) and rolling (60–100, 100–150, 100–200… or any set by the driver),
  * the rolling ones timed when the pedal is floored on the move. Each run keeps its raw samples, so its times are
  * counted again when the intervals change, with flags for what spoils a run (the pedal not held, a slope, gaps).
  * While the pedal is floored the power at the wheels is estimated from mass × acceleration plus air and rolling
- * drag ("dyno"). And a lap timer on a GPS start/finish point. Each run and lap keeps its own log (see [PerfLog]) for
+ * drag ("dyno", see [DynoCalc], kept by [DynoStore]). And a lap timer on a GPS start/finish point. Each run and lap keeps its own log (see [PerfLog]) for
  * the charts and the map.
  */
 object Perf {
@@ -113,7 +121,8 @@ object Perf {
     private var liveMs = 0L
     private var cond = RunCond()
     private val live = LinkedHashMap<String, Float>()
-    private val pull = ArrayList<Triple<Long, Float, Int>>() // floored: time, speed m/s, rpm
+    private val dyno = DynoTracker()
+    private var dynoDemo: Boolean? = null
     private var lapStart = 0L
     private var lapAway = false
     private var lapClosest = Double.MAX_VALUE
@@ -129,6 +138,7 @@ object Perf {
         )
         // runs counted by an older version of the counting: again from their samples, off the thread that woke us
         if (Repo.perf.value.runs.any { it.algo < PerfCalc.ALGO && it.trace != null }) Thread { recompute() }.start()
+        Thread { loadDyno() }.start()
     }
 
     /** Where the logs of runs and laps are: the demo's apart, so they never mix with the car's. */
@@ -198,10 +208,15 @@ object Perf {
             if (lifted || t > 60f) finish(now)
         }
         // dyno: pedal (or throttle) floored
-        val dynoOn = ((e.pedalPct ?: e.throttlePct) ?: 0f) > 85f && v > 10f
-        if (dynoOn && e.rpm != null) pull += Triple(now, v / 3.6f, e.rpm)
-        // a pull of two seconds or more (by the time: the fast poll gives ~12 samples a second, a Bluetooth adapter 3–5)
-        else if (pull.size >= 5 && pull.last().first - pull.first().first >= 2000) { dyno(); pull.clear() } else pull.clear()
+        val dynoOn = (gas ?: 0f) > 85f && v > 10f
+        val rpm = e.rpm
+        val k = Repo.settings.speedK.toFloat()
+        val was = dyno.pulling
+        val pulls = dyno.started
+        val pulled = dyno.feed(if (dynoOn && rpm != null) DynoSample(now, rpm, v / k, gas, e.gaugeKpa) else null, Repo.settings.massKg.toFloat(), k, Repo.settings.demo)
+        // first the one that ended: a gap in the samples ends a pull and starts the next on the same sample
+        if (pulled.isNotEmpty() || (was && !dyno.pulling)) dynoDone(pulled, e, now)
+        if (dyno.started != pulls) Repo.perf.value = Repo.perf.value.copy(dyno = emptyList(), dynoPulling = true, dynoRejected = false, dynoShown = null)
 
         laps(gps, now)
         lastMs = now
@@ -247,10 +262,14 @@ object Perf {
             trace, standing, cond = cond))
         keep(run)
         live.clear(); live.putAll(run.results)
-        if (demo) return
-        val said = if (standing) hits.firstOrNull { it.key == "0-100" } else m.hits.maxByOrNull { it.to }
+        if (!PerfCalc.tellRun(Repo.settings.perfResults, demo)) return
+        val said = if (standing) hits.firstOrNull { it.key == PerfCalc.headline } else m.hits.maxByOrNull { it.to }
         said?.let { h ->
-            val what = if (h.key == "0-100") "Разгон до сотни" else "Разгон ${h.key.replace("-", "–")}"
+            val what = when {
+                h.key == PerfCalc.headline && h.key.endsWith(Interval.MI) -> "Разгон до 60 миль/ч"
+                h.key == PerfCalc.headline -> "Разгон до сотни"
+                else -> "Разгон ${h.key.removeSuffix(Interval.MI).replace("-", "–")}"
+            }
             Alerts.raise("run", "$what: %.2f секунды".format(h.sec), Alerts.Level.INFO, 0L)
         }
     }
@@ -270,7 +289,7 @@ object Perf {
         val s = Repo.settings
         val c = RunCond(e.intakeC, e.atmKpa, e.coolantC, Repo.guard.value.iam, s.perfLabel.trim(), s.perfNote.trim())
         keep(describe(tr, m, PerfRun(now, emptyMap(), m.speed.v.maxOrNull()?.toFloat() ?: 0f, null, log, demo, trace, false, cond = c)))
-        if (!demo) Alerts.raise("run", "Торможение со ста: %.2f секунды, %.0f метров".format(h.sec, h.dist ?: 0.0), Alerts.Level.INFO, 0L)
+        if (PerfCalc.tellRun(s.perfResults, demo)) Alerts.raise("run", PerfCalc.brakeText(h.sec, h.dist ?: 0.0), Alerts.Level.INFO, 0L)
     }
 
     /** [base] with the results, flags, peak G, speed source and grade of the counted run [m]. */
@@ -340,36 +359,72 @@ object Perf {
     }
 
     /**
-     * Power at the wheels over the pull: (m·a·δ + air + rolling) · v, smoothed over ~0.6 s, binned by 250 rpm; δ is the
-     * spinning wheels' and gearbox's share ([PerfCalc.rotatingMass], by the gear from rpm and speed).
+     * A pull is over: each part between its shifts that makes a curve is kept (see [DynoStore]), if the dyno is on the
+     * screen: ordinary driving must not use up the 100 runs or become what the next run is compared with.
      */
-    private fun dyno() {
-        val m = Repo.settings.massKg.toDouble()
-        val cda = 0.85 // Cd × frontal area, m² (Forester/Impreza class)
-        val bins = HashMap<Int, MutableList<Pair<Double, Double>>>()
-        for (i in pull.indices) {
-            val (t, v, rpm) = pull[i]
-            val a = pull.indices.filter { kotlin.math.abs(pull[it].first - t) <= 300 }.let { w ->
-                if (w.size < 3) null else {
-                    val t0 = pull[w.first()].first
-                    var sx = 0.0; var sy = 0.0; var sxx = 0.0; var sxy = 0.0
-                    for (k in w) { val x = (pull[k].first - t0) / 1000.0; val y = pull[k].second.toDouble(); sx += x; sy += y; sxx += x * x; sxy += x * y }
-                    val n = w.size
-                    val den = n * sxx - sx * sx
-                    if (den < 1e-6) null else (n * sxy - sx * sy) / den
-                }
-            } ?: continue
-            if (a < 0.1) continue
-            val force = m * a * PerfCalc.rotatingMass(rpm, v.toDouble()) + 0.5 * 1.2 * cda * v * v + 0.015 * m * 9.81
-            val watts = force * v
-            val hp = watts / 735.5
-            val nm = watts / (2 * PI * rpm / 60.0)
-            bins.getOrPut((rpm / 250) * 250) { ArrayList() } += hp to nm
+    private fun dynoDone(parts: List<DynoTracker.Done>, e: EcuSnapshot, now: Long) {
+        val s = Repo.settings
+        val k = s.speedK.toFloat()
+        val tab = Repo.dynoTab.value
+        val auto = s.gearbox != "mt"
+        // from before the pull: the transmission isn't asked during one
+        val tcuGear = Repo.tcu.value?.takeIf { now - it.timeMs < 30_000L }?.gear
+        var longest = emptyList<DynoPoint>()
+        var longestSize = 0
+        var shown: Long? = null
+        for (part in parts) {
+            val samples = part.samples
+            val slope = dynoSlope(samples, k)
+            val mass = s.massKg.toFloat()
+            if (tab) {
+                val mid = samples[samples.size / 2]
+                val run = DynoRun(samples.first().tMs, mass, k, Gears.estimate(mid.rpm, (mid.kmh * k).toInt(), auto) ?: tcuGear.takeIf { part === parts.first() },
+                    DynoCalc.rpmPerKmh(samples, k), s.perfLabel.trim().ifEmpty { null }, e.intakeC, e.atmKpa, e.coolantC, Repo.guard.value.iam, DynoCalc.ALGO)
+                runCatching { DynoStore.save(run, samples, slope, part.demo) }.onFailure { kg.forester.sg.ssm.SsmTrace.log("dyno: $it") }
+            }
+            if (samples.size > longestSize) {
+                longestSize = samples.size
+                longest = DynoCalc.curve(samples, mass, k, slope)
+                shown = samples.first().tMs.takeIf { tab }
+            }
         }
-        val curve = bins.entries.sortedBy { it.key }.filter { it.value.size >= 1 }.map { (r, l) ->
-            DynoPoint(r, l.map { it.first }.average().toFloat(), l.map { it.second }.average().toFloat())
-        }
-        if (curve.size >= 4) Repo.perf.value = Repo.perf.value.copy(dyno = curve)
+        Repo.perf.value = Repo.perf.value.copy(dyno = longest, dynoPulling = false, dynoRejected = dyno.rejected && tab, dynoShown = shown,
+            dynoRuns = runCatching { DynoStore.list(s.demo) }.getOrDefault(Repo.perf.value.dynoRuns))
+    }
+
+    /** The road's grade under a pull from the GPS altitude, as the runs have it; null to count it as flat (see [DynoCalc.usableSlope]). */
+    private fun dynoSlope(samples: List<DynoSample>, k: Float): Float? {
+        val from = samples.first().tMs - 1000
+        val tr = TraceBuffer.cut(from, samples.last().tMs + 500, k) ?: return null
+        val s = PerfCalc.speed(tr)
+        return DynoCalc.usableSlope(PerfCalc.slope(tr, s, (samples.first().tMs - from) / 1000.0, (samples.last().tMs - from) / 1000.0)?.toFloat())
+    }
+
+    /** The list of pulls for what's running now, the car's or the demo's. Reads files: not on the main thread. */
+    fun loadDyno() {
+        val demo = Repo.settings.demo
+        runCatching {
+            if (demo) DynoStore.seedDemo(System.currentTimeMillis())
+            val runs = DynoStore.list(demo)
+            synchronized(this) {
+                // the demo's last pull is no pull of the car, and the other way round
+                val other = dynoDemo != null && dynoDemo != demo
+                dynoDemo = demo
+                Repo.perf.value = Repo.perf.value.let { if (other) it.copy(dyno = emptyList(), dynoRejected = false, dynoRuns = runs) else it.copy(dynoRuns = runs) }
+            }
+        }.onFailure { kg.forester.sg.ssm.SsmTrace.log("dyno: $it") }
+    }
+
+    @Synchronized
+    fun deleteDyno(r: DynoRun) {
+        runCatching { DynoStore.delete(r) }
+        Repo.perf.value = Repo.perf.value.copy(dynoRuns = DynoStore.list(Repo.settings.demo))
+    }
+
+    @Synchronized
+    fun setDynoLabel(r: DynoRun, label: String) {
+        DynoStore.setLabel(r, label.trim().ifEmpty { null })
+        Repo.perf.value = Repo.perf.value.copy(dynoRuns = DynoStore.list(Repo.settings.demo))
     }
 
     // --- lap timer
@@ -491,6 +546,7 @@ object Perf {
     fun clearRuns() {
         Repo.perf.value.runs.forEach(::drop)
         Repo.settings.perfRuns = "[]"
-        Repo.perf.value = Repo.perf.value.copy(runs = emptyList(), dyno = emptyList())
+        // the dyno's pulls have a list of their own (see DynoStore)
+        Repo.perf.value = Repo.perf.value.copy(runs = emptyList())
     }
 }

@@ -30,9 +30,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -60,7 +58,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.*
 import kg.forester.sg.data.Repo
@@ -69,6 +66,9 @@ import kg.forester.sg.service.Fyt
 import kg.forester.sg.service.LocalMusic
 import kg.forester.sg.service.RadioLogos
 import kg.forester.sg.service.RadioState
+import kg.forester.sg.service.audio.RadioBackend
+import kg.forester.sg.service.audio.RadioCap
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -104,7 +104,13 @@ private fun rememberLogo(url: String?): Bitmap? {
  * The radio's state shared by the player and its panel: FM (the FYT tuner, or the demo one) or internet radio
  * (always there; the only radio on a unit without a tuner), the country, the stations named on frequencies.
  */
-internal class RadioUi(val fyt: Boolean, internet: Boolean, cc: String, named: Map<String, RadioLogos.Station>) {
+internal class RadioUi(val radio: RadioBackend, internet: Boolean, cc: String, named: Map<String, RadioLogos.Station>) {
+    /** A tuner of the platform's; without one only internet radio (and the demo tuner). */
+    val tuner get() = RadioCap.TUNE in radio.caps
+    /** The tuner has preset slots of its own (FYT); others get no made-up ones. */
+    val presets get() = RadioCap.PRESET in radio.caps
+    /** An experimental tuner asked and not heard from: said under the FM / internet pills. */
+    var noAnswer by mutableStateOf(false)
     var internet by mutableStateOf(internet)
     var cc by mutableStateOf(cc)
     var named by mutableStateOf(named)
@@ -114,16 +120,17 @@ internal class RadioUi(val fyt: Boolean, internet: Boolean, cc: String, named: M
     var netLogo by mutableStateOf<Bitmap?>(null)
     /** The driver's own stations (see [FmRadio]: ours, tuned by frequency, not the stock radio's slots). */
     val mine: List<FmRadio.Station> get() = FmRadio.mine
-    val tuning get() = fyt && FmRadio.tuning
+    val tuning get() = tuner && FmRadio.tuning
+    val tuneFailed get() = tuner && FmRadio.failed
 
     fun addMine(freq: Int, name: String, band: Int) = FmRadio.add(freq, name, band)
     fun removeMine(freq: Int) = FmRadio.remove(freq)
 
     /** To [target]: exactly in the demo; on FYT by frequency (see [FmRadio.tune]). */
-    fun tune(target: Int) { if (fyt) FmRadio.tune(target) else DemoRadio.set(target) }
+    fun tune(target: Int) { if (tuner) FmRadio.tune(target) else DemoRadio.set(target) }
 
     /** To the tuner's preset [p] (1..6) by its slot. */
-    fun toPreset(p: Int) { if (fyt) FmRadio.toPreset(p) else DemoRadio.set(DemoRadio.presets[p - 1]) }
+    fun toPreset(p: Int) { if (tuner) { if (presets) FmRadio.toPreset(p) } else DemoRadio.set(DemoRadio.presets[p - 1]) }
 
     /** ⏮ ⏭: through the own stations when there are any, else the tuner's presets. */
     fun step(cur: Int, next: Boolean, tunerPreset: (Boolean) -> Unit) {
@@ -131,24 +138,36 @@ internal class RadioUi(val fyt: Boolean, internet: Boolean, cc: String, named: M
         tune(s.freq)
     }
 
-    val demoFm get() = !fyt && Repo.settings.demo
-    /** FM is there on an FYT unit (and in the demo). */
-    val hasFm get() = fyt || demoFm
+    val demoFm get() = !tuner && Repo.settings.demo
+    /** FM is there with a tuner (and in the demo), or offered to a tuner that has to be asked first. */
+    val hasFm get() = tuner || demoFm || radio.tryable
     fun coverBitmap(): Bitmap? = if (internet) netLogo else fmLogo
 }
 
+/** A tuner's next preset; without slots the seek takes the preset step's place. For the player and the mini player. */
+internal fun tunerPreset(radio: RadioBackend, next: Boolean) {
+    if (RadioCap.PRESET in radio.caps) Fyt.radioPreset(next) else radio.seek(next)
+}
+
 @Composable
-internal fun rememberRadioUi(fyt: Boolean): RadioUi {
+internal fun rememberRadioUi(radio: RadioBackend): RadioUi {
     val ctx = LocalContext.current
     val sp = remember { ctx.getSharedPreferences("radio", Context.MODE_PRIVATE) }
-    val ui = remember {
+    val ui = remember(radio) {
         val cc = RadioLogos.country(ctx)
-        RadioUi(fyt, sp.getBoolean("internet", !(fyt || Repo.settings.demo)) || !(fyt || Repo.settings.demo), cc, RadioLogos.allNamed(ctx, cc))
+        val fm = RadioCap.TUNE in radio.caps || Repo.settings.demo
+        RadioUi(radio, sp.getBoolean("internet", !fm) || !fm, cc, RadioLogos.allNamed(ctx, cc))
             .also { FmRadio.load(ctx) }
     }
-    val real by Fyt.radio.collectAsState()
+    val real by ui.radio.state.collectAsState()
     val fake by DemoRadio.state.collectAsState()
-    val r = if (fyt) real else fake
+    // the tuner may come and go (opened on demand, the unit's service gone): the screen follows, internet radio when it's gone
+    val caps by ui.radio.capsFlow.collectAsState()
+    LaunchedEffect(caps) {
+        if (RadioCap.TUNE in caps) ui.noAnswer = false
+        else if (!Repo.settings.demo && !ui.internet) ui.internet = true
+    }
+    val r = if (ui.tuner) real else fake
     // the station's name from the tuner (RDS, the unit's own list) or a preset: find its logo and remember it
     LaunchedEffect(r.name, r.freq, ui.cc) {
         if (r.freq > 0 && ui.named[r.freqText] == null) {
@@ -176,16 +195,27 @@ internal fun RadioPanel(ui: RadioUi) = if (ui.internet) NetPanel(ui) else FmPane
 @Composable
 private fun ColumnScope.RadioKind(ui: RadioUi) {
     if (!ui.hasFm) return
+    val scope = rememberCoroutineScope()
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Pill("FM", Lucide.Radio, !ui.internet, 38.dp) {
-            if (ui.internet) { ui.internet = false; LocalMusic.pause(); if (ui.fyt) Fyt.ensureRadio() }
+            if (!ui.internet) return@Pill
+            if (ui.tuner || ui.demoFm) { ui.internet = false; LocalMusic.pause(); if (ui.tuner) scope.launch(start = CoroutineStart.UNDISPATCHED) { ui.radio.on() } }
+            else scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                // the tuner is opened by this and tells it's there only once it has been heard from
+                ui.noAnswer = false
+                ui.radio.on()
+                if (ui.tuner) { ui.internet = false; LocalMusic.pause() } else ui.noAnswer = true
+            }
         }
-        Pill("Интернет", Lucide.Globe, ui.internet, 38.dp) { ui.internet = true }
+        Pill("Интернет", Lucide.Globe, ui.internet, 38.dp) {
+            if (!ui.internet) { ui.internet = true; scope.launch { ui.radio.off() } }
+        }
     }
+    if (ui.noAnswer && ui.internet) { Spacer(Modifier.height(6.dp)); T("Радио магнитолы не ответило", 12.sp, C.Sub) }
     Spacer(Modifier.height(14.dp))
 }
 
-// --- FM: the FYT tuner --------------------------------------------------------------------------------
+// --- FM: the tuner ------------------------------------------------------------------------------------
 
 /**
  * The tuner, as launchers for these units draw it: the band, the frequency large with the station's name and
@@ -196,22 +226,23 @@ private fun ColumnScope.RadioKind(ui: RadioUi) {
 private fun FmHero(ui: RadioUi) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val real by Fyt.radio.collectAsState()
+    val real by ui.radio.state.collectAsState()
     val fake by DemoRadio.state.collectAsState()
-    val app by Fyt.appId.collectAsState()
-    val fyt = ui.fyt
-    val r = if (fyt) real else fake
-    val on = !fyt || app == 1
+    val active by ui.radio.active.collectAsState()
+    val tuner = ui.tuner
+    val r = if (tuner) real else fake
+    val on = !tuner || active
     val fm = r.isFm || r.band == -1
     val station = ui.named[r.freqText]
-    fun seek(up: Boolean) = if (fyt) Fyt.radioSeek(up) else DemoRadio.set((r.freq + if (up) 30 else -30).coerceIn(8750, 10800))
-    fun preset(next: Boolean) = if (fyt) Fyt.radioPreset(next) else {
+    fun seek(up: Boolean) = if (tuner) ui.radio.seek(up) else DemoRadio.set((r.freq + if (up) 30 else -30).coerceIn(8750, 10800))
+    // a tuner without slots: the seek takes the place of the preset step
+    fun preset(next: Boolean) = if (tuner) tunerPreset(ui.radio, next) else {
         val p = ((r.preset.coerceAtLeast(1) - 1 + if (next) 1 else -1) + 6) % 6
         DemoRadio.set(DemoRadio.presets[p])
     }
-    fun band(b: Int) = if (fyt) Fyt.radioBand(b) else DemoRadio.state.value = r.copy(band = b)
+    fun band(b: Int) = if (tuner) ui.radio.band(b) else DemoRadio.state.value = r.copy(band = b)
     Hero(
-        cover = { m -> Box(m.clip(RoundedCornerShape(22.dp)).clickable { ui.picking = true }) { GlowCover(ui.fmLogo, Lucide.Radio, on, Modifier.fillMaxSize(), whiteBack = true) } },
+        cover = { GlowCover(ui.fmLogo, Lucide.Radio, on, it, whiteBack = true, onTap = { ui.picking = true }) },
         onNext = { ui.step(r.freq, true, ::preset) }, onPrev = { ui.step(r.freq, false, ::preset) },
         info = {
             RadioKind(ui)
@@ -230,6 +261,7 @@ private fun FmHero(ui: RadioUi) {
             T(when {
                 p != null -> previewName ?: "отпустите, найду станцию рядом"
                 ui.tuning -> "ищу станцию…"
+                ui.tuneFailed -> "не удалось настроить"
                 else -> r.name.ifBlank { station?.name ?: if (on) "нажмите на логотип, чтобы указать станцию" else "Радио выключено" }
             }, 19.sp, if (r.name.isBlank() && station == null && p == null) C.Sub else C.Text.copy(alpha = 0.8f), FontWeight.Medium, maxLines = 1)
             if (r.preset > 0) { Spacer(Modifier.height(4.dp)); T("${r.bandText} · пресет ${r.preset}", 13.sp, C.Sub) }
@@ -238,7 +270,7 @@ private fun FmHero(ui: RadioUi) {
         controls = {
             Control(Lucide.SkipBack, 60.dp) { ui.step(r.freq, false, ::preset) }
             Control(Lucide.ChevronsLeft, 68.dp) { seek(false) }
-            Control(if (on) Lucide.Radio else Lucide.Power, 96.dp, primary = true) { if (fyt) Fyt.ensureRadio() }
+            Control(if (on) Lucide.Radio else Lucide.Power, 96.dp, primary = true) { if (tuner) scope.launch(start = CoroutineStart.UNDISPATCHED) { ui.radio.on() } }
             Control(Lucide.ChevronsRight, 68.dp) { seek(true) }
             Control(Lucide.SkipForward, 60.dp) { ui.step(r.freq, true, ::preset) }
         },
@@ -263,7 +295,7 @@ private fun Dial(r: RadioState, marks: List<Int>, onPreview: (Int?) -> Unit, onT
     val at = (((drag ?: r.freq) - lo) / (hi - lo)).coerceIn(0f, 1f)
     val violet = C.Violet
     val sub = C.Sub
-    val faint = Color.White.copy(alpha = 0.16f)
+    val faint = C.Hair.copy(alpha = 0.16f)
     val mark = C.theme.second
     fun freqAt(x: Float, w: Float): Int {
         val f = lo + (hi - lo) * (x / w).coerceIn(0f, 1f)
@@ -315,24 +347,24 @@ private fun Dial(r: RadioState, marks: List<Int>, onPreview: (Int?) -> Unit, onT
 @Composable
 private fun FmPanel(ui: RadioUi) {
     val ctx = LocalContext.current
-    val real by Fyt.radio.collectAsState()
+    val real by ui.radio.state.collectAsState()
     val fake by DemoRadio.state.collectAsState()
-    val fyt = ui.fyt
-    val r = if (fyt) real else fake
+    val tuner = ui.tuner
+    val r = if (tuner) real else fake
     // the tuner tells only the preset that plays: remember what each one holds as it comes by
     val sp = remember { ctx.getSharedPreferences("radio", Context.MODE_PRIVATE) }
     var known by remember { mutableStateOf(
-        (1..6).associateWith { p -> if (fyt) sp.getString("p$p", null) else fmText(DemoRadio.presets[p - 1]) + "|" + DemoRadio.names[p - 1] }
+        (1..6).associateWith { p -> if (tuner) sp.getString("p$p", null) else fmText(DemoRadio.presets[p - 1]) + "|" + DemoRadio.names[p - 1] }
     ) }
     LaunchedEffect(r.preset, r.freq, r.name) {
-        if (fyt && r.preset in 1..6 && r.freq > 0) {
+        if (tuner && r.preset in 1..6 && r.freq > 0) {
             val v = r.freqText + "|" + r.name.ifBlank { ui.named[r.freqText]?.name.orEmpty() }
             sp.edit().putString("p${r.preset}", v).apply()
             known = known + (r.preset to v)
         }
     }
     val fm = r.isFm || r.band == -1
-    PanelBox(Lucide.Star, "Мои станции", trailing = { if (fyt) Pill("Настройки", Lucide.Settings, height = 38.dp) { Fyt.openRadio() } }) {
+    PanelBox(Lucide.Star, "Мои станции", trailing = { if (tuner && ui.presets) Pill("Настройки", Lucide.Settings, height = 38.dp) { Fyt.openRadio() } }) {
         val saved = ui.mine.any { abs(it.freq - r.freq) <= 5 }
         Column(Modifier.weight(1f).verticalScrollCompat()) {
             MineGrid(ui, r)
@@ -351,21 +383,23 @@ private fun FmPanel(ui: RadioUi) {
         }
         // the tuner's own presets, as a row of small buttons: the frequency a slot showed is tuned as such (after
         // the stock radio's autoscan the slot holds another station), the slot itself only when never seen
-        Spacer(Modifier.height(8.dp))
-        T("Пресеты тюнера", 12.sp, C.Sub)
-        Spacer(Modifier.height(4.dp))
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            (1..6).forEach { p ->
-                val f = known[p]?.substringBefore('|')
-                Pill(if (f != null) "P$p $f" else "P$p", null, r.preset == p, 36.dp) {
-                    val freq = f?.toDoubleOrNull()?.let { Math.round(it * 100).toInt() }
-                    if (fyt && freq != null) ui.tune(freq) else ui.toPreset(p)
+        if (!tuner || ui.presets) {
+            Spacer(Modifier.height(8.dp))
+            T("Пресеты тюнера", 12.sp, C.Sub)
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                (1..6).forEach { p ->
+                    val f = known[p]?.substringBefore('|')
+                    Pill(if (f != null) "P$p $f" else "P$p", null, r.preset == p, 36.dp) {
+                        val freq = f?.toDoubleOrNull()?.let { Math.round(it * 100).toInt() }
+                        if (tuner && freq != null) ui.tune(freq) else ui.toPreset(p)
+                    }
                 }
+                val fresh = known.values.mapNotNull { v -> v?.substringBefore('|')?.toDoubleOrNull()?.let { Math.round(it * 100).toInt() } }
+                    .filter { f -> f in 8750..10800 && ui.mine.none { abs(it.freq - f) < 5 } }
+                if (tuner && fresh.isNotEmpty())
+                    Pill("В мои станции", Lucide.Plus, false, 36.dp) { FmRadio.import(known.values) }
             }
-            val fresh = known.values.mapNotNull { v -> v?.substringBefore('|')?.toDoubleOrNull()?.let { Math.round(it * 100).toInt() } }
-                .filter { f -> f in 8750..10800 && ui.mine.none { abs(it.freq - f) < 5 } }
-            if (fyt && fresh.isNotEmpty())
-                Pill("В мои станции", Lucide.Plus, false, 36.dp) { FmRadio.import(known.values) }
         }
     }
 }
@@ -390,7 +424,7 @@ private fun MineGrid(ui: RadioUi, r: RadioState) {
                         Row(
                             Modifier.width(w).height(72.dp).clip(shape)
                                 .background(if (sel) Brush.verticalGradient(listOf(C.Violet.copy(alpha = 0.30f), C.Purple.copy(alpha = 0.16f)))
-                                    else Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.06f), Color.White.copy(alpha = 0.03f))))
+                                    else Brush.verticalGradient(listOf(C.Hair.copy(alpha = 0.06f), C.Hair.copy(alpha = 0.03f))))
                                 .border(1.dp, if (sel) C.Violet else Color.Transparent, shape)
                                 .clickable { ui.tune(f) }.padding(start = 10.dp, end = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -406,9 +440,7 @@ private fun MineGrid(ui: RadioUi, r: RadioState) {
                                 val n = name.ifBlank { st?.name.orEmpty() }
                                 if (n.isNotBlank()) T(n, 12.sp, C.Sub, maxLines = 1)
                             }
-                            Box(Modifier.size(36.dp).clip(RoundedCornerShape(18.dp)).clickable { ui.removeMine(f) }, contentAlignment = Alignment.Center) {
-                                Icon(Lucide.X, "Убрать", tint = C.Sub, modifier = Modifier.size(16.dp))
-                            }
+                            IconTap(Lucide.X, "Убрать", { ui.removeMine(f) }, iconSize = 18.dp)
                         }
                     }
                 }
@@ -433,9 +465,9 @@ private fun StationPicker(
     var list by remember(cc) { mutableStateOf<List<RadioLogos.Station>?>(null) }
     var query by remember { mutableStateOf("") }
     LaunchedEffect(cc) { list = withContext(Dispatchers.IO) { RadioLogos.popular(ctx, cc) } }
-    Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
+    CarDialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
-            Modifier.width(900.dp).heightIn(max = 600.dp).clip(RoundedCornerShape(20.dp)).background(C.Card)
+            Modifier.width(900.dp).heightIn(max = minOf(600f, canvasScreen().screenHeightDp * 0.94f).dp).clip(RoundedCornerShape(20.dp)).background(C.Sheet)
                 .border(1.dp, C.Border, RoundedCornerShape(20.dp)).padding(20.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -455,7 +487,7 @@ private fun StationPicker(
                 else -> {
                     val q = query.trim().lowercase()
                     val shown = RadioLogos.withFreqFirst(if (q.isEmpty()) l else l.filter { it.name.lowercase().contains(q) }, freq)
-                    LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.fillMaxWidth().heightIn(max = 400.dp),
+                    LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.weight(1f, fill = false).fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(shown, key = { it.name + it.logo }) { st ->
                             val logo = rememberLogo(st.logo)
@@ -490,7 +522,7 @@ private fun CountryRow(cc: String, onCountry: (String) -> Unit) {
 @Composable
 internal fun SearchLine(query: String, hint: String = "Название станции", onChange: (String) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().height(46.dp).clip(RoundedCornerShape(23.dp)).background(Color.Black.copy(alpha = 0.25f)).padding(horizontal = 16.dp),
+        Modifier.fillMaxWidth().height(46.dp).clip(RoundedCornerShape(23.dp)).background(C.shade(0.25f)).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Lucide.Search, null, tint = C.Sub, modifier = Modifier.size(18.dp))
@@ -500,7 +532,7 @@ internal fun SearchLine(query: String, hint: String = "Название стан
             BasicTextField(query, onChange, singleLine = true, textStyle = TextStyle(color = C.Text, fontSize = 15.sp),
                 cursorBrush = SolidColor(C.Violet), modifier = Modifier.fillMaxWidth())
         }
-        if (query.isNotEmpty()) Icon(Lucide.X, "Очистить", tint = C.Sub, modifier = Modifier.size(18.dp).clickable { onChange("") })
+        if (query.isNotEmpty()) IconTap(Lucide.X, "Очистить", { onChange("") }, iconSize = 18.dp)
     }
 }
 
@@ -569,6 +601,7 @@ private fun NetPanel(ui: RadioUi) {
         }
     }
     PanelBox(Lucide.Globe, "Станции") {
+        val head: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Pill("Избранное", Lucide.Star, tab == "fav" && query.isBlank(), 40.dp) { tab = "fav"; query = "" }
             Pill("Популярные", Lucide.Flame, tab == "top" && query.isBlank(), 40.dp) { tab = "top"; query = "" }
@@ -580,12 +613,13 @@ private fun NetPanel(ui: RadioUi) {
             CountryRow(ui.cc) { ui.cc = it; RadioLogos.setCountry(ctx, it) }
         }
         Spacer(Modifier.height(8.dp))
+        }
         val l = list
         when {
-            l == null -> T("Загружаю…", 14.sp, C.Sub)
-            l.isEmpty() -> T(if (tab == "fav" && query.isBlank()) "Нажмите ★ у станции, и она будет здесь"
-                else "Ничего не нашлось. Нужен интернет.", 14.sp, C.Sub)
-            else -> LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+            l == null -> { head(); T("Загружаю…", 14.sp, C.Sub) }
+            l.isEmpty() -> { head(); T(if (tab == "fav" && query.isBlank()) "Нажмите ★ у станции, и она будет здесь"
+                else "Ничего не нашлось. Нужен интернет.", 14.sp, C.Sub) }
+            else -> ListWithHead(head) {
                 items(l.size, key = { l[it].url + it }) { i ->
                     val s = l[i]
                     val cur = st.stream && st.current == LocalMusic.STREAM + s.url

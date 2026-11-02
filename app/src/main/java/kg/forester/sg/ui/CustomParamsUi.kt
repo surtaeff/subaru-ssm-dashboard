@@ -17,10 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -37,7 +35,6 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.*
 import kg.forester.sg.data.CustomParam
@@ -54,16 +51,12 @@ fun CustomParamsDialog(onClose: () -> Unit) {
     Repo.customVersion.collectAsState().value
     val list = CustomParams.list()
     var editing by remember { mutableStateOf<CustomParam?>(null) }
-    Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            Modifier.width(820.dp).heightIn(max = 600.dp).clip(RoundedCornerShape(16.dp)).background(C.Card)
-                .border(1.dp, C.Border, RoundedCornerShape(16.dp)).padding(16.dp),
-        ) {
-            val e = editing
-            if (e != null) {
-                CustomParamForm(e, onDone = { editing = null })
-                return@Column
-            }
+    val e = editing
+    if (e != null) {
+        CarSheet(onClose, 820.dp, 600.dp) { CustomParamForm(e, onDone = { editing = null }) }
+        return
+    }
+    CarSheet(onClose, 820.dp, 600.dp, head = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T("Свои параметры ЭБУ", 18.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 Chip("Добавить", false, {
@@ -73,13 +66,14 @@ fun CustomParamsDialog(onClose: () -> Unit) {
                 Chip("Готово", true, onClose)
             }
             Spacer(Modifier.height(6.dp))
-            T("Для прошивок, которых нет в базе RomRaider: адрес в памяти ЭБУ, как в поле «Custom field» у BtSSM, или формула " +
+    }) {
+            SettingHint("Для прошивок, которых нет в базе RomRaider: адрес в памяти ЭБУ, как в поле «Custom field» у BtSSM, или формула " +
                 "из других значений. Параметр появится на «Датчиках», в логе и в выборе виджетов. С ролью FBKC / FLKC / IAM / целевой наддув " +
                 "его использует и экран «Мониторинг» с предупреждениями о детонации, с ролью MAF, AFR, ОЖ и т. п. он заменит значение ЭБУ везде " +
-                "(старые ЭБУ JECS отдают их не все или не так).", 12.sp, C.Sub)
+                "(старые ЭБУ JECS отдают их не все или не так).")
             Spacer(Modifier.height(10.dp))
             if (list.isEmpty()) T("Пока ничего не добавлено.", 14.sp, C.Sub)
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+            Column {
                 list.forEach { p ->
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(10.dp)).background(C.CardHi)
@@ -95,14 +89,16 @@ fun CustomParamsDialog(onClose: () -> Unit) {
                                 CustomParam.ROLES.firstOrNull { it.first == p.role && p.role.isNotEmpty() }?.let { "роль: ${it.second}" },
                             ).joinToString(" · "), 12.sp, C.Sub, maxLines = 1)
                         }
-                        Box(
-                            Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(C.Card).clickable { CustomParams.remove(p.id) },
-                            contentAlignment = Alignment.Center,
-                        ) { Icon(Lucide.Trash2, "Удалить", tint = C.Red, modifier = Modifier.size(16.dp)) }
+                        var ask by remember(p.id) { mutableStateOf(false) }
+                        IconTap(Lucide.Trash2, "Удалить", { ask = true }, tint = C.Red, iconSize = 20.dp, background = C.Card)
+                        if (ask) ConfirmDialog(
+                            "Удалить параметр?", "«${p.name.ifBlank { p.id }}» уйдёт из списка, графиков и записи логов.",
+                            "Удалить", { CustomParams.remove(p.id) }, { ask = false },
+                        )
                     }
                 }
             }
-        }
+        
     }
 }
 
@@ -133,7 +129,7 @@ private fun CustomParamForm(start: CustomParam, onDone: () -> Unit) {
         calc && expr.refs.isEmpty() -> "Формула без адреса должна использовать другие значения, например P12/P8*60"
         else -> null
     }
-    Column(Modifier.verticalScroll(rememberScrollState())) {
+    Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
             T(if (start.name.isEmpty()) "Новый параметр" else "Параметр ${start.id}", 18.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             Chip("Отмена", false, onDone)
@@ -146,6 +142,8 @@ private fun CustomParamForm(start: CustomParam, onDone: () -> Unit) {
                 }
             })
         }
+        // the title and its buttons stay in sight, the form scrolls
+        Column(Modifier.weight(1f, fill = false).cueScroll()) {
         Spacer(Modifier.height(10.dp))
         Labeled("Откуда значение") {
             Chip("Адрес в ЭБУ", !calc, { calc = false })
@@ -172,6 +170,7 @@ private fun CustomParamForm(start: CustomParam, onDone: () -> Unit) {
             else "Пример из BtSSM для ЭБУ «572»: FLKC — адрес FFB040, 4 байта, float, формула x; FBKC — FFB01C так же. " +
                 "В формуле можно использовать и другие значения: x*P8/1000.",
             12.sp, if (error != null) C.Orange else C.Sub)
+    }
     }
 }
 

@@ -53,9 +53,20 @@ fun LogScreen() {
     val current by Repo.logFile.collectAsState()
     var enabled by remember { mutableStateOf(Repo.settings.logEnabled) }
     var files by remember { mutableStateOf(listOf<File>()) }
+    // read with the listing: a file's length is a call to the disk, not for the main thread at each recomposition
+    var sizes by remember { mutableStateOf(emptyMap<String, Long>()) }
+    val listScope = androidx.compose.runtime.rememberCoroutineScope()
+    suspend fun listFiles() {
+        val (list, lengths) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val l = File(ctx.getExternalFilesDir(null), "logs").listFiles()?.sortedByDescending { it.name } ?: emptyList()
+            l to l.associate { it.name to it.length() }
+        }
+        files = list
+        sizes = lengths
+    }
     LaunchedEffect(Unit) {
         while (true) {
-            files = File(ctx.getExternalFilesDir(null), "logs").listFiles()?.sortedByDescending { it.name } ?: emptyList()
+            listFiles()
             delay(5000)
         }
     }
@@ -63,7 +74,9 @@ fun LogScreen() {
     var viewing by remember { mutableStateOf<File?>(null) }
     viewing?.let { f -> LogViewer(f) { viewing = null }; return }
     Row(Modifier.fillMaxSize()) {
-        Panel(Modifier.width(420.dp).fillMaxHeight()) {
+        // the current values beside it have the longer lines
+        Panel(Modifier.width(if (LocalCar.current.small) 300.dp else 420.dp).fillMaxHeight()) {
+            ListWithHead({
             PanelTitle(Lucide.FileText, "Запись лога")
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -85,38 +98,36 @@ fun LogScreen() {
                     Spacer(Modifier.width(6.dp))
                 }
             }
-            T("Старые файлы удаляются автоматически раз в час, папка не больше 200 МБ. Графики расхода хранятся 35 дней, поездки и заправки — всегда.", 12.sp, C.Sub)
+            SettingHint("Старые файлы удаляются автоматически раз в час, папка не больше 200 МБ. Графики расхода хранятся 35 дней, поездки и заправки — всегда.")
             Spacer(Modifier.height(8.dp))
             var pick by remember { mutableStateOf(false) }
             Chip("Что писать в лог…", false, { pick = true })
             if (pick) LogColumnsDialog { pick = false }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                androidx.compose.material3.Icon(Lucide.FolderOpen, null, tint = C.Violet, modifier = Modifier.size(18.dp))
+                Icon(Lucide.FolderOpen, null, tint = C.Violet, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 T("Файлы", 15.sp, weight = androidx.compose.ui.text.font.FontWeight.Medium, modifier = Modifier.weight(1f))
-                if (files.isNotEmpty()) T("${files.size} шт · ${fileSize(files.sumOf { it.length() })}", 12.sp, C.Sub)
+                if (files.isNotEmpty()) T("${files.size} шт · ${fileSize(sizes.values.sum())}", 12.sp, C.Sub)
             }
             Spacer(Modifier.height(6.dp))
             T(if (files.isEmpty()) "Пока нет: файл появится, когда заведётся двигатель." else "Нажмите на файл — откроются графики. Справа: скачать в «Загрузки», поделиться, удалить.", 12.sp, C.Sub)
             Spacer(Modifier.height(6.dp))
-            LazyColumn(Modifier.weight(1f).clip(Rounded).background(if (files.isEmpty()) C.Card else C.CardHi)) {
+            }, roomyAt = 620.dp) {
                 items(files.size) { i ->
                     val f = files[i]
                     if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border.copy(alpha = 0.6f)))
-                    Row(Modifier.fillMaxWidth().clickable { viewing = f }.padding(start = 10.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
+                    Row(Modifier.fillMaxWidth().background(C.CardHi).clickable { viewing = f }.padding(start = 10.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         val now = f.name == current
-                        androidx.compose.material3.Icon(if (now) Lucide.CirclePlay else Lucide.FileSpreadsheet, null,
+                        Icon(if (now) Lucide.CirclePlay else Lucide.FileSpreadsheet, null,
                             tint = if (now) C.Green else C.Sub, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
                         T(f.name, 13.sp, modifier = Modifier.weight(1f), maxLines = 1)
-                        T(fileSize(f.length()), 12.sp, C.Sub)
+                        T(fileSize(sizes[f.name] ?: 0L), 12.sp, C.Sub)
                         Spacer(Modifier.width(2.dp))
-                        LogFileActions(f, small = true) {
-                            files = File(ctx.getExternalFilesDir(null), "logs").listFiles()?.sortedByDescending { it.name } ?: emptyList()
-                        }
-                        androidx.compose.material3.Icon(Lucide.ChevronRight, null, tint = C.Sub, modifier = Modifier.size(16.dp))
+                        LogFileActions(f, small = true) { listScope.launch { listFiles() } }
+                        Icon(Lucide.ChevronRight, null, tint = C.Sub, modifier = Modifier.size(16.dp))
                     }
                 }
             }
@@ -128,7 +139,7 @@ fun LogScreen() {
             val g by Repo.guard.collectAsState()
             val engine = listOf(
                 LiveRow(Lucide.Gauge, "Обороты", e.rpm?.toString(), "об/мин"),
-                LiveRow(Lucide.Car, "Скорость", e.speedKmh?.toString(), "км/ч"),
+                LiveRow(Lucide.Car, "Скорость", e.speedKmh?.let { kg.forester.sg.data.DistanceUnits.speed(it) }?.toString(), kg.forester.sg.data.DistanceUnits.speedUnit),
                 LiveRow(Lucide.Thermometer, "Темп. ОЖ", e.coolantC?.toString(), "°C"),
                 LiveRow(Lucide.Wind, "Темп. впуска", e.intakeC?.toString(), "°C"),
                 LiveRow(Lucide.BatteryCharging, "Напряжение", e.batteryV?.let { fmtF(it, 2) }, "В"),
@@ -147,15 +158,15 @@ fun LogScreen() {
             )
             val ignition = listOf(
                 LiveRow(Lucide.Zap, "УОЗ", e.timingDeg?.let { fmtF(it) }, "°"),
-                LiveRow(Lucide.Flame, "Коррекция детонации", e.knockDeg?.let { fmtF(it) }, "°"),
+                LiveRow(Lucide.Flame, "P23: поправка УОЗ (сумма, не откат)", e.kcaDeg?.let { fmtF(it) }, "°"),
                 LiveRow(Lucide.Scale, "IAM", g.iam?.let { fmtF(it, 2) }, ""),
                 LiveRow(Lucide.SquareActivity, "FBKC (откат)", g.fbkc?.let { fmtF(it) }, "°"),
                 LiveRow(Lucide.Waves, "FLKC (обучение)", g.flkc?.let { fmtF(it) }, "°"),
             )
             val boost = listOf(
                 LiveRow(Lucide.Mountain, "Атм. давление", e.atmKpa?.let { fmtF(it, 0) }, "кПа"),
-                LiveRow(Lucide.Gauge, "Абс. давление впуска", e.mapKpa?.let { fmtF(it, 0) }, "кПа"),
-                LiveRow(Lucide.CircleArrowUp, "Наддув (отн. атмосферы)", e.gaugeKpa?.let { fmtF(it, 0) }, "кПа"),
+                LiveRow(Lucide.Gauge, "Абс. давление", e.mapKpa?.let { fmtF(it, 0) }, "кПа"),
+                LiveRow(Lucide.CircleArrowUp, "Наддув (отн.)", e.gaugeKpa?.let { fmtF(it, 0) }, "кПа"),
                 LiveRow(Lucide.Target, "Целевой наддув", g.targetBoostKpa?.let { fmtF(it, 0) }, "кПа"),
                 LiveRow(Lucide.Fan, "Wastegate", e.wastegatePct?.let { fmtF(it, 0) }, "%"),
             )
@@ -186,7 +197,7 @@ private fun LiveGroup(icon: androidx.compose.ui.graphics.vector.ImageVector, tit
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(28.dp).clip(androidx.compose.foundation.shape.CircleShape).background(tint.copy(alpha = 0.16f)),
                 contentAlignment = Alignment.Center) {
-                androidx.compose.material3.Icon(icon, null, tint = tint, modifier = Modifier.size(16.dp))
+                Icon(icon, null, tint = tint, modifier = Modifier.size(16.dp))
             }
             Spacer(Modifier.width(10.dp))
             T(title, 15.sp, weight = androidx.compose.ui.text.font.FontWeight.SemiBold)
@@ -195,10 +206,10 @@ private fun LiveGroup(icon: androidx.compose.ui.graphics.vector.ImageVector, tit
         rows.forEachIndexed { i, r ->
             if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border.copy(alpha = 0.6f)))
             Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                androidx.compose.material3.Icon(r.icon, null, tint = C.Sub, modifier = Modifier.size(16.dp))
+                Icon(r.icon, null, tint = C.Sub, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(10.dp))
-                T(r.name, 14.sp, C.Sub, modifier = Modifier.weight(1f))
-                T(r.value ?: "—", 15.sp, if (r.value == null) C.Gray else C.Text, weight = androidx.compose.ui.text.font.FontWeight.Medium)
+                FitText(r.name, LocalCar.current.secondary, Modifier.weight(1f), C.Sub)
+                T(r.value ?: "—", 15.sp, if (r.value == null) C.Sub else C.Text, weight = androidx.compose.ui.text.font.FontWeight.Medium)
                 if (r.unit.isNotEmpty() && r.value != null) {
                     Spacer(Modifier.width(4.dp))
                     T(r.unit, 12.sp, C.Sub)
@@ -208,103 +219,114 @@ private fun LiveGroup(icon: androidx.compose.ui.graphics.vector.ImageVector, tit
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen() {
     var tab by remember { mutableStateOf(0) }
+    // Back from a tab goes to the first one, then out; it was out to Home at once
+    androidx.activity.compose.BackHandler(enabled = tab != 0) { tab = 0 }
+    val tabsScroll = androidx.compose.foundation.rememberScrollState()
+    LaunchedEffect(tab) { if (tab == 0) tabsScroll.animateScrollTo(0) }
     Column(Modifier.fillMaxSize()) {
-        // scrolls: with a bigger system font (110–120 %) the last tabs went off the screen
-        Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Chip("Основные", tab == 0, { tab = 0 }, Lucide.SlidersHorizontal)
-            Chip("Авто и адаптер", tab == 3, { tab = 3 }, Lucide.Car)
-            Chip("Кнопки быстрого запуска", tab == 1, { tab = 1 }, Lucide.LayoutGrid)
-            Chip("Голос", tab == 2, { tab = 2 }, Lucide.Mic)
-            Chip("Функции", tab == 4, { tab = 4 }, Lucide.ToggleRight)
-            Chip("Доп датчики", tab == 5, { tab = 5 }, Lucide.Cpu)
-            Chip("Цветной экран", tab == 6, { tab = 6 }, Lucide.Monitor)
-            Chip("Связь", tab == 7, { tab = 7 }, Lucide.MessageCircle)
+        // one line that scrolls: on a 7" screen two lines of tabs left a panel no room
+        Row(Modifier.fillMaxWidth().horizontalScroll(tabsScroll), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SETTINGS_TABS.forEachIndexed { i, t ->
+                Chip(if (t.id == "contact") kg.forester.sg.data.I18n.pick(t.title, "Contact") else t.title, tab == i, { tab = i }, t.icon, Modifier.keepInView(tab == i))
+            }
         }
         Spacer(Modifier.height(10.dp))
         Box(Modifier.weight(1f)) {
-            when (tab) {
-                0 -> GeneralSettings()
-                1 -> ShortcutSettings()
-                3 -> CarAdapterSettings()
-                4 -> FeatureSettings()
-                5 -> ExtraSensorSettings()
-                6 -> UsbScreenSettings()
-                7 -> ContactSettings()
-                else -> VoiceSettings()
+            when (SETTINGS_TABS[tab].id) {
+                "look" -> AppearanceSettings()
+                "voice" -> VoiceSettings()
+                "car" -> CarAdapterSettings(onOpenLook = { tab = SETTINGS_TABS.indexOfFirst { it.id == "look" } })
+                "features" -> FeatureSettings()
+                "shortcuts" -> ShortcutSettings()
+                "sensors" -> ExtraSensorSettings()
+                "system" -> SystemSettings()
+                else -> ContactSettings()
             }
         }
     }
 }
 
+/** A tab of the settings, in the order the driver looks for them. */
+class SettingsTab(val id: String, val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
+
+val SETTINGS_TABS = listOf(
+    SettingsTab("look", "Внешний вид", Lucide.Palette),
+    SettingsTab("voice", "Звук и голос", Lucide.Volume2),
+    SettingsTab("car", "Машина и адаптер", Lucide.Car),
+    SettingsTab("features", "Функции", Lucide.ToggleRight),
+    SettingsTab("shortcuts", "Кнопки запуска", Lucide.LayoutGrid),
+    SettingsTab("sensors", "Датчики и экраны", Lucide.Cpu),
+    SettingsTab("system", "Система", Lucide.Cog),
+    SettingsTab("contact", "Связь", Lucide.MessageCircle),
+)
+
+/** A heading inside a settings panel, with the room above it. */
+@Composable
+internal fun SettingsSection(title: String) {
+    Spacer(Modifier.height(16.dp))
+    val p = C.palette
+    T(
+        p.titled(title), 16.sp, C.titleColor(C.Violet), androidx.compose.ui.text.font.FontWeight.SemiBold,
+        Modifier.fillMaxWidth().then(p.titleBand?.let { Modifier.background(it).padding(horizontal = 8.dp, vertical = 3.dp) } ?: Modifier),
+        tracking = if (p.titleTracking > 0f) androidx.compose.ui.unit.TextUnit(p.titleTracking, androidx.compose.ui.unit.TextUnitType.Em) else androidx.compose.ui.unit.TextUnit.Unspecified,
+    )
+    Spacer(Modifier.height(8.dp))
+}
+
+/** «Единицы расстояния»: only what is shown changes, see [kg.forester.sg.data.DistanceUnits]. */
+@Composable
+private fun DistanceUnitChooser() {
+    val s = kg.forester.sg.data.Repo.settings
+    val miles = kg.forester.sg.data.DistanceUnits.miles
+    T("Единицы расстояния", 15.sp)
+    SettingHint("Скорость, пробег, запас хода и расход. Топливо в литрах, давление и температура не меняются. Логи всегда в километрах")
+    Spacer(Modifier.height(6.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Chip("Километры", !miles, { s.distanceUnit = kg.forester.sg.data.DistanceUnits.KM })
+        Chip("Мили", miles, { s.distanceUnit = kg.forester.sg.data.DistanceUnits.MI })
+    }
+}
+
+/** «Внешний вид»: what the driver sees of the app. Left: the look; right: the screen's size and what is on it. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun GeneralSettings() {
-    val s = Repo.settings
-    val init by Repo.ecuInit.collectAsState()
-    val msg by Repo.linkMessage.collectAsState()
-    var tank by remember { mutableStateOf(fmt(s.tankL, 0)) }
-    var price by remember { mutableStateOf(fmt(s.pricePerL, 1)) }
-    var currency by remember { mutableStateOf(s.currency) }
-    var k by remember { mutableStateOf(fmt(s.fuelK, 3)) }
-    var cc by remember { mutableStateOf(s.injectorCc.takeIf { it > 0 }?.toString() ?: "") }
-    var dead by remember { mutableStateOf(s.injectorDeadMs.takeIf { it > 0f }?.let { fmt(it.toDouble(), 2) } ?: "") }
-    var caps by remember { mutableStateOf(false) }
-    var left by remember { mutableStateOf("") }
-    var saved by remember { mutableStateOf("") }
-
+private fun AppearanceSettings() {
     Row(Modifier.fillMaxSize()) {
         Panel(Modifier.width(460.dp).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-            PanelTitle(Lucide.Cog, "Настройки")
+            PanelTitle(Lucide.Palette, "Язык и тема")
             Spacer(Modifier.height(12.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Field("Объём бака, л (0 — не учитывать)", tank) { tank = it }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(Modifier.weight(1f)) { Field("Цена топлива за литр", price) { price = it } }
-                    Box(Modifier.width(120.dp)) {
-                        OutlinedTextField(
-                            value = currency, onValueChange = { currency = it.take(6) }, singleLine = true,
-                            label = { FieldLabel("Валюта") },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = C.Text, unfocusedTextColor = C.Text,
-                                focusedBorderColor = C.Purple, unfocusedBorderColor = C.Border,
-                            ),
-                        )
-                    }
-                }
-                Field("Коэффициент расхода (калибровка)", k) { k = it }
-                // the fuel count without a MAF (an old ECU that doesn't give it) goes by the injection time
-                Field(
-                    // 380/260 are the Subaru's own; another car's size the driver has to know
-                    if (kg.forester.sg.data.CarKind.other.collectAsState().value) "Форсунки, cc/мин (для расхода без MAF; впишите свои)"
-                    else "Форсунки, cc/мин (пусто — штатные 380 у турбо, 260 у атмо)", cc,
-                ) { t -> cc = t.filter { it.isDigit() }.take(4) }
-                // as in the Link's injector setup: the time at 14 V, the app follows the battery voltage by itself
-                Field("Время открытия форсунок, мс (пусто — 0,6 при 14 В)", dead) { t -> dead = t.filter { it.isDigit() || it == '.' || it == ',' }.take(5) }
-                Field("Сейчас в баке, л (если знаете точно)", left) { left = it }
-            }
+            LanguageRow()
+            Spacer(Modifier.height(12.dp))
+            T("Тема", 15.sp)
+            SettingHint("Оформление всего приложения. Кнопка с палитрой есть и в верхней строке")
+            Spacer(Modifier.height(6.dp))
+            UiThemeChooser()
             Spacer(Modifier.height(14.dp))
-            ActionButton("Сохранить", true) {
-                tank.toD()?.let { s.tankL = it }
-                price.toD()?.let { s.pricePerL = it }
-                s.currency = currency
-                k.toD()?.let { if (it in 0.7..1.4) s.fuelK = it }
-                s.injectorCc = cc.toIntOrNull()?.takeIf { it in 100..3000 } ?: 0
-                s.injectorDeadMs = dead.toD()?.toFloat()?.takeIf { it in kg.forester.sg.service.FuelCalc.DEAD_RANGE } ?: 0f
-                left.toD()?.let { s.fuelAtRefillL = it; s.usedSinceRefillL = 0.0; left = "" }
-                Repo.touch()
-                saved = "Сохранено"
-            }
-            Spacer(Modifier.height(8.dp))
-            T(saved, 13.sp, C.Green)
+            AccentSection()
+            SettingsSection("Логотип и заставка")
+            BrandSettings()
+            SettingsSection("Машина на экране")
+            CarLookSettings()
+        }
+        Spacer(Modifier.width(12.dp))
+        Panel(Modifier.weight(1f).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+            PanelTitle(Lucide.Monitor, "Экран")
+            Spacer(Modifier.height(12.dp))
+            ScreenSizeSettings()
+            SettingsSection("Единицы")
+            DistanceUnitChooser()
+            SettingsSection("Меню и панели")
+            var menu by remember { mutableStateOf(false) }
+            T("Меню", 15.sp)
+            SettingHint("Порядок экранов, что скрыть. Это же открывает долгое нажатие на меню")
+            Spacer(Modifier.height(6.dp))
+            Chip("Настроить меню", false, { menu = true }, Lucide.ListChecks)
+            if (menu) MenuEditorDialog { menu = false }
             Spacer(Modifier.height(14.dp))
-            // the plate goes on the 3D Subaru: another car has only a silhouette
-            if (!kg.forester.sg.data.CarKind.other.collectAsState().value) {
-                PlateSettings()
-                Spacer(Modifier.height(14.dp))
-            }
             val navPos by Repo.navPosition.collectAsState()
             T("Панель навигации", 15.sp)
             Spacer(Modifier.height(6.dp))
@@ -314,8 +336,91 @@ private fun GeneralSettings() {
                 }
             }
             Spacer(Modifier.height(14.dp))
+            MiniPlayerSetting()
+            Spacer(Modifier.height(14.dp))
+            // the bars are also edited by a long press on them; here without having to find that out
+            var barEditor by remember { mutableStateOf("") }
+            T("Верхняя и нижняя панели", 15.sp)
+            SettingHint("Какие показатели выводить. Это же открывает долгое нажатие на панель")
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Chip("Верхняя панель", false, { barEditor = "top" })
+                Chip("Нижняя панель", false, { barEditor = "bottom" })
+            }
+            if (barEditor == "top") TopBarEditorDialog { barEditor = "" }
+            if (barEditor == "bottom") BottomBarEditorDialog { barEditor = "" }
+            Spacer(Modifier.height(14.dp))
             CarouselSettings()
             Spacer(Modifier.height(14.dp))
+        }
+    }
+}
+
+/** What the fuel count goes by: its own section of «Машина и адаптер». */
+@Composable
+internal fun FuelSettings() {
+    val s = Repo.settings
+    var tank by remember { mutableStateOf(fmt(s.tankL, 0)) }
+    var price by remember { mutableStateOf(fmt(s.pricePerL, 1)) }
+    var currency by remember { mutableStateOf(s.currency) }
+    var k by remember { mutableStateOf(fmt(s.fuelK, 3)) }
+    var cc by remember { mutableStateOf(s.injectorCc.takeIf { it > 0 }?.toString() ?: "") }
+    var dead by remember { mutableStateOf(s.injectorDeadMs.takeIf { it > 0f }?.let { fmt(it.toDouble(), 2) } ?: "") }
+    var left by remember { mutableStateOf("") }
+    var saved by remember { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Field("Объём бака, л (0 — не учитывать)", tank) { tank = it }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) { Field("Цена топлива за литр", price) { price = it } }
+            Box(Modifier.width(120.dp)) {
+                OutlinedTextField(
+                    value = currency, onValueChange = { currency = it.take(6) }, singleLine = true,
+                    label = { FieldLabel("Валюта") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = C.Text, unfocusedTextColor = C.Text,
+                        focusedBorderColor = C.Purple, unfocusedBorderColor = C.Border,
+                    ),
+                )
+            }
+        }
+        Field("Коэффициент расхода (калибровка)", k) { k = it }
+        // the fuel count without a MAF (an old ECU that doesn't give it) goes by the injection time
+        Field(
+            // 380/260 are the Subaru's own; another car's size the driver has to know
+            if (kg.forester.sg.data.CarKind.other.collectAsState().value) "Форсунки, cc/мин (для расхода без MAF; впишите свои)"
+            else "Форсунки, cc/мин (пусто — штатные 380 у турбо, 260 у атмо)", cc,
+        ) { t -> cc = t.filter { it.isDigit() }.take(4) }
+        // as in the Link's injector setup: the time at 14 V, the app follows the battery voltage by itself
+        Field("Время открытия форсунок, мс (пусто — 0,6 при 14 В)", dead) { t -> dead = t.filter { it.isDigit() || it == '.' || it == ',' }.take(5) }
+        Field("Сейчас в баке, л (если знаете точно)", left) { left = it }
+    }
+    Spacer(Modifier.height(14.dp))
+    ActionButton("Сохранить", true) {
+        tank.toD()?.let { s.tankL = it }
+        price.toD()?.let { s.pricePerL = it }
+        s.currency = currency
+        k.toD()?.let { if (it in 0.7..1.4) s.fuelK = it }
+        s.injectorCc = cc.toIntOrNull()?.takeIf { it in 100..3000 } ?: 0
+        s.injectorDeadMs = dead.toD()?.toFloat()?.takeIf { it in kg.forester.sg.service.FuelCalc.DEAD_RANGE } ?: 0f
+        left.toD()?.let { s.fuelAtRefillL = it; s.usedSinceRefillL = 0.0; left = "" }
+        Repo.touch()
+        saved = "Сохранено"
+    }
+    Spacer(Modifier.height(8.dp))
+    T(saved, 13.sp, C.Green)
+}
+
+/** «Система»: how the app lives on the unit, its copy and version, the exchange log for reports. */
+@Composable
+private fun SystemSettings() {
+    val s = Repo.settings
+    val init by Repo.ecuInit.collectAsState()
+    val msg by Repo.linkMessage.collectAsState()
+    var caps by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxSize()) {
+        Panel(Modifier.width(460.dp).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+            PanelTitle(Lucide.Cog, "Система")
+            Spacer(Modifier.height(12.dp))
             val ctx = androidx.compose.ui.platform.LocalContext.current
             var home by remember { mutableStateOf(isDefaultHome(ctx)) }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -330,8 +435,6 @@ private fun GeneralSettings() {
             Spacer(Modifier.height(14.dp))
             BackgroundSettings()
             Spacer(Modifier.height(14.dp))
-            BrandSettings()
-            Spacer(Modifier.height(14.dp))
             T("Мини-карта открывает", 15.sp)
             T("Приложение, которое запускается по нажатию на мини-карту", 11.sp, C.Sub)
             Spacer(Modifier.height(6.dp))
@@ -342,8 +445,10 @@ private fun GeneralSettings() {
         Spacer(Modifier.width(12.dp))
         // scrolls like the left one: at a large UI scale «Проверить обновления» is below the edge
         Panel(Modifier.weight(1f).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-            T("Автомобиль и ЭБУ", 16.sp)
-            Spacer(Modifier.height(10.dp))
+            UpdateSettings()
+            SettingsSection("Журнал обмена")
+            ExchangeLogSettings()
+            SettingsSection("Автомобиль и ЭБУ")
             val (carT, carS) = rememberCarHeader()
             InfoRow("Автомобиль", "$carT · $carS")
             if (kg.forester.sg.data.CarKind.other.collectAsState().value && init == null) {
@@ -367,8 +472,21 @@ private fun GeneralSettings() {
                     "при заправках до полного бака. Если ЭБУ не передаёт уровень топлива, остаток считается от последней заправки.",
                 13.sp, C.Sub,
             )
-            Spacer(Modifier.height(18.dp))
-            UpdateSettings()
+        }
+    }
+}
+
+/** Where the mini player goes, or none. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun MiniPlayerSetting() {
+    val where by Repo.miniPlayer.collectAsState()
+    T("Мини-плеер", 15.sp)
+    SettingHint("Что играет и кнопки на всех экранах, кроме «Медиа»")
+    Spacer(Modifier.height(6.dp))
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf("bottom" to "Снизу", "top" to "Сверху", "off" to "Выключен").forEach { (k, l) ->
+            Chip(l, where == k, { Repo.settings.miniPlayer = k })
         }
     }
 }
@@ -423,7 +541,7 @@ private fun UpdateSettings() {
                             "Установщик открыт: подтвердите обновление. Если он пишет «конфликт пакетов» — у вас версия с другой " +
                                 "подписью (0.8 или собранная самостоятельно): сохраните резервную копию (слева), удалите приложение и поставьте заново"
                         else "Разрешите установку из этого приложения и нажмите «Скачать и установить» ещё раз"
-                    }.onFailure { status = "Не скачалось: ${it.message}" }
+                    }.onFailure { kg.forester.sg.ssm.SsmTrace.log("update: $it"); status = "Не скачалось: ${kg.forester.sg.data.Failure.text(it)}" }
                 }
             })
         }
@@ -432,14 +550,14 @@ private fun UpdateSettings() {
         Spacer(Modifier.height(6.dp))
         androidx.compose.material3.LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth(), color = C.Purple)
     }
-    if (status.isNotEmpty()) { Spacer(Modifier.height(6.dp)); T(status, 13.sp, if (release != null) C.Green else C.Sub) }
+    if (status.isNotEmpty()) { Spacer(Modifier.height(6.dp)); T(status, 13.sp, if (status.startsWith("Не ")) C.Orange else if (release != null) C.Green else C.Sub) }
     release?.let { r ->
         Spacer(Modifier.height(6.dp))
         T(r.name, 13.sp)
         T(r.notes.replace(Regex("!\\[[^]]*]\\([^)]*\\)"), "").replace("**", "").trim().take(700), 11.sp, C.Sub, maxLines = 12)
     }
     Spacer(Modifier.height(4.dp))
-    T("Данные сохраняются: версии подписаны одним ключом. Приложение раз в день само проверяет, нет ли новой версии.", 11.sp, C.Sub)
+    SettingHint("Данные сохраняются: версии подписаны одним ключом. Приложение раз в день само проверяет, нет ли новой версии.")
 }
 
 /** Manual backup to a file the user picks, restore from one, and the daily automatic copy. */
@@ -449,45 +567,48 @@ private fun BackupSettings() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var auto by remember { mutableStateOf(s.autoBackup) }
     var msg by remember { mutableStateOf("") }
+    var failed by remember { mutableStateOf(false) }
     var restoreUri by remember { mutableStateOf<android.net.Uri?>(null) }
     val save = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/zip")
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
+        failed = false
         msg = runCatching {
             ctx.contentResolver.openOutputStream(uri)!!.use { kg.forester.sg.data.Backup.write(ctx, it) }
             "Копия сохранена"
-        }.getOrElse { "Не удалось сохранить: ${it.message}" }
+        }.getOrElse { kg.forester.sg.ssm.SsmTrace.log("backup: $it"); failed = true; "Не удалось сохранить: ${kg.forester.sg.data.Failure.text(it)}" }
     }
     val open = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri -> restoreUri = uri }
 
     T("Резервная копия", 15.sp)
-    T("Поездки, заправки, калибровка, раскладки экранов, свои дизайны и настройки в одном файле.", 11.sp, C.Sub)
+    SettingHint("Поездки, заправки, калибровка, раскладки экранов, свои дизайны и настройки в одном файле.")
     Spacer(Modifier.height(6.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Chip("Сохранить копию…", false, { save.launch(kg.forester.sg.data.Backup.suggestedName()) })
         Chip("Восстановить из файла…", false, { open.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) })
     }
-    if (msg.isNotEmpty()) T(msg, 12.sp, C.Green)
-    SettingSwitch("Автокопия раз в сутки", "В папку Download/CarPulse, хранятся последние 7. Последняя: ${kg.forester.sg.data.Backup.lastAutoText()}", auto) {
+    if (msg.isNotEmpty()) T(msg, 12.sp, if (failed) C.Orange else C.Green)
+    SwitchRow("Автокопия раз в сутки", "В папку Download/CarPulse, хранятся последние 7", auto, status = "Последняя: ${kg.forester.sg.data.Backup.lastAutoText()}") {
         auto = it; s.autoBackup = it
     }
     restoreUri?.let { uri ->
-        androidx.compose.material3.AlertDialog(
+        CarAlertDialog(
             onDismissRequest = { restoreUri = null },
-            title = { androidx.compose.material3.Text("Восстановить из копии?") },
-            text = { androidx.compose.material3.Text("Текущие поездки, заправки и настройки заменятся данными из файла. Приложение перезапустится.") },
+            title = { Text("Восстановить из копии?") },
+            text = { Text("Текущие поездки, заправки и настройки заменятся данными из файла. Приложение перезапустится.") },
             confirmButton = {
                 androidx.compose.material3.TextButton({
                     restoreUri = null
+                    failed = false
                     msg = runCatching {
                         ctx.contentResolver.openInputStream(uri)!!.use { kg.forester.sg.data.Backup.restore(ctx, it) } ?: ""
-                    }.getOrElse { "Не удалось восстановить: ${it.message}" }
-                }) { androidx.compose.material3.Text("Восстановить") }
+                    }.getOrElse { kg.forester.sg.ssm.SsmTrace.log("restore: $it"); failed = true; "Не удалось восстановить: ${kg.forester.sg.data.Failure.text(it)}" }
+                }) { Text("Восстановить") }
             },
-            dismissButton = { androidx.compose.material3.TextButton({ restoreUri = null }) { androidx.compose.material3.Text("Отмена") } },
+            dismissButton = { androidx.compose.material3.TextButton({ restoreUri = null }) { Text("Отмена") } },
         )
     }
 }
@@ -515,13 +636,13 @@ private fun BackgroundSettings() {
 
     T("Фон и автозапуск", 15.sp)
     Spacer(Modifier.height(6.dp))
-    SettingSwitch("Работать в фоне", "Опрос ЭБУ, расход, поездки и логи продолжаются, когда приложение свёрнуто или открыто другое", bg) {
+    SwitchRow("Работать в фоне", "Опрос ЭБУ, расход, поездки, логи и голосовой ассистент продолжаются, когда приложение свёрнуто или открыто другое", bg) {
         bg = it; s.backgroundWork = it
     }
-    SettingSwitch("Запускать при включении", "Служба стартует при включении магнитолы или телефона и после сна (ACC)", auto) {
+    SwitchRow("Запускать при включении", "Служба стартует при включении магнитолы или телефона и после сна (ACC)", auto) {
         auto = it; s.autostartService = it
     }
-    SettingSwitch("Открывать приложение при включении", "Показывать приборы сразу после включения", app) {
+    SwitchRow("Открывать приложение при включении", "Показывать приборы сразу после включения", app) {
         app = it; s.autostartApp = it
     }
     if (app && !overlay) {
@@ -537,14 +658,14 @@ private fun BackgroundSettings() {
     if ((auto || app) && kg.forester.sg.service.Fyt.present(ctx)) {
         // FYT firmware (Teyes and others) stops third-party apps when it goes to sleep: nothing wakes them but the
         // driver, the launcher, or the firmware's own autostart list
-        T("Если после сна магнитолы приложение не запускается само: в настройках магнитолы «Батарея» → «Управление " +
+        SettingHint("Если после сна магнитолы приложение не запускается само: в настройках магнитолы «Батарея» → «Управление " +
             "автозапуском» включите для CarPulse «автозапуск» и «вторичный запуск», а «Закрыть приложение после " +
             "блокировки экрана» выключите. Самый надёжный вариант — включить выше «Главный экран магнитолы»: " +
-            "после сна магнитола всегда открывает главный экран.", 12.sp, C.Sub)
+            "после сна магнитола всегда открывает главный экран.")
         Spacer(Modifier.height(8.dp))
     }
     if (bg && !unrestricted) {
-        T("Система может останавливать приложение в фоне для экономии батареи (актуально для телефонов).", 12.sp, C.Sub)
+        SettingHint("Система может останавливать приложение в фоне для экономии батареи (актуально для телефонов).")
         Spacer(Modifier.height(4.dp))
         Chip("Не ограничивать", false, {
             runCatching {
@@ -553,18 +674,6 @@ private fun BackgroundSettings() {
                 )
             }
         })
-    }
-}
-
-@Composable
-private fun SettingSwitch(title: String, sub: String, on: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            T(title, 14.sp)
-            T(sub, 11.sp, C.Sub)
-        }
-        Spacer(Modifier.width(12.dp))
-        Switch(on, onChange, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
     }
 }
 
@@ -596,7 +705,7 @@ private fun String.toD(): Double? = replace(',', '.').trim().toDoubleOrNull()
 
 /** Licence plate shown on the 3D car: text or an uploaded picture (e.g. with your country's flag). */
 @Composable
-private fun PlateSettings() {
+internal fun PlateSettings() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val plate by kg.forester.sg.data.Plate.bitmap.collectAsState()
     LaunchedEffect(Unit) { if (plate == null) kg.forester.sg.data.Plate.load(ctx) }
@@ -617,7 +726,7 @@ private fun PlateSettings() {
     }
     Spacer(Modifier.height(6.dp))
     Field("Текст номера", text, text = true) { text = it }
-    T("Номер с флагом или регионом можно загрузить картинкой (фото или скан своего номера).", 11.sp, C.Sub)
+    SettingHint("Номер с флагом или регионом можно загрузить картинкой (фото или скан своего номера).")
     Spacer(Modifier.height(6.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Box(Modifier.weight(1f)) { ActionButton("Применить текст", text.isNotBlank()) { kg.forester.sg.data.Plate.setText(ctx, text); msg = "Номер обновлён" } }
@@ -633,10 +742,9 @@ private fun FeatureSettings() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     Repo.featureVersion.collectAsState().value
     @Composable
-    fun F(id: String, title: String, sub: String) = SettingSwitch(title, sub, s.feature(id)) { s.setFeature(id, it) }
+    fun F(id: String, title: String, sub: String) = SwitchRow(title, sub, s.feature(id)) { s.setFeature(id, it) }
     var shift by remember { mutableStateOf(s.shiftLight) }
     var rpm by remember { mutableStateOf(s.shiftRpm.toString()) }
-    var voice by remember { mutableStateOf(s.voiceAlerts) }
     var tpms by remember { mutableStateOf(s.tpms) }
     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Panel(Modifier.weight(1f).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
@@ -655,29 +763,6 @@ private fun FeatureSettings() {
                 F("battAlert", "Аккумулятор", "Разряжен на стоянке (ниже 12,2 В), слабый пуск (ниже 9,6 В), долго не восстанавливается после пуска")
                 F("altAlert", "Генератор", "Не заряжает (ниже 12,6 В, или с пуска ни разу не было 13,6 В) или перезаряд (выше 15 В). 12,5–13 В на ходу у Subaru 2001–2008 норма: умная зарядка")
                 F("service", "Напоминания о ТО", "Раз в день при поездке, если подошёл срок по пробегу или дате")
-                val speech by kg.forester.sg.service.Speech.status.collectAsState()
-                SettingSwitch("Голосовые предупреждения",
-                    "Встроенный русский голос: скачивается один раз при включении (" +
-                        (kg.forester.sg.service.Speech.current.mb.takeIf { it > 0 }?.let { "$it МБ" } ?: "у голоса Android ничего") +
-                        "), дальше работает без интернета. " +
-                        "Пока его нет — голос магнитолы или короткий сигнал." + if (speech.isNotEmpty()) " Голос: $speech" else "", voice) {
-                    voice = it; s.voiceAlerts = it
-                    if (it) kg.forester.sg.service.Speech.prepare(ctx)
-                }
-                if (voice) {
-                    SpeechVoicePicker()
-                    var loud by remember { mutableStateOf(s.voiceLoud) }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        T("Громкость:", 13.sp, C.Sub)
-                        listOf(0 to "Обычная", 1 to "Громче", 2 to "Максимум").forEach { (v, l) ->
-                            Chip(l, loud == v, {
-                                loud = v; s.voiceLoud = v
-                                kg.forester.sg.service.Speech.say("Так звучат предупреждения")
-                            })
-                        }
-                    }
-                    T("На максимуме музыка встаёт на паузу, пока голос говорит. Общую громкость голоса задаёт громкость навигации магнитолы.", 11.sp, C.Sub)
-                }
             }
         }
         Panel(Modifier.weight(1f).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
@@ -694,16 +779,65 @@ private fun FeatureSettings() {
                 F("minmax", "Мин/макс за поездку на виджетах", "Справа от значения на карточках и метками на полосах и шкалах тахометра/спидометра")
                 if (s.feature("minmax")) Box(Modifier.fillMaxWidth().clip(Rounded).background(C.CardHi).padding(10.dp)) { MinMaxLegend() }
                 F("update", "Проверять обновления", "Раз в день смотреть, нет ли новой версии на GitHub, и сообщить")
-                SettingSwitch("Давление в шинах (TPMS)", "Слушать Bluetooth-датчики давления. Разрешение и порог — в «Мониторинг» → «Шины»", tpms) {
+                SwitchRow("Давление в шинах (TPMS)", "Слушать Bluetooth-датчики давления. Разрешение и порог — в «Мониторинг» → «Шины»", tpms) {
                     tpms = it; s.tpms = it
                     if (it) kg.forester.sg.service.Tpms.start(ctx) else kg.forester.sg.service.Tpms.stop(ctx)
                 }
-                SettingSwitch("Лампа переключения передач", "Края экрана мигают, когда обороты выше порога", shift) { shift = it; s.shiftLight = it }
+                SwitchRow("Лампа переключения передач", "Края экрана мигают, когда обороты выше порога", shift) { shift = it; s.shiftLight = it }
                 if (shift) NumberField("Порог, об/мин (EJ20 турбо ~6300, EJ25 атмо ~5800)", rpm) {
                     rpm = it; it.toIntOrNull()?.takeIf { v -> v in 2000..9000 }?.let { v -> s.shiftRpm = v }
                 }
             }
         }
+    }
+}
+
+/**
+ * The top of «Звук и голос»: the buttons' click, the player's sound, the voice of the warnings. Each takes effect at once.
+ */
+@Composable
+internal fun SoundSettings() {
+    val s = Repo.settings
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var sound by remember { mutableStateOf(s.buttonSound) }
+    var voice by remember { mutableStateOf(s.voiceAlerts) }
+    var eq by remember { mutableStateOf(false) }
+    PanelTitle(Lucide.Volume2, "Звук")
+    Spacer(Modifier.height(8.dp))
+    SwitchRow("Звук кнопок", "Щелчок при нажатии кнопок, музыка не приглушается", sound) { sound = it; s.buttonSound = it }
+    Spacer(Modifier.height(10.dp))
+    var perfShown by remember { mutableStateOf(s.perfResults) }
+    SwitchRow("Показывать результаты замеров", "Сообщение и голос после разгона и торможения, пойманных сами собой. Выключено: они только на экране «Замеры»", perfShown) {
+        perfShown = it; s.perfResults = it
+    }
+    Spacer(Modifier.height(10.dp))
+    Chip("Звук плеера (эквалайзер)", false, { eq = true }, Lucide.SlidersHorizontal)
+    if (eq) SoundDialog { eq = false }
+    Spacer(Modifier.height(10.dp))
+    val speech by kg.forester.sg.service.Speech.status.collectAsState()
+    SwitchRow("Голосовые предупреждения",
+        "Встроенный русский голос: скачивается один раз при включении (" +
+            (kg.forester.sg.service.Speech.current.mb.takeIf { it > 0 }?.let { "$it МБ" } ?: "у голоса Android ничего") +
+            "), дальше работает без интернета. " +
+            "Пока его нет, говорит голос магнитолы или звучит короткий сигнал.", voice,
+        status = kg.forester.sg.service.Speech.shown(voice, speech), statusColor = speechColor()) {
+        voice = it; s.voiceAlerts = it
+        if (it) kg.forester.sg.service.Speech.prepare(ctx)
+    }
+    if (voice) {
+        SpeechVoicePicker()
+        var loud by remember { mutableStateOf(s.voiceLoud) }
+        @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            T("Громкость:", 13.sp, C.Sub, modifier = Modifier.align(Alignment.CenterVertically))
+            listOf(0 to "Обычная", 1 to "Громче", 2 to "Максимум").forEach { (v, l) ->
+                Chip(l, loud == v, {
+                    loud = v; s.voiceLoud = v
+                    kg.forester.sg.service.Speech.say("Так звучат предупреждения", preview = true)
+                })
+            }
+        }
+        SettingHint("На максимуме музыка встаёт на паузу, пока голос говорит. Общую громкость голоса задаёт громкость навигации магнитолы.")
     }
 }
 
@@ -713,18 +847,18 @@ private fun FeatureSettings() {
 private fun LogColumnsDialog(onClose: () -> Unit) {
     var off by remember { mutableStateOf(Repo.settings.logOff) }
     val groups = kg.forester.sg.service.LogColumns.offered().groupBy { it.group }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onClose,
+    CarAlertDialog(
+        onDismissRequest = onClose, textScrolls = false,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                androidx.compose.material3.Icon(Lucide.FileText, null, tint = C.Violet, modifier = Modifier.size(24.dp))
+                Icon(Lucide.FileText, null, tint = C.Violet, modifier = Modifier.size(24.dp))
                 Spacer(Modifier.width(10.dp))
                 T("Что писать в лог", 20.sp, weight = androidx.compose.ui.text.font.FontWeight.SemiBold)
             }
         },
         text = {
-            Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                T("Время пишется всегда. Отмеченные параметры ЭБУ с экрана «Датчики» добавляются в конец. Новый выбор начинает новый файл.", 12.sp, C.Sub)
+            Column(Modifier.cueScroll(C.DialogHi), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SettingHint("Время пишется всегда. Отмеченные параметры ЭБУ с экрана «Датчики» добавляются в конец. Новый выбор начинает новый файл.")
                 groups.forEach { (g, cols) ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val icon = when (g) {
@@ -736,7 +870,7 @@ private fun LogColumnsDialog(onClose: () -> Unit) {
                             "АКПП" -> Lucide.Cog
                             else -> Lucide.Droplets
                         }
-                        androidx.compose.material3.Icon(icon, null, tint = C.Violet, modifier = Modifier.size(18.dp))
+                        Icon(icon, null, tint = C.Violet, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         T(g, 15.sp, weight = androidx.compose.ui.text.font.FontWeight.Medium, modifier = Modifier.weight(1f))
                         val allOn = cols.none { it.key in off }
@@ -755,7 +889,7 @@ private fun LogColumnsDialog(onClose: () -> Unit) {
                 }
             }
         },
-        confirmButton = { androidx.compose.material3.TextButton(onClose) { androidx.compose.material3.Text("Готово", color = C.Violet) } },
+        confirmButton = { androidx.compose.material3.TextButton(onClose) { Text("Готово", color = C.Violet) } },
         containerColor = C.Card, titleContentColor = C.Text, textContentColor = C.Text,
     )
 }
@@ -768,19 +902,19 @@ private fun TcuRateSetting() {
     var atf by remember { mutableStateOf(s.tcuAtfOnly) }
     var fast by remember { mutableStateOf(s.fastPoll) }
     Column {
-        SettingSwitch("Быстрый опрос (K-Line)", "ЭБУ сам шлёт данные без запросов, как fast poll в RomRaider: в 3 раза чаще. " +
+        SwitchRow("Быстрый опрос (K-Line)", "ЭБУ сам шлёт данные без запросов, как fast poll в RomRaider: в 3 раза чаще. " +
             "Если ЭБУ так не умеет, приложение само вернётся к обычному опросу", fast) {
             fast = it; s.fastPoll = it
         }
         Spacer(Modifier.height(10.dp))
         T("Опрос АКПП", 15.sp)
-        T("Каждый N-й опрос двигателя (при быстром опросе: раз в N × 0,25 с). Реже — быстрее обновляются данные ЭБУ (K-Line медленная).", 11.sp, C.Sub)
+        SettingHint("Каждый N-й опрос двигателя (при быстром опросе: раз в N × 0,25 с). Реже — быстрее обновляются данные ЭБУ (K-Line медленная).")
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(3 to "каждый 3-й", 10 to "10-й", 30 to "30-й").forEach { (n, l) -> Chip(l, every == n, { every = n; s.tcuEvery = n }) }
         }
         Spacer(Modifier.height(6.dp))
-        SettingSwitch("Только температура ATF", "Читать с АКПП лишь ATF и селектор: запрос короче, двигатель опрашивается чаще", atf) {
+        SwitchRow("Только температура ATF", "Читать с АКПП лишь ATF и селектор: запрос короче, двигатель опрашивается чаще", atf) {
             atf = it; s.tcuAtfOnly = it
         }
     }
@@ -795,8 +929,8 @@ private fun TcuRateSetting() {
 private fun CarouselSettings() {
     val list by Repo.carousel.collectAsState()
     T("Карусель экранов", 15.sp)
-    T("Свайп влево или вправо по экрану листает выбранные экраны по кругу. Меню слева остаётся. " +
-        "Отметьте от двух до четырёх экранов в нужном порядке; ничего не отмечено, карусель выключена", 11.sp, C.Sub)
+    SettingHint("Свайп влево или вправо по экрану листает выбранные экраны по кругу. Меню слева остаётся. " +
+        "Отметьте от двух до четырёх экранов в нужном порядке; ничего не отмечено, карусель выключена")
     Spacer(Modifier.height(6.dp))
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Chip("Выключена", list.size < 2, { Repo.settings.carousel = emptyList() })

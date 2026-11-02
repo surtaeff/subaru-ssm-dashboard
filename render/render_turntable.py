@@ -4,7 +4,7 @@ render_models.sh renders all passes of those and packs them with pack_frames.py)
 
   Blender -b -P render_turntable.py -- --model car.glb --out frames/ [--list] [--frames 90]
       [--paint name1,=exact_name] [--plate name] [--engine EEVEE|CYCLES] [--size 1100x620] [--still]
-      [--fix sg|sgna|sh|shna|sk|grc|bm|va|gg|gv|22b|gc] [--paintmode chameleon|white|mask] [--only 0,9,43] [--probe]
+      [--fix sg|sgna|sh|shna|sk|grc|bm|va|gg|gv|22b|gc|gt3r] [--paintmode chameleon|white|mask] [--only 0,9,43] [--probe]
 
 --list   only prints materials (name, users, face count) so paint/plate materials can be picked.
 --probe  (with --fix) prints what sits at the tail and the bumper surfaces, to place tailpipes and plates.
@@ -38,7 +38,7 @@ ap.add_argument("--elev", type=float, default=12.0, help="camera elevation, degr
 ap.add_argument("--envelope", default="", help="xhalf,yhalf,zmin,zmax: drop meshes outside")
 ap.add_argument("--start", type=float, default=-35.0, help="first frame camera azimuth, degrees")
 ap.add_argument("--tail", type=float, default=180.0, help="camera azimuth that looks at the tail (drive view)")
-ap.add_argument("--fix", default="", help="model-specific clean-up: sg, sgna, sh, shna, sk, grc, bm, va, gg, gv, 22b, gc")
+ap.add_argument("--fix", default="", help="model-specific clean-up: sg, sgna, sh, shna, sk, grc, bm, va, gg, gv, 22b, gc, gt3r")
 ap.add_argument("--probe", action="store_true", help="after --fix: print tail/plate area objects and exit")
 ap.add_argument("--probe_near", default="", help="with --probe: also list meshes near points 'x,y,z,r;x,y,z,r'")
 ap.add_argument("--wheelz", type=float, default=0.43, help="sg: wheel centre height (default: the mod's hub height)")
@@ -966,6 +966,18 @@ def fix_gd_model():
     plate_on_surface("PlateRear", 0.53, 1)  # over the model's own plate
 
 
+def fix_gt3r_model():
+    """'2024 Porsche 992 GT3 R' by Dave Love: the stand-in for a car nobody can name. Its own livery stays: no paint material. Front at -Y, 1:100 scale, no plates."""
+    normalise(4.62)
+    drop_objects(lambda o: any(m.startswith("EXT_RIM_BLUR") for m in mat_names(o)))
+    # the file's paint is a mirror: the big area lights came back off it as flat white shapes over the livery; only the gloss changes
+    b = bpy.data.materials["EXT_Carpaint_Inst"].node_tree.nodes["Principled BSDF"]
+    b.inputs["Roughness"].default_value = 0.25
+    b.inputs["Metallic"].default_value = 0.0
+    b.inputs["Specular IOR Level"].default_value = 0.1
+    add_exhausts([Vector((-0.06, 2.15, 0.29)), Vector((0.06, 2.15, 0.29))])
+
+
 def flatten_bulge(obj_names, x0, x1, y0, y1, ring=0.16, feather=0.08, other_drop=True, patch_mat=None):
     """Remove a bonnet scoop that is modelled into the bonnet mesh: fit a smooth (quadratic) surface to the
     bonnet top around the box [x0..x1] x [y0..y1] (world, z up), pull every bonnet vertex in the box down/up
@@ -1098,7 +1110,7 @@ def fix_shna_model():
 
 FIXES = {"sk": fix_sk_model, "grc": fix_grc_model, "bm": fix_bm_model, "va": fix_va_model, "gg": fix_gg_model,
          "gv": fix_gv_model, "22b": fix_22b_model, "gc": fix_gc_model, "gd": fix_gd_model, "shna": fix_shna_model,
-         "sg": fix_sg_model, "sgna": fix_sgna_model}
+         "sg": fix_sg_model, "sgna": fix_sgna_model, "gt3r": fix_gt3r_model}
 
 if args.fix == 'sh':
     fix_sh_model()

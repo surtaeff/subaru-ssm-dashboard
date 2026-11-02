@@ -104,6 +104,8 @@ class RuleRunner {
             val s = RuleSources.of(src)
             if (s?.bool == true) return if (v >= 0.5f) "включён" else "выключен"
             val d = s?.decimals ?: 1
+            // a speed rule is kept in km/h, as the log and the engine read it, and said in the driver's unit
+            if (src == "speed") return "%.0f".format(Locale("ru"), kg.forester.sg.data.DistanceUnits.speed(v)) + " " + kg.forester.sg.data.DistanceUnits.speedUnit
             return "%.${d}f".format(Locale("ru"), v) + (s?.unit?.takeIf { it.isNotEmpty() }?.let { " $it" } ?: "")
         }
         fun fmt(v: Float) = if (v == v.toInt().toFloat()) v.toInt().toString() else "%.1f".format(Locale("ru"), v)
@@ -123,7 +125,7 @@ object RelayEngine {
     private var configured = emptySet<Int>()
     private var lastResend = 0L
     private var lastBeat = 0L
-    private var wasRunning = false
+    private val runEdge = RunEdge()
 
     fun start(scope: CoroutineScope) {
         scope.launch(Dispatchers.IO) {
@@ -160,9 +162,7 @@ object RelayEngine {
 
     private fun tick(now: Long) {
         val chans = Relays.channels.value
-        val running = (Repo.live.value.rpm ?: 0) > 400
-        if (running && !wasRunning) runner.fire(OutEvent.ENGINE_ON, now, chans)
-        wasRunning = running
+        if (runEdge.engineOn(Repo.live.value.rpm, Repo.link.value == kg.forester.sg.data.LinkState.CONNECTED)) runner.fire(OutEvent.ENGINE_ON, now, chans)
         val allOff = Relays.allOff.value
         val box = Relays.boxStates.value
         Relays.status.value = chans.associate { c ->
@@ -213,5 +213,23 @@ object RelayEngine {
         Relays.allOff.value = on
         if (on) SensorBoxLink.send("X")
         sent.clear()
+    }
+}
+
+/**
+ * The engine-start edge for the relays' ENGINE_ON event. A link that drops with the engine running leaves no rpm after
+ * the wipe (see EcuService.linkLossWatch): that is no stop, and the reconnect is no start, or a K-line glitch in the
+ * middle of a drive would switch the hardware on. The edge is forgotten only when the link is up and says the engine
+ * is not running.
+ */
+class RunEdge {
+    private var was = false
+
+    fun engineOn(rpm: Int?, linked: Boolean): Boolean {
+        if (!linked || rpm == null) return false
+        val running = rpm > 400
+        val edge = running && !was
+        was = running
+        return edge
     }
 }

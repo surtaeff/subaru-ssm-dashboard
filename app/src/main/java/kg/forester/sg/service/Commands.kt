@@ -84,7 +84,7 @@ data class OwnCommand(val phrase: String, val action: String)
 /** A number said at some position: its value, the index after it, and whether it was an ordinal ("третья"). */
 data class SpokenNumber(val value: Int, val start: Int, val end: Int, val ordinal: Boolean)
 
-object Commands {
+object Commands : VoiceGrammar {
 
     // --- normalization ---------------------------------------------------------------------------
 
@@ -372,7 +372,7 @@ object Commands {
     private fun List<String>.without(r: Triple<Int, Int, String>?) = if (r == null) this else take(r.first) + drop(r.second)
 
     /** Place categories for "найди ближайшую …": canonical search text → stems. Order matters (АГЗС before АЗС). */
-    private val PLACES: List<Pair<String, List<String>>> = listOf(
+    internal val PLACES: List<Pair<String, List<String>>> = listOf(
         "Электрозаправка" to listOf("электрозаправ", "электрозаряд", "зарядн", "зарядк", "электромобил"),
         "АГЗС" to listOf("агзс", "газов", "метан", "пропан", "=газ", "=газом"),
         "АЗС" to listOf("заправ", "азс", "бензоколон", "бензозаправ", "колонк", "лукойл", "роснефт", "газпром", "татнефт", "=шелл", "заправиться"),
@@ -493,7 +493,7 @@ object Commands {
     // --- entry point -----------------------------------------------------------------------------
 
     /** What [text] (the command after the wake word) asks for; null if nothing was understood. */
-    fun parse(text: String): VoiceCommand? {
+    override fun parse(text: String): VoiceCommand? {
         val t = normalize(text)
         if (t.isEmpty()) return null
         val w = t.split(' ')
@@ -920,7 +920,7 @@ object Commands {
         return levenshtein(a, b) <= maxOf(1, b.length / 4)
     }
 
-    private fun levenshtein(a: String, b: String): Int {
+    internal fun levenshtein(a: String, b: String): Int {
         val dp = IntArray(b.length + 1) { it }
         for (i in 1..a.length) {
             var prev = dp[0]; dp[0] = i
@@ -941,7 +941,10 @@ object Commands {
      * в гараж"); the longest wins. A "*" in the phrase takes any words ("покажи клип *"), and they replace the "*"
      * in the steps ("включи на ютубе *").
      */
-    fun ownFor(said: String, own: List<OwnCommand>): Pair<OwnCommand, List<String>>? {
+    override fun ownFor(said: String, own: List<OwnCommand>): Pair<OwnCommand, List<String>>? = ownFor(said, own, ::normalize)
+
+    /** [ownFor] with a language's own [normalize]. */
+    internal fun ownFor(said: String, own: List<OwnCommand>, normalize: (String) -> String): Pair<OwnCommand, List<String>>? {
         val s = normalize(said).split(' ').filter { it.isNotBlank() }
         if (s.isEmpty()) return null
         return own.mapNotNull { o ->
@@ -985,7 +988,7 @@ object Commands {
     )
 
     /** How the assistant took [c], in a few words for the own commands editor ("YouTube: поиск «король и шут»"). */
-    fun describe(c: VoiceCommand): String {
+    override fun describe(c: VoiceCommand): String {
         val q = c.query?.let { "«$it»" }.orEmpty()
         val inApp = c.app?.let { " в ${APP_NAMES[it] ?: it}" }.orEmpty()
         return when (c.intent) {
@@ -1043,7 +1046,12 @@ object Commands {
     }
 
     /** Ready own commands for the editor: a tap fills both fields. */
-    val OWN_TEMPLATES = listOf(
+    override val SAMPLE_ASK = "какая температура масла"
+    override val SAMPLE_PHRASE = "едем в гараж"
+    override val SAMPLE_ACTION = "поехали на Ленина 10; включи музыку"
+    override val STAR_WORD = "кино"
+
+    override val OWN_TEMPLATES = listOf(
         Triple("Клип на YouTube", "покажи клип *", "включи на ютубе * клип"),
         Triple("Песня в Яндекс Музыке", "поставь *", "включи * в яндекс музыке"),
         Triple("Домой с музыкой", "едем домой", "поехали домой; включи музыку"),
@@ -1053,7 +1061,7 @@ object Commands {
     )
 
     /** The few pieces shown right under the «Сделать» field; the rest are in «Все команды». */
-    val OWN_POPULAR = listOf(
+    override val OWN_POPULAR = listOf(
         "Маршрут" to "поехали на Ленина 10", "Домой" to "поехали домой", "YouTube" to "включи на ютубе *", "Музыка" to "включи музыку",
     )
 
@@ -1061,7 +1069,7 @@ object Commands {
      * Everything the assistant can do, as pieces for the «Сделать» field, by group: a tap adds the piece; "*" is what
      * will be said in the phrase's "*". The self-test checks that every intent, value, screen and place is here.
      */
-    val OWN_GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
+    override val OWN_GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
         "Навигация" to listOf(
             "Маршрут по адресу" to "поехали на Ленина 10", "Маршрут куда скажу" to "поехали на *", "Через" to "поехали в аэропорт через центр",
             "Домой" to "поехали домой", "На работу" to "поехали на работу", "Спросить куда" to "поехали",
@@ -1119,12 +1127,12 @@ object Commands {
     )
 
     /** The ordinary commands an own command runs, in order (";" or a new line between them). */
-    fun steps(action: String): List<String> = action.split(';', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+    override fun steps(action: String): List<String> = action.split(';', '\n').map { it.trim() }.filter { it.isNotEmpty() }
 
     // --- examples and self-test ------------------------------------------------------------------
 
     /** Phrases for the "Команды" panel (after the assistant's name). */
-    val EXAMPLES = listOf(
+    override val EXAMPLES = listOf(
         "поехали на Ленина 10" to "маршрут по адресу",
         "проложи маршрут домой / на работу" to "дом и работа",
         "найди ближайшую заправку" to "АЗС, шиномонтаж, парковка, кафе, аптека…",

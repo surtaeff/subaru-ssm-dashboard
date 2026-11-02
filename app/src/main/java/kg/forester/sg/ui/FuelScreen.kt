@@ -3,6 +3,7 @@ package kg.forester.sg.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,12 +19,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import com.composables.icons.lucide.*
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -45,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kg.forester.sg.data.Refill
 import kg.forester.sg.data.Repo
+import kg.forester.sg.data.lhNow
 import kg.forester.sg.data.Trip
 import kg.forester.sg.service.EcuService
 import kotlinx.coroutines.delay
@@ -61,51 +61,78 @@ private enum class FuelTab(val title: String, val icon: ImageVector) {
     Trips("Поездки", Lucide.Route),
 }
 
+/** What the database says, off the main thread; null until the first answer, then the last one until the next. */
+@Composable
+internal fun <T : Any> rememberQuery(key: Any?, query: () -> T): androidx.compose.runtime.State<T?> =
+    androidx.compose.runtime.produceState<T?>(null, key) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { query() }
+    }
+
 @Composable
 fun FuelScreen() {
     var tab by remember { mutableStateOf(FuelTab.Current) }
     val version by Repo.dataVersion.collectAsState()
-    val totals = remember(version) { Repo.db.totals() }
+    val totals by rememberQuery(version) { Repo.db.totals() }
 
+    val car = LocalCar.current
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
+        // the tabs take the whole width where their names wouldn't fit beside the all-time figure
+        val stacked = car.secondary.value > 19f
+        Row(Modifier.fillMaxWidth().height(LocalMinTap.current + 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Panel(Modifier.weight(1f).fillMaxHeight(), padding = 6.dp) {
-                Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FuelTab.entries.forEach {
-                        Chip(if (it == FuelTab.Style) "Стиль" else it.title, tab == it, { tab = it }, it.icon, Modifier.weight(1f).fillMaxHeight())
+                androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+                    // five equal tabs: where an icon leaves the name cut, the name goes first
+                    val icons = maxWidth >= 150.dp * FuelTab.entries.size
+                    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FuelTab.entries.forEach {
+                            Chip(if (it == FuelTab.Style) "Стиль" else it.title, tab == it, { tab = it }, if (icons) it.icon else null, Modifier.weight(1f).fillMaxHeight())
+                        }
                     }
                 }
             }
-            Spacer(Modifier.width(12.dp))
-            Panel(Modifier.width(240.dp).fillMaxHeight(), padding = 10.dp) {
-                T("Средний расход (весь период)", 12.sp, C.Sub, maxLines = 1)
-                // the panel is only 64 dp tall: the "i" sits at the end of the value row, not in a header row
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                    if (totals.first > 1) {
-                        T(fmt(totals.second / totals.first * 100), 24.sp, weight = FontWeight.Bold)
-                        Spacer(Modifier.width(6.dp))
-                        T("л/100 км", 13.sp, C.Sub, modifier = Modifier.padding(bottom = 4.dp))
-                    } else {
-                        // no mileage yet: show what was burned instead of a dash
-                        T(fmt(totals.second, 1), 24.sp, weight = FontWeight.Bold)
-                        Spacer(Modifier.width(6.dp))
-                        T("л · пробега пока нет", 12.sp, C.Sub, modifier = Modifier.padding(bottom = 4.dp), maxLines = 1)
-                    }
-                    Spacer(Modifier.weight(1f))
-                    InfoButton("Средний расход (весь период)")
-                }
+            if (!stacked) {
+                Spacer(Modifier.width(12.dp))
+                Panel(Modifier.width(car.secondary.value.dp * 16f).fillMaxHeight(), padding = 6.dp) { AllTimeAverage(totals, Modifier.fillMaxSize()) }
             }
+        }
+        if (stacked) {
+            Spacer(Modifier.height(8.dp))
+            Panel(Modifier.fillMaxWidth().height(car.secondary.lineDp() + 20.dp), padding = 6.dp) { AllTimeAverage(totals, Modifier.fillMaxSize(), oneLine = true) }
         }
         Spacer(Modifier.height(12.dp))
         Box(Modifier.weight(1f)) {
             when (tab) {
                 FuelTab.Current -> CurrentTab()
                 FuelTab.History -> HistoryTab()
-                FuelTab.Refills -> RefillsTab()
-                FuelTab.Style -> StyleTab()
+                FuelTab.Refills -> ScrollWhenLow(470.dp) { RefillsTab() }
+                FuelTab.Style -> ScrollWhenLow(380.dp) { StyleTab() }
                 FuelTab.Trips -> TripsTab()
             }
         }
+    }
+}
+
+/** All the trips' average: the name over the figure, or in one line beside it. */
+@Composable
+private fun AllTimeAverage(sums: Pair<Double, Double>?, modifier: Modifier, oneLine: Boolean = false) {
+    val car = LocalCar.current
+    val figure = when {
+        sums == null -> ""
+        sums.first > 1 -> fmt(kg.forester.sg.data.DistanceUnits.consumption(sums.second / sums.first * 100)) + " " + kg.forester.sg.data.DistanceUnits.consumptionUnitLong
+        // no mileage yet: show what was burned instead of a dash
+        else -> fmt(sums.second, 1) + " л · пробега пока нет"
+    }
+    // the panel is low: the "i" sits at the end of the row, not in a header row
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        if (oneLine) {
+            FitText("Средний расход за всё время", car.secondary, Modifier.weight(1f), C.Sub)
+            Spacer(Modifier.width(8.dp))
+            T(figure, car.secondary, weight = FontWeight.Bold, maxLines = 1)
+        } else Column(Modifier.weight(1f)) {
+            FitText("Средний за всё время", car.secondary, Modifier.fillMaxWidth(), C.Sub)
+            FitText(figure, car.secondary, Modifier.fillMaxWidth(), weight = FontWeight.Bold)
+        }
+        InfoButton("Средний расход (весь период)")
     }
 }
 
@@ -116,8 +143,14 @@ private fun CurrentTab() {
     val trip = ts.trip
     val tank = Repo.settings.tankL
 
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.weight(1.25f).fillMaxWidth()) {
+    val car = LocalCar.current
+    val line = car.secondary.asDp()
+    // the panels share the height if it holds what they show at this size of text; otherwise the tab scrolls
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+    val topH = maxOf((maxHeight - 12.dp) * (1.25f / 2.25f), line * 16f)
+    val bottomH = maxOf((maxHeight - 12.dp) * (1f / 2.25f), line * 14f)
+    Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+        Row(Modifier.height(topH).fillMaxWidth()) {
             Panel(Modifier.weight(1.05f).fillMaxHeight()) {
                 PanelTitle(Lucide.Fuel, "Текущий расход")
                 Row(Modifier.fillMaxSize()) {
@@ -125,14 +158,11 @@ private fun CurrentTab() {
                         val per100 = ts.instPer100
                         RingGauge(
                             ((per100 ?: 0.0) / 20.0).toFloat(),
-                            if (per100 != null) fmt(per100) else fmt(ts.instLh),
-                            if (per100 != null) "л/100 км" else "л/ч · стоянка",
+                            if (per100 != null) fmt(kg.forester.sg.data.DistanceUnits.consumption(per100)) else fmt(ts.lhNow),
+                            if (per100 != null) kg.forester.sg.data.DistanceUnits.consumptionUnitLong else "л/ч · стоянка",
                             Modifier.weight(1f).fillMaxWidth(),
                         )
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            T("Мгновенный  ", 13.sp, C.Sub)
-                            T("${fmt(ts.instLh)} л/ч", 16.sp, weight = FontWeight.SemiBold)
-                        }
+                        FitText("Мгновенный ${fmt(ts.lhNow)} л/ч", car.secondary, color = C.Sub)
                         // an ECU without a usable MAF: say how the number comes about (or why there is none)
                         val live by Repo.live.collectAsState()
                         if ((live.rpm ?: 0) > 300 && live.mafGs == null && live.fuelRateLh == null) {
@@ -141,14 +171,14 @@ private fun CurrentTab() {
                             if (inj && kg.forester.sg.data.CanEcu.active)
                                 T("Расход по времени впрыска (у Link нет MAF). Точнее станет после 1–2 заправок до полного", 11.sp, C.Sub, maxLines = 2)
                             else T(if (inj) "ЭБУ не отдаёт MAF: расход по форсункам, уточнится по заправкам"
-                                else "ЭБУ не отдаёт ни MAF, ни время впрыска: расход не считается", 11.sp, C.Orange, maxLines = 2)
+                                else "ЭБУ не отдаёт ни MAF, ни время впрыска: расход не считается", 11.sp, C.Orange, maxLines = 3)
                         }
                     }
                     Spacer(Modifier.width(12.dp))
-                    Column(Modifier.width(210.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Tile(Lucide.Milestone, "Запас хода", fmt(ts.rangeKm, 0), "км", Modifier.fillMaxWidth().weight(1f))
+                    Column(Modifier.width(line * 11.5f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Tile(Lucide.Milestone, "Запас хода", fmt(kg.forester.sg.data.DistanceUnits.distance(ts.rangeKm), 0), kg.forester.sg.data.DistanceUnits.distanceUnit, Modifier.fillMaxWidth().weight(1f))
                         Box(Modifier.fillMaxWidth().weight(1.25f).clip(RoundedCornerShape(12.dp)).background(C.CardHi)) {
-                            val leftTitle = if (ts.fuelFromSensor) "Осталось (датчик)" else "Осталось топлива"
+                            val leftTitle = if (ts.fuelFromSensor) "Осталось (датчик)" else "Осталось"
                             // shrunk as a whole when a big UI scale doesn't leave room for every line (the «62%» was cut)
                             ShrinkToFit(Modifier.fillMaxSize().padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 4.dp)) {
                             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -161,9 +191,11 @@ private fun CurrentTab() {
                                             T(fmt(ts.fuelLeftL, 0), 20.sp, weight = FontWeight.Bold)
                                             T(" л", 12.sp, C.Sub, modifier = Modifier.padding(bottom = 3.dp))
                                             Spacer(Modifier.weight(1f))
-                                            // fuel used since the last refill, on the same line so the tile never overflows
-                                            T("с заправки ${fmt(Repo.settings.usedSinceRefillL)} л", 11.sp, C.Sub, maxLines = 1,
-                                                modifier = Modifier.padding(bottom = 3.dp))
+                                            // fuel used since the last refill, in two short lines: in one it was cut and ran into the number
+                                            Column(horizontalAlignment = Alignment.End) {
+                                                T("с заправки", 10.sp, C.Sub, maxLines = 1)
+                                                T("${fmt(Repo.settings.usedSinceRefillL)} л", 10.sp, C.Sub, maxLines = 1)
+                                            }
                                         }
                                     }
                                 }
@@ -184,9 +216,9 @@ private fun CurrentTab() {
                             InfoButton(leftTitle, "Осталось топлива", Modifier.align(Alignment.TopEnd))
                         }
                         if (trip != null && trip.per100 == null && trip.durationS > 30) {
-                            Tile(Lucide.Gauge, "Средний (стоянка)", fmt(trip.fuelL / (trip.durationS / 3600.0)), "л/ч", Modifier.fillMaxWidth().weight(1f))
+                            Tile(Lucide.Gauge, "На стоянке", fmt(trip.fuelL / (trip.durationS / 3600.0)), "л/ч", Modifier.fillMaxWidth().weight(1f), info = "Средний (стоянка)")
                         } else {
-                            Tile(Lucide.Gauge, "Средний (поездка)", fmt(trip?.per100), "л/100 км", Modifier.fillMaxWidth().weight(1f))
+                            Tile(Lucide.Gauge, "За поездку", fmt(kg.forester.sg.data.DistanceUnits.consumption(trip?.per100)), kg.forester.sg.data.DistanceUnits.consumptionUnitLong, Modifier.fillMaxWidth().weight(1f), info = "Средний (поездка)")
                         }
                     }
                 }
@@ -195,13 +227,22 @@ private fun CurrentTab() {
             ChartPanel(version, Modifier.weight(1f).fillMaxHeight())
         }
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.weight(1f).fillMaxWidth()) {
-            TripInfoPanel(trip, Modifier.weight(1.05f).fillMaxHeight())
-            Spacer(Modifier.width(12.dp))
-            ModesPanel(trip, Modifier.weight(0.75f).fillMaxHeight())
-            Spacer(Modifier.width(12.dp))
-            RecentTripsPanel(version, Modifier.weight(0.75f).fillMaxHeight())
+        // a small screen: the six tiles over the whole width, or their names don't fit
+        if (car.small) {
+            TripInfoPanel(trip, Modifier.height(bottomH).fillMaxWidth())
+            Spacer(Modifier.height(12.dp))
         }
+        val lowerOn = rememberLater()
+        if (lowerOn) Row(Modifier.height(bottomH).fillMaxWidth()) {
+            if (!car.small) {
+                TripInfoPanel(trip, Modifier.weight(1.05f).fillMaxHeight())
+                Spacer(Modifier.width(12.dp))
+            }
+            ModesPanel(trip, Modifier.weight(if (car.small) 1f else 0.75f).fillMaxHeight())
+            Spacer(Modifier.width(12.dp))
+            RecentTripsPanel(version, Modifier.weight(if (car.small) 1f else 0.75f).fillMaxHeight())
+        }
+    }
     }
 }
 
@@ -239,37 +280,43 @@ private fun ChartPanel(version: Long, modifier: Modifier) {
     var range by remember { mutableStateOf(Range.H1) }
     var tick by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) { while (true) { delay(10_000); tick++ } }
-    // the first query is made at once (no empty chart on opening), the later ones off the main thread (every 10 s,
-    // while the service writes to the same database); the chart keeps the last result until the new one is in
-    var data by remember { mutableStateOf(chartData(range)) }
+    // off the main thread (every 10 s, while the service writes to the same database): the panel stands empty until the
+    // first result, and the chart keeps the last one until the new one is in
+    var data by remember { mutableStateOf(Triple(emptyList<Float?>(), null as Float?, 0L)) }
     LaunchedEffect(range, version, tick) { data = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { chartData(range) } }
     Panel(modifier) {
-        PanelTitle(Lucide.ChartColumn, "Динамика расхода") {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        PanelTitle(Lucide.ChartColumn, "Динамика расхода")
+        Spacer(Modifier.height(6.dp))
+        run {
+            // its own row: beside the name, at a larger text, they squeezed it to a letter a line
+            Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Range.entries.forEach { r ->
                     // the chip keeps its look and its place in the title row; the area that takes the tap is 48 dp tall
                     TapTarget({ range = r }) {
                         Box(
                             Modifier.clip(RoundedCornerShape(8.dp))
-                                .background(if (r == range) C.Purple.copy(alpha = 0.3f) else C.CardHi)
+                                .background(if (r == range) C.selectFill(C.Purple.copy(alpha = 0.3f)) else C.idleFill(C.CardHi))
                                 .padding(horizontal = 14.dp, vertical = 7.dp)
-                        ) { T(r.title, 13.sp, if (r == range) C.Text else C.Sub) }
+                        ) { T(r.title, 13.sp, if (r == range) C.selectText(C.Text) else C.Sub) }
                     }
                 }
             }
         }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            T("л/100 км", 12.sp, C.Sub, modifier = Modifier.weight(1f))
+            FitText(kg.forester.sg.data.DistanceUnits.consumptionUnitLong, LocalCar.current.secondary, Modifier.weight(1f), C.Sub)
             Box(Modifier.size(8.dp).clip(CircleShape).background(C.Violet))
-            T(" Мгновенный   ", 12.sp, C.Sub)
-            T("- - Средний ${fmtF(data.second)}", 12.sp, C.Sub)
+            T(" Сейчас   ", 12.sp, C.Sub, maxLines = 1)
+            T("- - Средний ${fmtF(data.second?.let { kg.forester.sg.data.DistanceUnits.consumption(it.toDouble()).toFloat() })}", 12.sp, C.Sub, maxLines = 1)
         }
         Row(Modifier.fillMaxSize().padding(top = 6.dp)) {
-            Column(Modifier.fillMaxHeight().width(26.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                listOf("30", "20", "10", "0").forEach { T(it, 11.sp, C.Sub) }
+            Column(Modifier.fillMaxHeight().width(roomFor(26.dp, 11f)), verticalArrangement = Arrangement.SpaceBetween) {
+                (if (kg.forester.sg.data.DistanceUnits.miles) listOf("60", "40", "20", "0") else listOf("30", "20", "10", "0")).forEach { T(it, 11.sp, C.Sub, maxLines = 1) }
             }
-            AreaChart(data.first, 30f, data.second, Modifier.weight(1f).fillMaxHeight())
+            AreaChart(
+                data.first.map { v -> v?.let { kg.forester.sg.data.DistanceUnits.consumption(it.toDouble()).toFloat() } }, kg.forester.sg.data.DistanceUnits.top(kg.forester.sg.data.DistanceUnits.Kind.CONSUMPTION, 30f),
+                data.second?.let { kg.forester.sg.data.DistanceUnits.consumption(it.toDouble()).toFloat() }, Modifier.weight(1f).fillMaxHeight(),
+            )
         }
     }
 }
@@ -292,14 +339,14 @@ private fun TripInfoPanel(trip: Trip?, modifier: Modifier) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val (dv, du) = if (dur < 3600) "${dur / 60}" to "мин" else "%d:%02d".format(dur / 3600, dur / 60 % 60) to "ч"
                 Tile(Lucide.Clock, "В пути", if (trip == null) "—" else dv, du, Modifier.weight(1f).fillMaxHeight())
-                Tile(Lucide.Activity, "Пробег", fmt(trip?.distanceKm), "км", Modifier.weight(1f).fillMaxHeight())
-                Tile(Lucide.Gauge, "Средняя", fmt(trip?.avgSpeed, 0), "км/ч", Modifier.weight(1f).fillMaxHeight(), info = "Ср. скорость")
+                Tile(Lucide.Activity, kg.forester.sg.data.I18n.pick("Пробег", "Dist."), fmt(kg.forester.sg.data.DistanceUnits.distance(trip?.distanceKm)), kg.forester.sg.data.DistanceUnits.distanceUnit, Modifier.weight(1f).fillMaxHeight(), info = "Пробег")
+                Tile(Lucide.Gauge, kg.forester.sg.data.I18n.pick("Ср.", "Avg"), fmt(kg.forester.sg.data.DistanceUnits.speed(trip?.avgSpeed), 0), kg.forester.sg.data.DistanceUnits.speedUnit, Modifier.weight(1f).fillMaxHeight(), info = "Ср. скорость")
             }
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (trip != null && trip.per100 == null && trip.durationS > 30) {
                     Tile(Lucide.Fuel, "Ср. расход", fmt(trip.fuelL / (trip.durationS / 3600.0)), "л/ч", Modifier.weight(1f).fillMaxHeight())
                 } else {
-                    Tile(Lucide.Fuel, "Ср. расход", fmt(trip?.per100), "л/100", Modifier.weight(1f).fillMaxHeight())
+                    Tile(Lucide.Fuel, "Ср. расход", fmt(kg.forester.sg.data.DistanceUnits.consumption(trip?.per100)), kg.forester.sg.data.DistanceUnits.consumptionUnit, Modifier.weight(1f).fillMaxHeight())
                 }
                 Tile(Lucide.Droplet, "Топливо", fmt(trip?.fuelL), "л", Modifier.weight(1f).fillMaxHeight())
                 Tile(Lucide.Banknote, "Стоимость", fmt(trip?.fuelL?.times(price), 0), Repo.settings.currency, Modifier.weight(1f).fillMaxHeight())
@@ -312,7 +359,7 @@ private fun TripInfoPanel(trip: Trip?, modifier: Modifier) {
 private fun ModesPanel(trip: Trip?, modifier: Modifier) {
     // Current trip if it has data, otherwise all trips. Shares are by fuel burned.
     val version by Repo.dataVersion.collectAsState()
-    val all = remember(version) { Repo.db.trips(500) }
+    val all = rememberQuery(version) { Repo.db.trips(500) }.value ?: emptyList()
     val src = if (trip != null && trip.fuelL > 0.2) listOf(trip) else all
     // Trips recorded before the idle mode existed put parked fuel into "city": treat 0-km trips as parked.
     val driven = src.filter { it.cityKm + it.hwyKm + it.mixKm >= 0.05 }
@@ -324,7 +371,7 @@ private fun ModesPanel(trip: Trip?, modifier: Modifier) {
     val idleS = driven.sumOf { it.idleS } + parked.sumOf { it.durationS.toDouble() }
     val totalL = cityL + hwyL + mixL + idleL
     val totalKm = cityKm + hwyKm + mixKm
-    fun per(km: Double, l: Double) = if (km > 0.3) "${fmt(l / km * 100)} л/100 км" else "— л/100 км"
+    fun per(km: Double, l: Double) = if (km > 0.3) "${fmt(kg.forester.sg.data.DistanceUnits.consumption(l / km * 100))} ${kg.forester.sg.data.DistanceUnits.consumptionUnitLong}" else "— ${kg.forester.sg.data.DistanceUnits.consumptionUnitLong}"
     fun pct(l: Double) = if (totalL > 0) (l / totalL * 100).toInt() else 0
     Panel(modifier, padding = 12.dp) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -339,8 +386,8 @@ private fun ModesPanel(trip: Trip?, modifier: Modifier) {
                 )
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     if (totalKm > 0.3) {
-                        T(fmt(totalL / totalKm * 100), 22.sp, weight = FontWeight.Bold)
-                        T("л/100 км", 10.sp, C.Sub)
+                        T(fmt(kg.forester.sg.data.DistanceUnits.consumption(totalL / totalKm * 100)), 22.sp, weight = FontWeight.Bold)
+                        T(kg.forester.sg.data.DistanceUnits.consumptionUnitLong, 10.sp, C.Sub)
                     } else {
                         T(fmt(totalL, 2), 22.sp, weight = FontWeight.Bold)
                         T("литров", 10.sp, C.Sub)
@@ -367,10 +414,10 @@ private fun ModeRow(name: String, color: Color, detail: String, pct: Int) {
     Row(verticalAlignment = Alignment.Top) {
         Box(Modifier.padding(top = 5.dp).size(9.dp).clip(CircleShape).background(color))
         Spacer(Modifier.width(8.dp))
-        Column(Modifier.width(118.dp)) {
+        Column(Modifier.width(roomFor(118.dp, 13f))) {
             Row {
                 T(name, 13.sp, modifier = Modifier.weight(1f), maxLines = 1)
-                T("$pct%", 13.sp, color, FontWeight.SemiBold)
+                T("$pct%", 13.sp, if (color == C.Gray) C.Sub else color, FontWeight.SemiBold)
             }
             T(detail, 11.sp, C.Sub, maxLines = 1)
         }
@@ -379,14 +426,15 @@ private fun ModeRow(name: String, color: Color, detail: String, pct: Int) {
 
 @Composable
 private fun RecentTripsPanel(version: Long, modifier: Modifier) {
-    val trips = remember(version) { Repo.db.trips(4) }
+    val read = rememberQuery(version) { Repo.db.trips(4) }.value
+    val trips = read ?: emptyList()
     Panel(modifier, padding = 12.dp) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             T("Последние поездки", 16.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             InfoButton("Последние поездки")
         }
         Spacer(Modifier.height(8.dp))
-        if (trips.isEmpty()) T("Пока нет поездок", 13.sp, C.Sub)
+        if (read != null && trips.isEmpty()) T("Пока нет поездок", 13.sp, C.Sub)
         var open by remember { mutableStateOf<Trip?>(null) }
         trips.forEach { TripRow(it) { open = it }; Spacer(Modifier.height(5.dp)) }
         open?.let { TripDialog(it) { open = null } }
@@ -412,9 +460,9 @@ private fun TripDialog(t: Trip, onClose: () -> Unit) {
     val d = t.durationS
     val parked = t.per100 == null
     val cur = Repo.settings.currency
-    androidx.compose.material3.AlertDialog(
+    CarAlertDialog(
         onDismissRequest = onClose,
-        containerColor = C.Card, titleContentColor = C.Text, textContentColor = C.Text,
+        containerColor = C.Card, titleContentColor = C.Text, textContentColor = C.Text, textScrolls = false,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(38.dp).clip(CircleShape).background(C.Blue.copy(alpha = 0.18f)), contentAlignment = Alignment.Center) {
@@ -429,7 +477,7 @@ private fun TripDialog(t: Trip, onClose: () -> Unit) {
             }
         },
         text = {
-            Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.cueScroll(C.Card), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 @Composable
                 fun row(vararg items: Triple<androidx.compose.ui.graphics.vector.ImageVector, String, String>) =
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -445,12 +493,12 @@ private fun TripDialog(t: Trip, onClose: () -> Unit) {
                         }
                     }
                 row(
-                    Triple(Lucide.Activity, "Пробег", "${fmt(t.distanceKm)} км"),
+                    Triple(Lucide.Activity, "Пробег", "${fmt(kg.forester.sg.data.DistanceUnits.distance(t.distanceKm))} ${kg.forester.sg.data.DistanceUnits.distanceUnit}"),
                     Triple(Lucide.Droplet, "Топливо", "${fmt(t.fuelL, 2)} л"),
-                    Triple(Lucide.Fuel, "Расход", t.per100?.let { "${fmt(it)} л/100" } ?: if (d > 30) "${fmt(t.fuelL / (d / 3600.0))} л/ч" else "—"),
+                    Triple(Lucide.Fuel, "Расход", t.per100?.let { "${fmt(kg.forester.sg.data.DistanceUnits.consumption(it))} ${kg.forester.sg.data.DistanceUnits.consumptionUnit}" } ?: if (d > 30) "${fmt(t.fuelL / (d / 3600.0))} л/ч" else "—"),
                 )
                 row(
-                    Triple(Lucide.Gauge, "Средняя скорость", if (parked) "—" else "${fmt(t.avgSpeed, 0)} км/ч"),
+                    Triple(Lucide.Gauge, "Средняя скорость", if (parked) "—" else "${fmt(kg.forester.sg.data.DistanceUnits.speed(t.avgSpeed), 0)} ${kg.forester.sg.data.DistanceUnits.speedUnit}"),
                     Triple(Lucide.Banknote, "Стоимость", "${fmt(t.fuelL * Repo.settings.pricePerL, 0)} $cur"),
                     Triple(Lucide.Clock, "На холостых", "${(t.idleS / 60).toInt()} мин · ${fmt(t.idleL, 2)} л"),
                 )
@@ -464,9 +512,9 @@ private fun TripDialog(t: Trip, onClose: () -> Unit) {
                     listOf(Triple("Город", t.cityKm, t.cityL), Triple("Трасса", t.hwyKm, t.hwyL), Triple("Смешанный", t.mixKm, t.mixL))
                         .filter { it.second > 0.05 }.forEach { (name, km, l) ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                T(name, 13.sp, modifier = Modifier.width(100.dp))
-                                T("${fmt(km)} км", 13.sp, C.Sub, modifier = Modifier.width(80.dp))
-                                T(if (km > 0.3) "${fmt(l / km * 100)} л/100 км" else "${fmt(l, 2)} л", 13.sp, weight = FontWeight.SemiBold)
+                                T(name, 13.sp, modifier = Modifier.width(roomFor(100.dp, 13f)), maxLines = 1)
+                                T("${fmt(kg.forester.sg.data.DistanceUnits.distance(km))} ${kg.forester.sg.data.DistanceUnits.distanceUnit}", 13.sp, C.Sub, modifier = Modifier.width(roomFor(80.dp, 13f)), maxLines = 1)
+                                T(if (km > 0.3) "${fmt(kg.forester.sg.data.DistanceUnits.consumption(l / km * 100))} ${kg.forester.sg.data.DistanceUnits.consumptionUnitLong}" else "${fmt(l, 2)} л", 13.sp, weight = FontWeight.SemiBold)
                             }
                         }
                 }
@@ -484,10 +532,10 @@ private fun TripDialog(t: Trip, onClose: () -> Unit) {
                 }
             }
         },
-        confirmButton = { androidx.compose.material3.TextButton(onClose) { androidx.compose.material3.Text("Закрыть", color = C.Violet) } },
+        confirmButton = { androidx.compose.material3.TextButton(onClose) { Text("Закрыть", color = C.Violet) } },
     )
     viewing?.let { f ->
-        androidx.compose.ui.window.Dialog({ viewing = null }, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        CarDialog({ viewing = null }, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
             Box(Modifier.fillMaxSize().background(C.Bg).padding(12.dp)) { LogViewer(f) { viewing = null } }
         }
     }
@@ -504,10 +552,10 @@ private fun TripRow(t: Trip, onClick: () -> Unit) {
     ) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.Bottom) {
-                T(if (parked) fmt(t.fuelL, 2) else fmt(t.per100), 16.sp, weight = FontWeight.Bold, maxLines = 1)
-                T(if (parked) " л" else " л/100 км", 11.sp, C.Sub, maxLines = 1, modifier = Modifier.padding(bottom = 2.dp))
+                T(if (parked) fmt(t.fuelL, 2) else fmt(kg.forester.sg.data.DistanceUnits.consumption(t.per100)), 16.sp, weight = FontWeight.Bold, maxLines = 1)
+                T(if (parked) " л" else " " + kg.forester.sg.data.DistanceUnits.consumptionUnitLong, 11.sp, C.Sub, maxLines = 1, modifier = Modifier.padding(bottom = 2.dp))
             }
-            val km = if (parked) "стоянка" else "${fmt(t.distanceKm, 0)} км"
+            val km = if (parked) "стоянка" else "${fmt(kg.forester.sg.data.DistanceUnits.distance(t.distanceKm), 0)} ${kg.forester.sg.data.DistanceUnits.distanceUnit}"
             T("${dayLabel(t.startMs)} · $km · %d:%02d".format(d / 3600, d / 60 % 60), 11.sp, C.Sub, maxLines = 1)
         }
         val icon = when {
@@ -526,41 +574,42 @@ private fun TripRow(t: Trip, onClick: () -> Unit) {
 @Composable
 private fun HistoryTab() {
     val version by Repo.dataVersion.collectAsState()
-    val days = remember(version) {
+    val read = rememberQuery(version) {
         val now = System.currentTimeMillis()
         val from = startOfDay(now) - 29 * 86_400_000L
         Repo.db.buckets(from, 86_400_000L, java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()).toLong()).filter { it.km > 0.1 || it.fuelL > 0.05 }.reversed()
-    }
+    }.value
+    val days = read ?: emptyList()
     Panel(Modifier.fillMaxSize()) {
         PanelTitle(Lucide.FileText, "История за 30 дней")
         Spacer(Modifier.height(8.dp))
-        HeaderRow(listOf("Дата", "Пробег, км", "Топливо, л", "Расход, л/100", "Стоимость, ${Repo.settings.currency}"))
+        HeaderRow(listOf("Дата", kg.forester.sg.data.DistanceUnits.label("Пробег, км"), "Топливо, л", kg.forester.sg.data.DistanceUnits.label("Расход, л/100"), "Стоимость, ${Repo.settings.currency}"))
         LazyColumn {
             items(days) { b ->
                 val per = if (b.km > 0.5) b.fuelL / b.km * 100 else null
                 DataRow(
                     listOf(
                         SimpleDateFormat("dd.MM.yyyy, EE", Locale("ru")).format(Date(b.timeMs)),
-                        fmt(b.km), fmt(b.fuelL), fmt(per), fmt(b.fuelL * Repo.settings.pricePerL, 0)
+                        fmt(kg.forester.sg.data.DistanceUnits.distance(b.km)), fmt(b.fuelL), fmt(kg.forester.sg.data.DistanceUnits.consumption(per)), fmt(b.fuelL * Repo.settings.pricePerL, 0)
                     )
                 )
             }
         }
-        if (days.isEmpty()) T("Данных пока нет", 14.sp, C.Sub)
+        if (read != null && days.isEmpty()) T("Данных пока нет", 14.sp, C.Sub)
     }
 }
 
 @Composable
 private fun RefillsTab() {
     val version by Repo.dataVersion.collectAsState()
-    val refills = remember(version) { Repo.db.refills() }
+    val refills = rememberQuery(version) { Repo.db.refills() }.value ?: emptyList()
     var liters by remember { mutableStateOf("") }
     var price by remember { mutableStateOf(fmt(Repo.settings.pricePerL, 1)) }
     var full by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf("") }
 
     Row(Modifier.fillMaxSize()) {
-        Panel(Modifier.width(380.dp).fillMaxHeight()) {
+        Panel(Modifier.width(roomFor(380.dp, 16f)).fillMaxHeight()) {
             PanelTitle(Lucide.Fuel, "Новая заправка")
             Spacer(Modifier.height(12.dp))
             NumField("Сколько залил, литров", liters) { liters = it }
@@ -661,13 +710,15 @@ object RefillLogic {
 private fun StyleTab() {
     val ts by Repo.trip.collectAsState()
     val version by Repo.dataVersion.collectAsState()
-    val last = remember(version) { Repo.db.trips(1).firstOrNull() }
+    val read = rememberQuery(version) { Repo.db.trips(1) }.value
+    val last = read?.firstOrNull()
     val t = ts.trip?.takeIf { it.durationS > 60 } ?: last
     Panel(Modifier.fillMaxSize()) {
         PanelTitle(Lucide.Gauge, if (t === ts.trip) "Стиль вождения — текущая поездка" else "Стиль вождения — последняя поездка")
         Spacer(Modifier.height(16.dp))
         if (t == null) {
-            T("Нет данных", 14.sp, C.Sub); return@Panel
+            if (read != null) T("Нет данных", 14.sp, C.Sub)
+            return@Panel
         }
         val idlePct = if (t.durationS > 0) t.idleS / t.durationS * 100 else 0.0
         // events per hour, but a short trip counts as at least 30 min: one hard stop on a 5-min run is not -48
@@ -692,19 +743,19 @@ private fun StyleTab() {
 @Composable
 private fun TripsTab() {
     val version by Repo.dataVersion.collectAsState()
-    val trips = remember(version) { Repo.db.trips(300) }
+    val trips = rememberQuery(version) { Repo.db.trips(300) }.value ?: emptyList()
     Panel(Modifier.fillMaxSize()) {
         PanelTitle(Lucide.Route, "Все поездки")
         Spacer(Modifier.height(8.dp))
-        HeaderRow(listOf("Начало", "Время", "Пробег, км", "Топливо, л", "л/100", "Ср. скорость", "Город/Трасса"))
+        HeaderRow(listOf("Начало", "Время", kg.forester.sg.data.DistanceUnits.label("Пробег, км"), "Топливо, л", kg.forester.sg.data.DistanceUnits.consumptionUnit, "Ср. скорость", "Город/Трасса"))
         LazyColumn {
             items(trips) { t ->
                 val d = t.durationS
                 val tot = (t.cityKm + t.hwyKm + t.mixKm).coerceAtLeast(0.001)
                 DataRow(
                     listOf(
-                        dayLabel(t.startMs), "%d:%02d".format(d / 3600, d / 60 % 60), fmt(t.distanceKm), fmt(t.fuelL),
-                        fmt(t.per100), fmt(t.avgSpeed, 0), "${(t.cityKm / tot * 100).toInt()}% / ${(t.hwyKm / tot * 100).toInt()}%"
+                        dayLabel(t.startMs), "%d:%02d".format(d / 3600, d / 60 % 60), fmt(kg.forester.sg.data.DistanceUnits.distance(t.distanceKm)), fmt(t.fuelL),
+                        fmt(kg.forester.sg.data.DistanceUnits.consumption(t.per100)), fmt(kg.forester.sg.data.DistanceUnits.speed(t.avgSpeed), 0), "${(t.cityKm / tot * 100).toInt()}% / ${(t.hwyKm / tot * 100).toInt()}%"
                     )
                 )
             }

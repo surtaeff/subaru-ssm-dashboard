@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -44,7 +43,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.*
 import kg.forester.sg.service.AudioFx
@@ -58,11 +56,11 @@ import kg.forester.sg.service.AudioFx
 internal fun SoundDialog(onClose: () -> Unit) {
     val cfg by AudioFx.cfg.collectAsState()
     val hz by AudioFx.bandsHz.collectAsState()
-    Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
+    CarDialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
-            Modifier.width(900.dp).heightIn(max = 600.dp).clip(RoundedCornerShape(20.dp))
-                .background(C.Card).background(Brush.verticalGradient(listOf(C.Violet.copy(alpha = 0.14f), C.Card, C.Card)))
-                .border(1.dp, C.Border, RoundedCornerShape(20.dp)).verticalScroll(rememberScrollState()).padding(20.dp),
+            Modifier.width(900.dp).heightIn(max = minOf(600f, canvasScreen().screenHeightDp * 0.94f).dp).clip(RoundedCornerShape(20.dp))
+                .background(C.Sheet).background(Brush.verticalGradient(listOf(C.Violet.copy(alpha = 0.14f), C.Sheet, C.Sheet)))
+                .border(1.dp, C.Border, RoundedCornerShape(20.dp)).padding(20.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T("Звук", 20.sp, weight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -71,6 +69,8 @@ internal fun SoundDialog(onClose: () -> Unit) {
                 Pill("Готово", Lucide.Check, true, 38.dp, onClose)
             }
             Spacer(Modifier.height(12.dp))
+            // «Готово» stays in sight, the rest scrolls
+            Column(Modifier.weight(1f, fill = false).cueScroll(null)) {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 (AudioFx.PRESETS.keys + if (cfg.preset == "Свой") listOf("Свой") else emptyList()).forEach { name ->
                     Pill(name, null, cfg.preset == name, 40.dp) { if (name != "Свой") AudioFx.setPreset(name) }
@@ -82,7 +82,7 @@ internal fun SoundDialog(onClose: () -> Unit) {
                 Box(
                     Modifier.weight(1.4f).fillMaxHeight().clip(RoundedCornerShape(16.dp)).background(C.CardHi.copy(alpha = 0.7f)).padding(12.dp),
                 ) {
-                    if (hz.isEmpty()) T("Эквалайзер появится, когда плеер начнёт играть (на этой магнитоле его может не быть).", 13.sp, C.Sub)
+                    if (hz.isEmpty()) SettingHint("Эквалайзер появится, когда плеер начнёт играть (на этой магнитоле его может не быть).")
                     else Bands(hz, cfg.bands)
                 }
                 // effects
@@ -95,7 +95,7 @@ internal fun SoundDialog(onClose: () -> Unit) {
             Spacer(Modifier.height(12.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Toggle("Громкость по скорости",
-                    "Громче на трассе, тише в пробке: до +6 дБ к 130 км/ч" + if (AudioFx.speedBoostDb > 0) " · сейчас +%.1f".format(AudioFx.speedBoostDb) else "",
+                    kg.forester.sg.data.DistanceUnits.prose("Громче на трассе, тише в пробке: до +6 дБ к 130 км/ч") + if (AudioFx.speedBoostDb > 0) " · сейчас +%.1f".format(AudioFx.speedBoostDb) else "",
                     cfg.speedVolume) { on -> AudioFx.update { it.copy(speedVolume = on) } }
                 Toggle("Плавное начало", "Музыка нарастает за секунду, без удара по ушам", cfg.fadeIn) { on -> AudioFx.update { it.copy(fadeIn = on) } }
             }
@@ -108,6 +108,7 @@ internal fun SoundDialog(onClose: () -> Unit) {
                 listOf("off" to "Нет", "bars" to "Столбики", "wave" to "Волна").forEach { (id, name) ->
                     Pill(name, null, cfg.vis == id, 38.dp) { AudioFx.update { it.copy(vis = id) } }
                 }
+            }
             }
         }
     }
@@ -166,7 +167,7 @@ private fun Bands(hz: List<Float>, bands: List<Float>) {
                             val zero = size.height * (1 - (0 - lo) / (hi - lo))
                             val y = size.height * (1 - (db - lo) / (hi - lo))
                             drawRoundRect(Brush.verticalGradient(listOf(violet, second)), Offset(x, minOf(y, zero)), Size(w, kotlin.math.abs(zero - y).coerceAtLeast(2f)), CornerRadius(w / 2))
-                            drawCircle(Color.White, 11.dp.toPx(), Offset(size.width / 2, y))
+                            drawCircle(C.Ink, 11.dp.toPx(), Offset(size.width / 2, y))
                             drawCircle(violet, 6.dp.toPx(), Offset(size.width / 2, y))
                         }
                     }
@@ -191,27 +192,22 @@ private fun Knob(title: String, sub: String, value: Float, enabled: Boolean, onC
         Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(C.CardHi.copy(alpha = 0.7f)).padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            T(title, 15.sp, if (enabled) C.Text else C.Sub, FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            T(if (enabled) sub else "нет на этой магнитоле", 12.sp, C.Sub)
+            // the name whole, whatever is beside it takes what's left: squeezed, the name went a letter a line
+            T(title, 15.sp, if (enabled) C.Text else C.Sub, FontWeight.SemiBold, maxLines = 1)
+            Spacer(Modifier.width(8.dp))
+            FitText(if (enabled) sub else "нет на этой магнитоле", LocalCar.current.secondary, Modifier.weight(1f), C.Sub, textAlign = androidx.compose.ui.text.style.TextAlign.End)
         }
         Slider(
             value = value.coerceIn(0f, 1f), onValueChange = onChange, enabled = enabled,
             modifier = Modifier.fillMaxWidth().height(32.dp),
-            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = C.Violet, inactiveTrackColor = C.Border),
+            colors = SliderDefaults.colors(thumbColor = C.Ink, activeTrackColor = C.Violet, inactiveTrackColor = C.Border),
         )
     }
 }
 
 @Composable
 private fun Toggle(title: String, sub: String, on: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.width(420.dp).clip(RoundedCornerShape(14.dp)).background(C.CardHi.copy(alpha = 0.7f)).padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            T(title, 15.sp, weight = FontWeight.SemiBold)
-            T(sub, 12.sp, C.Sub, maxLines = 2)
-        }
-        Switch(on, onChange, colors = SwitchDefaults.colors(checkedTrackColor = C.Violet, checkedThumbColor = Color.White))
+    Box(Modifier.width(420.dp).clip(RoundedCornerShape(14.dp)).background(C.CardHi.copy(alpha = 0.7f)).padding(horizontal = 14.dp, vertical = 4.dp)) {
+        SwitchRow(title, sub, on, onChange = onChange)
     }
 }

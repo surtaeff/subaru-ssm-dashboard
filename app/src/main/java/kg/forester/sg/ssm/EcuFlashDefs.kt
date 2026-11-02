@@ -35,7 +35,7 @@ object EcuFlashDefs {
     fun parse(text: String): Rom? = runCatching {
         val xp = XmlPullParserFactory.newInstance().newPullParser()
         runCatching { xp.setFeature("http://xmlpull.org/v1/doc/features.html#relaxed", true) }
-        xp.setInput(StringReader(text.removePrefix("﻿").replace(Regex("""<\?xml\s[^>]*\?>"""), "")))
+        xp.setInput(StringReader(text.removePrefix("\uFEFF").replace(Regex("""<\?xml\s[^>]*\?>"""), "")))
         var ecuId = ""; var xmlId = ""; var include = ""
         val scalings = HashMap<String, Pair<String, String>>() // name → storage, toexpr
         class T(val addr: String?, val elements: Int?, val scaling: String?)

@@ -1,6 +1,5 @@
 package kg.forester.sg.ui
 
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.size
@@ -45,6 +44,7 @@ import com.composables.icons.lucide.Car
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Usb
 import kg.forester.sg.data.Repo
+import kotlinx.coroutines.launch
 import kg.forester.sg.ssm.SsmTrace
 
 private val adapters = listOf(
@@ -79,7 +79,7 @@ private val buses = listOf("auto" to "Авто", "kline" to "K-Line", "can" to "
 /** Settings tab: the car (from its ECU), own name, gearbox, 3D car, diagnostic adapter and bus, UI scale, exchange log. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun CarAdapterSettings() {
+fun CarAdapterSettings(onOpenLook: () -> Unit = {}) {
     val s = Repo.settings
     Repo.carVersion.collectAsState().value // re-read the settings below when they change
     val msg by Repo.linkMessage.collectAsState()
@@ -91,12 +91,9 @@ fun CarAdapterSettings() {
     val otherCar by kg.forester.sg.data.CarKind.other.collectAsState()
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var wifiHost by remember { mutableStateOf(s.wifiHost) }
-    var saved by remember { mutableStateOf("") }
-    val scale by Repo.uiScale.collectAsState()
     var adapter by remember { mutableStateOf(s.adapter) }
     var bus by remember { mutableStateOf(s.bus) }
     var title by remember { mutableStateOf(if (s.carTitleCustom) s.carTitle else "") }
-    var trace by remember { mutableStateOf(s.traceEnabled) }
     var gearbox by remember { mutableStateOf(s.gearbox) }
     var demo by remember { mutableStateOf(s.demo) }
     var awd by remember { mutableStateOf(s.awd) }
@@ -129,89 +126,27 @@ fun CarAdapterSettings() {
             Spacer(Modifier.height(14.dp))
             T("Коробка", 15.sp)
             Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 gearboxes.forEach { (k, l) -> Chip(l, gearbox == k, { gearbox = k; s.gearbox = k }) }
             }
             if (gearbox == "at" && !otherCar) {
                 Spacer(Modifier.height(10.dp))
                 T("Полный привод АКПП (для оценки перед:зад)", 13.sp, C.Sub)
                 Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("mpt" to "MP-T (перед, до 50:50)", "vtd" to "VTD (45:55)").forEach { (k, l) ->
                         Chip(l, awd == k, { awd = k; s.awd = k })
                     }
                 }
-                T("MP-T: большинство 4EAT (Forester SG, Impreza). VTD: 5EAT турбо Legacy/Outback и др.", 11.sp, C.Sub)
+                SettingHint("MP-T: большинство 4EAT (Forester SG, Impreza). VTD: 5EAT турбо Legacy/Outback и др.")
             }
-            // the 3D cars are Subarus: another make gets a plain outline on the home screen
-            if (!otherCar) {
-                Spacer(Modifier.height(16.dp))
-                T("3D-модель на главном экране", 15.sp)
-                Spacer(Modifier.height(6.dp))
-                val car3d by Repo.car3d.collectAsState()
-                val ctx = androidx.compose.ui.platform.LocalContext.current
-                // many models now: wrap onto several lines instead of running off the panel
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    CarModels3d.forEach { (k, l) -> Chip(l, car3d == k, { s.car3d = k; s.car3dCustom = true }) }
-                }
-                Spacer(Modifier.height(10.dp))
-                T("Цвет кузова", 13.sp, C.Sub)
-                Spacer(Modifier.height(6.dp))
-                val paintSel by Repo.carPaint.collectAsState()
-                val anyColour = car3dAnyColour(ctx, car3d)
-                var picker by remember { mutableStateOf(false) }
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CarPaints.forEach { cp ->
-                        val on = paintSel == cp.id
-                        val usable = anyColour || !cp.needsWhite
-                        Box(
-                            Modifier.size(34.dp).alpha(if (usable) 1f else 0.3f).clip(androidx.compose.foundation.shape.CircleShape)
-                                .background(cp.swatch)
-                                .border(if (on) 3.dp else 1.dp, if (on) C.Violet else C.Border, androidx.compose.foundation.shape.CircleShape)
-                                .clickable(enabled = usable) { s.carPaint = cp.id },
-                        )
-                    }
-                    // any colour: rainbow swatch opens the picker
-                    val custom = paintSel.startsWith("custom:")
-                    Box(
-                        Modifier.size(34.dp).clip(androidx.compose.foundation.shape.CircleShape)
-                            .background(androidx.compose.ui.graphics.Brush.sweepGradient(
-                                listOf(Color.Red, Color.Yellow, Color.Green, Color.Cyan, Color.Blue, Color.Magenta, Color.Red)))
-                            .border(if (custom) 3.dp else 1.dp, if (custom) C.Violet else C.Border, androidx.compose.foundation.shape.CircleShape)
-                            .clickable { picker = !picker },
-                    )
-                }
-                T(carPaint(paintSel).name + if (!anyColour) " · у этой модели нет белого и серебра — выберите другую 3D-модель" else "", 11.sp, C.Sub)
-                if (picker) {
-                    Spacer(Modifier.height(8.dp))
-                    ColourPicker(paintSel.removePrefix("custom:").toIntOrNull(16) ?: 0x2563EB) { rgb ->
-                        s.carPaint = "custom:%06X".format(rgb and 0xFFFFFF); picker = false
-                    }
-                }
-                if (car3dDir(ctx, car3d) == null) {
-                    Spacer(Modifier.height(4.dp))
-                    T("Модель $car3d ещё готовится, пока показывается SG5.", 11.sp, C.Orange)
-                }
-            }
+            // what the car looks like on the screens has moved to the design tab; here a way to it
             Spacer(Modifier.height(16.dp))
-            T("Масштаб интерфейса", 15.sp)
-            // a phone: from the whole layout on the screen up (MainActivity's ScaledDensity), text with it
-            val phone = kg.forester.sg.isPhone(ctx)
-            T(if (phone) "На телефоне «Авто» помещает весь экран магнитолы. Мелко: выберите больше, вырастут и шрифты. " +
-                "Размер шрифта Android тоже учитывается"
-                else "Если на вашей магнитоле цифры обрезаются или всё слишком крупное", 11.sp, C.Sub)
-            Spacer(Modifier.height(6.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                (if (phone) listOf(0 to "Авто", 115 to "115%", 130 to "130%", 145 to "145%")
-                else listOf(0 to "Авто", 80 to "80%", 90 to "90%", 100 to "100%", 110 to "110%", 120 to "120%")).forEach { (v, l) ->
-                    Chip(l, scale == v || (phone && v == 0 && scale in 1..100), { s.uiScale = v })
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            T("Цвет интерфейса", 15.sp)
-            T("Под подсветку приборов вашей машины, или любой свой. Кнопка с палитрой есть и в верхней строке", 11.sp, C.Sub)
-            Spacer(Modifier.height(6.dp))
-            ThemeChooser()
+            Chip("3D-модель, цвет и номер: Внешний вид", false, onOpenLook, Lucide.Car)
+            Spacer(Modifier.height(14.dp))
+            if (!otherCar) OilCorrectionRow()
+            SettingsSection("Топливо")
+            FuelSettings()
         }
         Panel(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())) {
             PanelTitle(Lucide.Usb, "Адаптер")
@@ -229,14 +164,16 @@ fun CarAdapterSettings() {
                 if (loggerProfile == "carberry42" && obdMode) T("В режиме OBD-II профиль SSM не применяется.", 12.sp, C.Orange)
                 Spacer(Modifier.height(10.dp))
             }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                adapters.forEach { (k, l) -> Chip(l, adapter == k, { adapter = k; s.adapter = k }) }
+            ChoiceRow("Адаптер", adapters, adapter) { k ->
+                adapter = k
+                s.adapter = k
+                if (k == "auto") Repo.autoBtPause.reset()
             }
             Spacer(Modifier.height(6.dp))
-            T(adapterNote(adapter), 12.sp, C.Sub)
+            SettingHint(adapterNote(adapter))
             if (adapter == "elm_bt" || adapter == "mt_bt" || adapter == "auto") {
                 Spacer(Modifier.height(10.dp))
-                if (adapter == "auto") T("Bluetooth-адаптер (не обязательно: в «Авто» подойдёт любой сопряжённый OBD/ELM/V-LINK)", 12.sp, C.Sub)
+                if (adapter == "auto") SettingHint("Bluetooth-адаптер (не обязательно: в «Авто» подойдёт любой сопряжённый OBD/ELM/V-LINK)")
                 BluetoothPicker()
             }
             if (adapter == "elm_wifi" || adapter == "auto") {
@@ -251,7 +188,7 @@ fun CarAdapterSettings() {
                 val multiBus = adapter != "kkl"
                 T("Шина", 15.sp, if (multiBus) C.Text else C.Sub)
                 Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     buses.forEach { (k, l) ->
                         Chip(l, multiBus && bus == k, { if (multiBus) { bus = k; s.bus = k } })
                     }
@@ -269,10 +206,10 @@ fun CarAdapterSettings() {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         T("Слушать CAN (OpenPort 2.0, экспериментально)", 15.sp)
-                        T("Блоки сами рассылают по CAN обороты, скорость, температуры, передачу и круиз. Приложение берёт их без " +
+                        SettingHint("Блоки сами рассылают по CAN обороты, скорость, температуры, передачу и круиз. Приложение берёт их без " +
                             "запросов: работает, даже когда диагностику занял ноутбук. Расшифровка по открытой базе comma.ai для " +
                             "машин примерно 2010–2018 года; на K-линии (SG и раньше) CAN нет. На некоторых машинах кадры " +
-                            "с OBD-разъёма не видны: их отсекает блок кузова", 11.sp, C.Sub)
+                            "с OBD-разъёма не видны: их отсекает блок кузова")
                     }
                     Switch(listen, { listen = it; s.canListen = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
                 }
@@ -285,6 +222,7 @@ fun CarAdapterSettings() {
             }
             Spacer(Modifier.height(14.dp))
             InfoLine("Связь", msg)
+            DeviceIdLine()
             if (found.isNotEmpty()) InfoLine("Адаптер", found)
             if (otherCar && init == null) InfoLine("Блок двигателя (OBD)", Repo.obdEcu.collectAsState().value.ifEmpty { "—" })
             else InfoLine("SSM ID / ROM ID", init?.let { "${it.ssmId} / ${it.romId}" } ?: "—")
@@ -298,45 +236,137 @@ fun CarAdapterSettings() {
             if (adapter != "canable" && !otherCar) { EcuDefsBlock(); Spacer(Modifier.height(14.dp)) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    T("Журнал обмена (для тестов)", 15.sp)
-                    T("Последние минуты обмена с адаптером приложение помнит всегда: если что-то не работает, нажмите " +
-                        "«Отправить журнал» (Telegram, почта…) или сохраните его в Загрузки. Переключатель дополнительно " +
-                        "пишет всё в файл ${SsmTrace.path ?: "logs/ssm_trace.txt"}.", 11.sp, C.Sub)
-                }
-                Switch(trace, { trace = it; s.traceEnabled = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
-            }
-            Spacer(Modifier.height(8.dp))
-            fun header() = "Машина: «${s.carTitle}», коробка ${s.gearbox}; адаптер ${s.adapter}, " +
-                "шина ${s.bus}; найден: ${found.ifEmpty { "—" }}; связь: $msg; ROM ${init?.romId ?: "—"}"
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(Modifier.weight(1f)) {
-                    ActionButton("Отправить журнал", true) {
-                        runCatching { SsmTrace.share(ctx, header()) }.onFailure {
-                            saved = SsmTrace.saveToDownloads(ctx, header())?.let { p -> "Отправить не вышло, сохранено: $p" } ?: "Не удалось"
-                        }
-                    }
-                }
-                Box(Modifier.weight(1f)) {
-                    ActionButton("Сохранить в Загрузки", true) {
-                        saved = SsmTrace.saveToDownloads(ctx, header())?.let { p -> "Сохранено: $p" } ?: "Не удалось сохранить"
-                    }
-                }
-            }
-            if (saved.isNotEmpty()) { Spacer(Modifier.height(4.dp)); T(saved, 11.sp, C.Sub) }
-            Spacer(Modifier.height(8.dp))
-            ActionButton("Очистить журнал", true) { SsmTrace.clear(); saved = "" }
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
                     T("Демо-данные", 15.sp)
-                    T("Показывает придуманную поездку без машины, чтобы посмотреть экраны. Поездки и расход не записываются.", 11.sp, C.Sub)
+                    SettingHint("Показывает придуманную поездку без машины, чтобы посмотреть экраны. Поездки и расход не записываются.")
                 }
                 Switch(demo, { demo = it; s.demo = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
             }
             Spacer(Modifier.height(8.dp))
-            T("Адаптер и шина применяются при следующем подключении (переподключите кабель или подождите).", 11.sp, C.Sub)
+            SettingHint("Адаптер и шина применяются при следующем подключении (переподключите кабель или подождите).")
         }
     }
+}
+
+/** «Поправка оценки масла»: only while the oil is an estimate. Its own function, so only this row follows the guard. */
+@Composable
+private fun OilCorrectionRow() {
+    val estimated = Repo.guard.collectAsState().value.oilEstimated
+    if (!estimated) return
+    val s = Repo.settings
+    var value by remember { mutableStateOf(s.oilCorrection) }
+    Spacer(Modifier.height(14.dp))
+    T("Поправка оценки масла", 15.sp)
+    SettingHint("Если оценка расходится с настоящим датчиком: сдвигает только оценку, в сторону показаний датчика")
+    Spacer(Modifier.height(6.dp))
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        fun step(by: Int) { value = (value + by).coerceIn(-15, 15); s.oilCorrection = value }
+        Chip("−", false, { step(-1) })
+        T((if (value > 0) "+" else "") + "$value °C", 16.sp, weight = FontWeight.SemiBold)
+        Chip("+", false, { step(1) })
+        if (value != 0) Chip("Сбросить", false, { value = 0; s.oilCorrection = 0 })
+    }
+}
+
+/** «Размер экрана» and the scale beside it, and the unit's power: all take effect at once, a wrong pick is a tap away from being undone. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ScreenSizeSettings() {
+    val s = Repo.settings
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val scale by Repo.uiScale.collectAsState()
+    // a phone is held nearer and keeps one set of sizes
+    if (!kg.forester.sg.isPhone(ctx)) { ScreenInchesChooser(); Spacer(Modifier.height(16.dp)) }
+    T("Масштаб интерфейса", 15.sp)
+    // a phone: from the whole layout on the screen up (MainActivity's ScaledDensity), text with it
+    val phone = kg.forester.sg.isPhone(ctx)
+    T(if (phone) "На телефоне «Авто» помещает весь экран магнитолы. Мелко: выберите больше, вырастут и шрифты. " +
+        "Размер шрифта Android тоже учитывается"
+        else "Весь экран магнитолы всегда помещается сам. Здесь можно сделать всё крупнее или мельче", 11.sp, C.Sub)
+    Spacer(Modifier.height(6.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        (if (phone) listOf(0 to "Авто", 115 to "115%", 130 to "130%", 145 to "145%")
+        else listOf(0 to "Авто", 80 to "80%", 90 to "90%", 100 to "100%", 110 to "110%", 120 to "120%")).forEach { (v, l) ->
+            Chip(l, scale == v || (phone && v == 0 && scale in 1..100), { s.uiScale = v })
+        }
+    }
+    Spacer(Modifier.height(16.dp))
+    T("Размер текста", 15.sp)
+    SettingHint("Только текст, кнопки и приборы остаются как есть")
+    val textPct by Repo.textScale.collectAsState()
+    Spacer(Modifier.height(6.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf(80, 90, 100, 110, 125, 150).forEach { v -> Chip("$v%", textPct == v, { s.textScale = v }) }
+    }
+    Spacer(Modifier.height(16.dp))
+    T("Мощность магнитолы", 15.sp)
+    val tier by kg.forester.sg.data.DeviceTier.current.collectAsState()
+    val found by kg.forester.sg.data.DeviceTier.found.collectAsState()
+    var tierChoice by remember { mutableStateOf(s.tierChoice) }
+    val tierNames = mapOf(kg.forester.sg.data.Tier.LOW to "Слабая", kg.forester.sg.data.Tier.MID to "Средняя", kg.forester.sg.data.Tier.HIGH to "Мощная")
+    SettingHint("На слабой реже движутся карта, дорога и графики, меньше полос у музыки и нет размытия на разгоне")
+    // what is the case now is a status, not an explanation: it stays on the row
+    T("Сейчас: ${tierNames[tier]?.lowercase()} ($found)", LocalCar.current.secondary.value.coerceAtLeast(11f).sp, C.Violet, maxLines = 2)
+    Spacer(Modifier.height(6.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf("auto" to "Авто", "low" to "Слабая", "mid" to "Средняя", "high" to "Мощная").forEach { (v, l) ->
+            Chip(l, tierChoice == v, { tierChoice = v; s.tierChoice = v })
+        }
+    }
+}
+
+/** The exchange with the adapter, kept for reports: file, sending, saving, upload, clearing. */
+@Composable
+internal fun ExchangeLogSettings() {
+    val s = Repo.settings
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var trace by remember { mutableStateOf(s.traceEnabled) }
+    var saved by remember { mutableStateOf("") }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            T("Журнал обмена (для тестов)", 15.sp)
+            SettingHint("Последние минуты обмена с адаптером приложение помнит всегда: если что-то не работает, нажмите " +
+                "«Отправить журнал» (Telegram, почта…) или сохраните его в Загрузки. Переключатель дополнительно " +
+                "пишет всё в файл ${SsmTrace.path ?: "logs/ssm_trace.txt"}.")
+        }
+        Switch(trace, { trace = it; s.traceEnabled = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
+    }
+    Spacer(Modifier.height(8.dp))
+    // the same scrubbed text as the upload, with the device id in the header: made off the main thread (a full scrub
+    // of the log takes seconds on a slow unit), once per tap, and whatever goes wrong shows a short error
+    val reportScope = androidx.compose.runtime.rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    fun manualReport(share: Boolean) {
+        // a second tap while one is running does nothing: no second sheet, no second file
+        if (busy) return
+        busy = true
+        saved = "Готовлю журнал…"
+        reportScope.launch {
+            saved = try {
+                // text, file and Downloads copy are all made off the main thread; only the sheet opens on it
+                val (intent, done) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val text = kg.forester.sg.service.LogUpload.prepareNow(ctx).text
+                    val sheet = if (share) runCatching { SsmTrace.shareIntent(ctx, text) }.getOrNull() else null
+                    if (sheet != null) sheet to ""
+                    else null to (SsmTrace.saveToDownloads(ctx, text)?.let { p -> (if (share) "Отправить не вышло, сохранено: " else "Сохранено: ") + p }
+                        ?: (if (share) "Не удалось" else "Не удалось сохранить"))
+                }
+                if (intent != null && runCatching { ctx.startActivity(intent) }.isFailure) "Не удалось открыть окно отправки" else done
+            } catch (t: Throwable) {
+                "Не удалось подготовить журнал"
+            } finally {
+                busy = false
+            }
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.weight(1f)) { ActionButton("Отправить журнал", true) { manualReport(share = true) } }
+        Box(Modifier.weight(1f)) { ActionButton("Сохранить в Загрузки", true) { manualReport(share = false) } }
+    }
+    if (saved.isNotEmpty()) { Spacer(Modifier.height(4.dp)); T(saved, 11.sp, C.Sub) }
+    Spacer(Modifier.height(8.dp))
+    LogUploadBlock()
+    Spacer(Modifier.height(8.dp))
+    ActionButton("Очистить журнал", true) { SsmTrace.clear(); saved = "" }
 }
 
 /** First start: the gearbox and the adapter; the car itself comes from its ECU. */
@@ -347,35 +377,56 @@ fun FirstRunSetup(onDone: () -> Unit) {
     var adapter by remember { mutableStateOf(s.adapter) }
     var gearbox by remember { mutableStateOf(s.gearbox) }
     Box(
-        Modifier.fillMaxSize().background(Color(0xE6070A14))
+        Modifier.fillMaxSize().background(C.Veil)
             .clickable(remember { MutableInteractionSource() }, null) {},
         contentAlignment = Alignment.Center,
     ) {
-        Panel(Modifier.widthIn(max = 640.dp).padding(16.dp).verticalScroll(rememberScrollState()), padding = 22.dp) {
+        Parked { Panel(Modifier.widthIn(max = 760.dp).padding(16.dp).verticalScroll(rememberScrollState()), padding = 22.dp) {
             T("Добро пожаловать", 24.sp, weight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
-            T("Модель, год и мотор приложение узнает само у блока двигателя. Выберите только коробку и адаптер, потом это можно поменять в Настройках → «Авто и адаптер».", 13.sp, C.Sub)
+            SettingHint("Модель, год и мотор приложение узнает само у блока двигателя. Выберите только коробку и адаптер, потом это можно поменять в Настройках → «Машина и адаптер».")
             Spacer(Modifier.height(16.dp))
             T("Коробка", 15.sp)
             Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 gearboxes.forEach { (k, l) -> Chip(l, gearbox == k, { gearbox = k }) }
             }
             Spacer(Modifier.height(14.dp))
+            if (!kg.forester.sg.isPhone(androidx.compose.ui.platform.LocalContext.current)) { ScreenInchesChooser(); Spacer(Modifier.height(14.dp)) }
             T("Адаптер", 15.sp)
             Spacer(Modifier.height(6.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 adapters.forEach { (k, l) -> Chip(l, adapter == k, { adapter = k }) }
             }
             Spacer(Modifier.height(4.dp))
-            T(if (adapter == "auto") "Не знаете, какой у вас адаптер, — оставьте «Авто»." else adapterNote(adapter), 12.sp, C.Sub)
+            SettingHint(if (adapter == "auto") "Не знаете, какой у вас адаптер, — оставьте «Авто»." else adapterNote(adapter))
             Spacer(Modifier.height(18.dp))
             ActionButton("Готово", true) {
                 s.adapter = adapter
+                if (adapter == "auto") Repo.autoBtPause.reset()
                 s.gearbox = gearbox
                 s.setupDone = true
+                s.inchesAsked = true
                 onDone()
             }
+        } }
+    }
+}
+
+/**
+ * The diagonal: the pixels don't tell it, 1024×600 comes in 7" and in 10.1" alike, and all sizes of text and buttons
+ * go by it. Not told, they are those of a 10.1".
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ScreenInchesChooser(onPicked: () -> Unit = {}) {
+    val inches by Repo.screenInches.collectAsState()
+    T("Размер экрана", 15.sp)
+    SettingHint("Подбирает размер текста и кнопок под диагональ")
+    Spacer(Modifier.height(6.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf(0f to "Не знаю", 7f to "7\"", 8f to "8\"", 9f to "9\"", 10.1f to "10\"", 11f to "11\"", 12.3f to "12\"", 13f to "13\"").forEach { (v, l) ->
+            Chip(l, inches == v, { Repo.settings.screenInches = v; onPicked() })
         }
     }
 }
@@ -404,7 +455,7 @@ private fun BluetoothPicker() {
     if (bt == null) { T("На устройстве нет Bluetooth", 12.sp, C.Orange); return }
     if (!bt.isEnabled) T("Bluetooth выключен", 12.sp, C.Orange)
     if (devices.isEmpty()) {
-        T("Нет сопряжённых устройств. Сопрягите адаптер в настройках Bluetooth телефона (PIN обычно 1234 или 0000).", 12.sp, C.Sub)
+        SettingHint("Нет сопряжённых устройств. Сопрягите адаптер в настройках Bluetooth телефона (PIN обычно 1234 или 0000).")
         return
     }
     T("Адаптер", 13.sp, C.Sub)
@@ -413,6 +464,7 @@ private fun BluetoothPicker() {
         devices.forEach { d ->
             Chip(d.name ?: d.address, chosen == d.address, {
                 chosen = d.address; s.btAddress = d.address; s.btName = d.name ?: d.address
+                Repo.autoBtPause.reset()
             })
         }
     }
@@ -464,14 +516,14 @@ fun ColourPicker(start: Int, onChange: ((Int) -> Unit)? = null, onApply: (Int) -
 @Composable
 private fun InfoLine(k: String, v: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        T(k, 13.sp, C.Sub, modifier = Modifier.width(180.dp))
+        T(k, 13.sp, C.Sub, modifier = Modifier.width(roomFor(180.dp, 13f)))
         Spacer(Modifier.width(8.dp))
         T(v, 13.sp, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.End)
     }
 }
 
 @Composable
-private fun TextBox(label: String, value: String, onChange: (String) -> Unit) {
+internal fun TextBox(label: String, value: String, onChange: (String) -> Unit) {
     OutlinedTextField(
         value = value, onValueChange = onChange, singleLine = true,
         label = { FieldLabel(label) },

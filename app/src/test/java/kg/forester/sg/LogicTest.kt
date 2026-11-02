@@ -5,6 +5,8 @@ import kg.forester.sg.ssm.LockState
 import kg.forester.sg.ui.BottomBarCfg
 import kg.forester.sg.ui.BottomSlot
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
@@ -52,4 +54,34 @@ class LogicTest {
         assertEquals(listOf("a", "b"), BottomBarCfg.parse("a:1,b:0,a:0").map { it.id })
         assertEquals(BottomBarCfg.MAX, BottomBarCfg.parse((1..10).joinToString(",") { "x$it:0" }).size)
     }
+
+    @Test fun valuesClearAfterLinkLoss() {
+        val w = kg.forester.sg.data.LinkLoss()
+        val on = kg.forester.sg.data.LinkState.CONNECTED
+        val lost = kg.forester.sg.data.LinkState.NO_ECU
+        assertFalse(w.due(on, 0))
+        // out of CONNECTED at 1000: nothing yet, and still not a moment before the two seconds are out
+        assertFalse(w.due(lost, 1000))
+        assertFalse(w.due(lost, 2999))
+        assertTrue(w.due(lost, 3000))
+        // said once, not on every tick
+        assertFalse(w.due(lost, 3500))
+        // the other states of a lost link don't start the count again
+        assertFalse(w.due(kg.forester.sg.data.LinkState.CONNECTING, 4000))
+        assertFalse(w.due(kg.forester.sg.data.LinkState.ERROR, 9000))
+        // a link that comes back within two seconds clears nothing
+        assertFalse(w.due(on, 10_000))
+        assertFalse(w.due(kg.forester.sg.data.LinkState.CONNECTING, 10_500))
+        assertFalse(w.due(on, 11_000))
+        assertFalse(w.due(lost, 12_000))
+        assertFalse(w.due(on, 13_000))
+        // and the next loss is counted from its own start
+        assertFalse(w.due(lost, 20_000))
+        assertTrue(w.due(lost, 22_000))
+        // what the cleared screen is: no value, so every card shows a dash, and it says why
+        assertNull(EcuSnapshot().rpm)
+        assertEquals("нет связи", kg.forester.sg.data.noLinkText(true))
+        assertNull(kg.forester.sg.data.noLinkText(false))
+    }
 }
+

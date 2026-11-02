@@ -31,21 +31,40 @@ object Updater {
     fun latest(): Release? = fromApi() ?: fromLatestJson()
 
     private fun fromLatestJson(): Release? = runCatching {
-        val c = URL("https://raw.githubusercontent.com/$REPO/main/latest.json").openConnection() as HttpURLConnection
+        val c = URL(latestJsonUrl()).openConnection() as HttpURLConnection
         c.connectTimeout = 8000; c.readTimeout = 10_000
         c.useCaches = false
         val o = org.json.JSONObject(c.inputStream.bufferedReader().use { it.readText() })
         Release(o.getString("tag"), o.optString("name"), o.optString("notes"), o.getString("apk"), o.optLong("size"))
     }.getOrNull()
 
+    /**
+     * The receiver of the log upload from latest.json ("logUrl"): empty while the owner has put none there, and that
+     * keeps the upload dormant. Null when the file could not be read (the address known so far stays).
+     */
+    fun logUrl(): String? = runCatching {
+        val c = URL(latestJsonUrl()).openConnection() as HttpURLConnection
+        c.connectTimeout = 8000; c.readTimeout = 10_000
+        c.useCaches = false
+        logUrlOf(c.inputStream.bufferedReader().use { it.readText() })
+    }.getOrNull()
+
+    /** The one file the release check and the log receiver's address are both read from. */
+    fun latestJsonUrl() = "https://raw.githubusercontent.com/$REPO/main/latest.json"
+
+    /** "logUrl" of latest.json: empty when there is none. */
+    fun logUrlOf(json: String): String = org.json.JSONObject(json).optString("logUrl")
+
     /** Looks once a day (from the screen and the service) and puts a notice up when a newer release is out. */
     fun checkDaily(ctx: Context) {
         val s = Repo.settings
         if (!s.feature("update") || System.currentTimeMillis() - s.lastUpdateCheckMs < 24 * 3600_000L) return
+        // the receiver of the log upload, only for a person who turned the upload on
+        if (s.logUploadEnabled) Updater.logUrl()?.let { s.logEndpoint = kg.forester.sg.service.LogUpload.endpointOf(it).orEmpty() }
         val r = latest() ?: return
         s.lastUpdateCheckMs = System.currentTimeMillis()
         if (!isNewer(r.tag, current(ctx))) return
-        kg.forester.sg.service.Alerts.raise("update", "Вышла версия ${r.tag.removePrefix("v")}: Настройки → Основные → «Обновление приложения»",
+        kg.forester.sg.service.Alerts.raise("update", "Вышла версия ${r.tag.removePrefix("v")}: Настройки → Система → «Обновление приложения»",
             kg.forester.sg.service.Alerts.Level.INFO, 24 * 3600_000L, speak = false)
     }
 
@@ -58,7 +77,7 @@ object Updater {
         val withApk = all.mapNotNull { r ->
             val files = r.getJSONArray("assets")
             val assets = (0 until files.length()).map { files.getJSONObject(it) }
-            val name = pickApk(assets.map { it.getString("name") }, r.getString("tag_name")) ?: return@mapNotNull null
+            val name = pickApk(assets.map { it.getString("name") }, r.getString("tag_name"), Build.SUPPORTED_ABIS.toList()) ?: return@mapNotNull null
             val apk = assets.first { it.getString("name") == name }
             Release(r.getString("tag_name"), r.optString("name"), r.optString("body"),
                 apk.getString("browser_download_url"), apk.optLong("size"))
@@ -66,19 +85,27 @@ object Updater {
         withApk.maxWithOrNull { a, b -> compare(a.tag, b.tag) }
     }.getOrNull()
 
+    /** The ABIs a release may have a file of its own for: carpulse-<ver>-<abi>.apk. */
+    private val SPLIT_ABIS = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+
     /**
-     * Which APK of a release to download. Since 0.9-beta21 the app is CarPulse: carpulse.apk, then carpulse-<ver>.apk;
-     * the releases before the rename only have subaru-ssm-dashboard.apk / subaru-ssm-dashboard-<ver>.apk, and then
-     * any other APK attached to the release.
+     * Which APK of a release to download. Since the releases have one file per ABI: the one of the first of [abis] (the
+     * unit's, best first) that has a file, smaller by what the other ABI's libraries take. Else the full one: since
+     * 0.9-beta21 the app is CarPulse: carpulse.apk, then carpulse-<ver>.apk; the releases before the rename only have
+     * subaru-ssm-dashboard.apk / subaru-ssm-dashboard-<ver>.apk, and then any other APK attached to the release. Never
+     * another ABI's file: it installs and has no libraries, or doesn't install at all. Old installs don't know these
+     * names and look for the full APK, which every release has to go on having under its old name.
      */
-    fun pickApk(names: List<String>, tag: String): String? {
+    fun pickApk(names: List<String>, tag: String, abis: List<String> = emptyList()): String? {
         val ver = tag.trim().removePrefix("v")
         val apks = names.filter { it.endsWith(".apk", ignoreCase = true) }
+        abis.firstNotNullOfOrNull { abi -> apks.firstOrNull { it.equals("carpulse-$ver-$abi.apk", ignoreCase = true) } }?.let { return it }
+        val whole = apks.filter { n -> SPLIT_ABIS.none { n.endsWith("-$it.apk", ignoreCase = true) } }
         return listOf("carpulse.apk", "carpulse-$ver.apk", "subaru-ssm-dashboard.apk", "subaru-ssm-dashboard-$ver.apk")
-            .firstNotNullOfOrNull { want -> apks.firstOrNull { it.equals(want, ignoreCase = true) } }
-            ?: apks.firstOrNull { it.startsWith("carpulse", ignoreCase = true) }
-            ?: apks.firstOrNull { it.startsWith("subaru-ssm-dashboard", ignoreCase = true) }
-            ?: apks.firstOrNull()
+            .firstNotNullOfOrNull { want -> whole.firstOrNull { it.equals(want, ignoreCase = true) } }
+            ?: whole.firstOrNull { it.startsWith("carpulse", ignoreCase = true) }
+            ?: whole.firstOrNull { it.startsWith("subaru-ssm-dashboard", ignoreCase = true) }
+            ?: whole.firstOrNull()
     }
 
     /** True when [tag] (e.g. "v0.9-beta7") is newer than [installed] (e.g. "0.9-beta6"). */

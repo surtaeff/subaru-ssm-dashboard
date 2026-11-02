@@ -21,9 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -38,7 +36,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.*
 import kg.forester.sg.data.Repo
@@ -57,6 +54,10 @@ object BottomBarCfg {
         val f = e.trim().split(':')
         f.getOrNull(0)?.takeIf { it.isNotEmpty() }?.let { BottomSlot(it, f.getOrNull(1) == "1") }
     }.distinctBy { it.id }.take(MAX)
+
+    /** On a small screen the factory bar has no scales: the numbers need the room. A choice of the driver's stays. */
+    fun effective(saved: String, small: Boolean): String =
+        if (small && saved == DEFAULT) format(parse(saved).map { it.copy(bar = false) }) else saved
 
     fun format(l: List<BottomSlot>) = l.joinToString(",") { "${it.id}:${if (it.bar) 1 else 0}" }
 }
@@ -82,95 +83,129 @@ fun BottomStatusBar() {
 @Composable
 private fun BottomValues() {
     val cfg by Repo.bottomBar.collectAsState()
-    val slots = remember(cfg) { BottomBarCfg.parse(cfg) }
+    val car = LocalCar.current
+    val slots = remember(cfg, car.small) { BottomBarCfg.parse(BottomBarCfg.effective(cfg, car.small)) }
     val avail by Repo.rrAvailable.collectAsState()
     val ctx = rememberMetricCtx()
     var editing by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().height(58.dp).clip(RoundedCornerShape(14.dp)).background(C.Card)
+        Modifier.fillMaxWidth().height(bottomBarHeight()).chromeLayer().panelShadow().clip(Rounded).panelFill()
             .border(1.dp, C.Border, RoundedCornerShape(14.dp))
-            .pointerInput(Unit) { detectTapGestures(onLongPress = { editing = true }) }
+            .onLongPressBuzz { editing = true }
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (slots.isEmpty()) T("Нижняя панель пуста: нажмите и удерживайте, чтобы выбрать показатели", 13.sp, C.Sub)
+        if (slots.isEmpty()) FitText("Нижняя панель пуста: нажмите и удерживайте, чтобы выбрать показатели", car.secondary, Modifier.fillMaxWidth(), C.Sub, maxLines = 2)
         slots.forEach { s ->
             val m = Metrics.of(s.id, avail)
             if (m == null) {
                 // a «Датчики» parameter while the car is not connected
-                BottomItem(Lucide.ListChecks, s.id.removePrefix("rr:"), "—", null, null, Modifier.weight(0.7f))
+                BottomItem(Lucide.ListChecks, s.id.removePrefix("rr:"), Dash, null, null, Modifier.weight(0.7f))
                 return@forEach
             }
-            val v = m.read(ctx)
-            val frac = if (!s.bar) null else if (m.id == "range") {
-                val tank = Repo.settings.tankL
-                if (tank > 0) ((ctx.trip.fuelLeftL ?: 0.0) / tank).toFloat() else null
-            } else v?.let { ((it - m.min) / (m.max - m.min)).coerceIn(0f, 1f) } ?: 0f
-            val brush = when {
-                m.warn(v) -> Brush.horizontalGradient(listOf(C.Orange, C.Red))
-                m.id == "range" -> C.Accent
-                m.id == "battery" -> Brush.horizontalGradient(listOf(C.Green, C.Green))
-                else -> Brush.horizontalGradient(listOf(C.Blue, C.Violet))
-            }
-            val text = m.text(v) + if (m.unit.isEmpty() || v == null) "" else if (m.unit.startsWith("°")) m.unit else " ${m.unit}"
-            BottomItem(m.icon, m.short, text, frac, brush, Modifier.weight(if (s.bar) 1f else 0.7f), m.warn(v))
+            BottomSlotItem(s, m, ctx, Modifier.weight(if (s.bar) 1f else 0.7f))
         }
     }
     if (editing) BarEditor("Нижняя панель", BottomBarCfg.MAX, true, Repo.bottomBar, BottomBarCfg.DEFAULT, { Repo.settings.bottomBar = it }) { editing = false }
 }
+
+/** The bottom bar's height: a name in the secondary size over a value in the label size. */
+@Composable
+internal fun bottomBarHeight() = maxOf(58.dp, LocalCar.current.let { it.secondary.lineDp() + it.label.lineDp() + 6.dp })
 
 /**
  * The values in the top bar, beside the car's name (where the logo was before it moved to the corner). Long press
  * to choose them, as on the bottom bar.
  */
 @Composable
-fun TopValues(modifier: Modifier) {
+fun TopValues(modifier: Modifier, limit: Int? = null) {
     val cfg by Repo.topBar.collectAsState()
     val slots = remember(cfg) { BottomBarCfg.parse(cfg).take(BottomBarCfg.TOP_MAX) }
     val avail by Repo.rrAvailable.collectAsState()
     val ctx = rememberMetricCtx()
     var editing by remember { mutableStateOf(false) }
+    // no room for any now (the cool-down plate came up): only its editor stays, it mustn't close under the driver's finger
     // squeezed (the turbo countdown, the demo pill, a bigger scale): the values that fit whole, not each cut to «16.…»
-    androidx.compose.foundation.layout.BoxWithConstraints(modifier.fillMaxHeight()) {
-    val shown = slots.take((maxWidth / 112.dp).toInt())
+    if (limit != 0) androidx.compose.foundation.layout.BoxWithConstraints(modifier.fillMaxHeight()) {
+    // a value at least: a short number with its name beside the icon
+    val shown = slots.take(limit ?: (maxWidth / (LocalCar.current.label.asDp() * 3.2f + 40.dp)).toInt())
     Row(
         Modifier.fillMaxHeight().clip(RoundedCornerShape(12.dp))
-            .pointerInput(Unit) { detectTapGestures(onLongPress = { editing = true }) }
+            .onLongPressBuzz { editing = true }
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         // readable (about 4.9:1 on the header) but quieter than the values it stands in for (C.Border was ~1.3:1)
-        if (slots.isEmpty()) T("удерживайте, чтобы вывести показатели", 13.sp, C.Sub.copy(alpha = 0.85f), maxLines = 1)
+        if (slots.isEmpty()) FitText("удерживайте, чтобы вывести показатели", LocalCar.current.secondary, Modifier.weight(1f), C.Sub.copy(alpha = 0.85f), maxLines = 2)
         shown.forEach { s ->
             val m = Metrics.of(s.id, avail)
-            val v = m?.read(ctx)
-            val text = if (m == null) "—" else m.text(v) + if (m.unit.isEmpty() || v == null) "" else if (m.unit.startsWith("°")) m.unit else " ${m.unit}"
-            BottomItem(m?.icon ?: Lucide.ListChecks, m?.short ?: s.id.removePrefix("rr:"), text, null, null,
-                Modifier.weight(1f, fill = false), m?.warn(v) == true)
+            if (m == null) BottomItem(Lucide.ListChecks, s.id.removePrefix("rr:"), Dash, null, null, Modifier.weight(1f, fill = false))
+            else BottomSlotItem(s.copy(bar = false), m, ctx, Modifier.weight(1f, fill = false))
         }
     }
     }
     if (editing) BarEditor("Верхняя панель", BottomBarCfg.TOP_MAX, false, Repo.topBar, BottomBarCfg.TOP_DEFAULT, { Repo.settings.topBar = it }) { editing = false }
 }
 
+/** The bottom bar's editor, for the settings: the same one a long press on the bar opens. */
+@Composable
+fun BottomBarEditorDialog(onClose: () -> Unit) =
+    BarEditor("Нижняя панель", BottomBarCfg.MAX, true, Repo.bottomBar, BottomBarCfg.DEFAULT, { Repo.settings.bottomBar = it }, onClose)
+
+/** The same for the top bar. */
+@Composable
+fun TopBarEditorDialog(onClose: () -> Unit) =
+    BarEditor("Верхняя панель", BottomBarCfg.TOP_MAX, false, Repo.topBar, BottomBarCfg.TOP_DEFAULT, { Repo.settings.topBar = it }, onClose)
+
+private val Dash = androidx.compose.runtime.mutableStateOf("—")
+
+/** One value of a bar on its own: a reading recomposes this value when its text or its warning changes, not the bar and the header. */
+@Composable
+private fun BottomSlotItem(s: BottomSlot, m: Indicator, ctx: androidx.compose.runtime.State<MetricCtx>, modifier: Modifier) {
+    val v = metricSlot(ctx, m.id) { m.read(it) }
+    val warn by remember(m.id) { androidx.compose.runtime.derivedStateOf { m.warn(v.value) } }
+    val text = rememberDigits {
+        val now = v.value
+        m.text(now) + if (m.unit.isEmpty() || now == null) "" else if (m.unit.startsWith("°")) m.unit else " ${m.unit}"
+    }
+    val frac = if (!s.bar) null else metricSlot(ctx, m.id + ":bar") { c ->
+        if (m.id == "range") {
+            val tank = Repo.settings.tankL
+            if (tank > 0) ((c.trip.fuelLeftL ?: 0.0) / tank).toFloat() else null
+        } else m.read(c)?.let { ((it - m.min) / (m.max - m.min)).coerceIn(0f, 1f) } ?: 0f
+    }
+    val brush = when {
+        warn -> Brush.horizontalGradient(listOf(C.Orange, C.Red))
+        m.id == "range" -> C.Accent
+        m.id == "battery" -> Brush.horizontalGradient(listOf(C.Green, C.Green))
+        else -> Brush.horizontalGradient(listOf(C.Blue, C.Violet))
+    }
+    BottomItem(m.icon, m.short, text, frac, brush, modifier, warn)
+}
+
 @Composable
 private fun BottomItem(
-    icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String, frac: Float?, brush: Brush?,
-    modifier: Modifier, warn: Boolean = false,
+    icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: androidx.compose.runtime.State<String>,
+    frac: androidx.compose.runtime.State<Float?>?, brush: Brush?, modifier: Modifier, warn: Boolean = false,
 ) {
+    val car = LocalCar.current
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = if (warn) C.Orange else C.Sub, modifier = Modifier.size(26.dp))
+        // over the line: a triangle in place of the icon, a sign that is not only a colour
+        Icon(if (warn) Lucide.TriangleAlert else icon, if (warn) "Выше нормы" else null, tint = if (warn) C.Orange else C.Sub, modifier = Modifier.size(26.dp))
         Spacer(Modifier.width(10.dp))
         // with a bar the text keeps a steady width, so the bar doesn't hop sideways when the value gets a digit longer
-        val bar = frac != null && brush != null && !frac.isNaN()
-        Column(Modifier.weight(1f, fill = false).then(if (bar) Modifier.widthIn(min = 84.dp) else Modifier)) {
-            T(label, 12.sp, C.Sub, maxLines = 1)
-            T(value, 16.sp, if (warn) C.Orange else C.Text, FontWeight.SemiBold, maxLines = 1)
+        val bar by remember(frac, brush != null) {
+            androidx.compose.runtime.derivedStateOf { frac?.value?.isNaN() == false && brush != null }
+        }
+        Column(Modifier.weight(1f, fill = false).then(if (bar) Modifier.widthIn(min = car.label.asDp() * 3.6f) else Modifier)) {
+            FitText(label, car.secondary, color = C.Sub)
+            FitText(value.value, car.label, color = if (warn) C.Orange else C.Text, weight = FontWeight.SemiBold, min = car.secondary)
         }
         if (frac != null && brush != null && bar) {
             Spacer(Modifier.width(10.dp))
-            ProgressBar(frac, brush, Modifier.width(90.dp), 6.dp)
+            val share = remember(frac) { androidx.compose.runtime.derivedStateOf { frac.value ?: 0f } }
+            ProgressBar(share, brush, Modifier.width(car.tap), 6.dp) { frac.value != null }
         }
     }
 }
@@ -186,16 +221,12 @@ private fun BarEditor(
     store: (String) -> Unit, onClose: () -> Unit,
 ) {
     val cfg by flow.collectAsState()
-    val slots = BottomBarCfg.parse(cfg).take(max)
+    val slots = BottomBarCfg.parse(BottomBarCfg.effective(cfg, LocalCar.current.small && bars)).take(max)
     val avail by Repo.rrAvailable.collectAsState()
     Repo.watchVersion.collectAsState().value
     val all = Metrics.all(avail, Repo.settings.watchIds)
     fun save(l: List<BottomSlot>) { store(BottomBarCfg.format(l)) }
-    Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            Modifier.width(760.dp).heightIn(max = 560.dp).clip(RoundedCornerShape(16.dp)).background(C.Card)
-                .border(1.dp, C.Border, RoundedCornerShape(16.dp)).padding(16.dp),
-        ) {
+    CarSheet(onClose, 860.dp, 600.dp, head = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T(title, 18.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 Chip("Как было", false, { store(default) })
@@ -203,6 +234,7 @@ private fun BarEditor(
                 Chip("Готово", true, onClose)
             }
             Spacer(Modifier.height(4.dp))
+    }) {
             T(if (bars) "До $max показателей. «Полоска» — шкала рядом с числом, она занимает больше места." else "До $max показателей.", 12.sp, C.Sub)
             Spacer(Modifier.height(10.dp))
             slots.forEachIndexed { i, s ->
@@ -219,19 +251,15 @@ private fun BarEditor(
                         Chip("Полоска", s.bar, { save(slots.mapIndexed { j, x -> if (j == i) x.copy(bar = !x.bar) else x }) })
                         Spacer(Modifier.width(6.dp))
                     }
-                    SmallButton(Lucide.ChevronUp, i > 0) {
-                        save(slots.toMutableList().also { l -> l[i] = l[i - 1].also { l[i - 1] = l[i] } })
-                    }
-                    SmallButton(Lucide.ChevronDown, i < slots.size - 1) {
-                        save(slots.toMutableList().also { l -> l[i] = l[i + 1].also { l[i + 1] = l[i] } })
-                    }
-                    SmallButton(Lucide.X, true, C.Red) { save(slots.filterIndexed { j, _ -> j != i }) }
+                    IconTap(Lucide.ChevronUp, "Выше", { save(slots.toMutableList().also { l -> l[i] = l[i - 1].also { l[i - 1] = l[i] } }) }, tint = C.Text, enabled = i > 0)
+                    IconTap(Lucide.ChevronDown, "Ниже", { save(slots.toMutableList().also { l -> l[i] = l[i + 1].also { l[i + 1] = l[i] } }) }, tint = C.Text, enabled = i < slots.size - 1)
+                    IconTap(Lucide.X, "Убрать", { save(slots.filterIndexed { j, _ -> j != i }) }, tint = C.Red)
                 }
             }
             Spacer(Modifier.height(10.dp))
             T(if (slots.size >= max) "Панель заполнена: уберите что-нибудь, чтобы добавить другое" else "Добавить:", 13.sp, C.Sub)
             Spacer(Modifier.height(6.dp))
-            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+            Column {
                 all.groupBy { it.group }.forEach { (group, list) ->
                     T(group, 12.sp, C.Sub, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -245,15 +273,7 @@ private fun BarEditor(
                     }
                 }
             }
-        }
+        
     }
 }
 
-@Composable
-private fun SmallButton(icon: androidx.compose.ui.graphics.vector.ImageVector, enabled: Boolean, tint: androidx.compose.ui.graphics.Color = C.Text, onClick: () -> Unit) {
-    Box(
-        Modifier.padding(start = 4.dp).size(32.dp).clip(RoundedCornerShape(8.dp)).background(C.Card)
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) { Icon(icon, null, tint = if (enabled) tint else C.Border, modifier = Modifier.size(16.dp)) }
-}

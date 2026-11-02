@@ -23,9 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -70,11 +68,11 @@ private class LogData(val t: DoubleArray, val startMs: Long?, val series: List<L
 }
 
 private val UNITS = listOf(
-    "_kmh" to "км/ч", "_c" to "°C", "_v" to "В", "_pct" to "%", "_kpa" to "кПа", "_deg" to "°", "_gs" to "г/с",
+    "_kmh" to kg.forester.sg.data.DistanceUnits.STORED_SPEED, "_c" to "°C", "_v" to "В", "_pct" to "%", "_kpa" to "кПа", "_deg" to "°", "_gs" to "г/с",
     "_ms" to "мс", "_lh" to "л/ч", "_m" to "м", "_g" to "g", "_grev" to "г/об", "_ohm" to "Ом", "_rpm" to "об/мин",
 )
 
-private val COLORS = listOf(C.Blue, C.Orange, C.Green, C.Violet)
+private val COLORS get() = listOf(C.Blue, C.Orange, C.Green, C.Violet)
 
 /** Reads a log the app wrote (or battery.csv): the first column is the time, the numeric ones become charts. */
 private fun readLog(f: File, rr: Map<String, kg.forester.sg.ssm.RrParam> = emptyMap()): LogData {
@@ -138,10 +136,12 @@ private fun readLog(f: File, rr: Map<String, kg.forester.sg.ssm.RrParam> = empty
             "rpm" -> "об/мин"
             else -> UNITS.firstOrNull { key.endsWith(it.first) }?.second ?: ""
         }
+        // the file stays in metric; a chart of it speaks the driver's unit
+        fun shownValues(u: String): FloatArray = kg.forester.sg.data.DistanceUnits.kindOf(u)?.let { k -> FloatArray(v.size) { i -> if (v[i].isNaN()) v[i] else kg.forester.sg.data.DistanceUnits.shown(k, v[i]) } } ?: v
         when {
-            col != null -> LogSeries(key, col.title.substringBefore(","), unit, col.group, v)
+            col != null -> LogSeries(key, col.title.substringBefore(","), kg.forester.sg.data.DistanceUnits.kindOf(unit)?.let(kg.forester.sg.data.DistanceUnits::unit) ?: unit, col.group, shownValues(unit))
             // a RomRaider parameter ticked on «Датчики»: "P12 Name units"
-            param != null -> LogSeries(key, param.name, param.unitsRu, if (param.target == 2) "Датчики АКПП" else "Датчики ЭБУ", v)
+            param != null -> LogSeries(key, param.name, param.shownUnit, if (param.target == 2) "Датчики АКПП" else "Датчики ЭБУ", shownValues(param.unitsRu))
             Regex("^[PE]\\d+ ").containsMatchIn(key) -> LogSeries(key, key.substringAfter(' '), "", "Датчики ЭБУ", v)
             else -> LogSeries(key, key, "", "Прочее", v)
         }
@@ -206,9 +206,9 @@ fun LogFileActions(file: File, small: Boolean = false, onDeleted: (() -> Unit)? 
     val writing = kg.forester.sg.data.Repo.logFile.collectAsState().value == file.name
     var ask by remember(file) { mutableStateOf(false) }
     if (small) {
-        ToolButton(Lucide.Download, true) { saveLog(ctx, file) }
-        ToolButton(Lucide.Share2, true) { shareLog(ctx, file) }
-        if (onDeleted != null) ToolButton(Lucide.Trash2, !writing) { ask = true }
+        IconTap(Lucide.Download, "Скачать", { saveLog(ctx, file) }, tint = C.Text)
+        IconTap(Lucide.Share2, "Поделиться", { shareLog(ctx, file) }, tint = C.Text)
+        if (onDeleted != null) IconTap(Lucide.Trash2, "Удалить", { ask = true }, tint = C.Text, enabled = !writing)
     } else {
         Chip("Скачать", false, { saveLog(ctx, file) }, Lucide.Download)
         Spacer(Modifier.width(6.dp))
@@ -218,7 +218,7 @@ fun LogFileActions(file: File, small: Boolean = false, onDeleted: (() -> Unit)? 
             Chip("Удалить", false, { ask = true }, Lucide.Trash2)
         }
     }
-    if (ask) androidx.compose.material3.AlertDialog(
+    if (ask) CarAlertDialog(
         onDismissRequest = { ask = false },
         containerColor = C.Card, titleContentColor = C.Text, textContentColor = C.Text,
         icon = { Icon(Lucide.Trash2, null, tint = C.Red, modifier = Modifier.size(26.dp)) },
@@ -231,11 +231,11 @@ fun LogFileActions(file: File, small: Boolean = false, onDeleted: (() -> Unit)? 
             androidx.compose.material3.TextButton({
                 ask = false
                 val ok = file.delete()
-                android.widget.Toast.makeText(ctx, if (ok) "Удалено: ${file.name}" else "Не удалось удалить", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(ctx, kg.forester.sg.data.tr(if (ok) "Удалено: ${file.name}" else "Не удалось удалить"), android.widget.Toast.LENGTH_SHORT).show()
                 if (ok) onDeleted?.invoke()
-            }) { androidx.compose.material3.Text("Удалить", color = C.Red) }
+            }) { Text("Удалить", color = C.Red) }
         },
-        dismissButton = { androidx.compose.material3.TextButton({ ask = false }) { androidx.compose.material3.Text("Отмена", color = C.Sub) } },
+        dismissButton = { androidx.compose.material3.TextButton({ ask = false }) { Text("Отмена", color = C.Sub) } },
     )
 }
 
@@ -261,8 +261,8 @@ private fun saveLog(ctx: Context, f: File) {
             f.copyTo(File(dir, f.name), overwrite = true)
         }
         "Сохранено: Загрузки/CarPulse/${f.name}"
-    }.getOrElse { "Не удалось сохранить: ${it.message ?: it.javaClass.simpleName}" }
-    android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
+    }.getOrElse { kg.forester.sg.ssm.SsmTrace.log("log save: $it"); "Не удалось сохранить: ${kg.forester.sg.data.Failure.text(it)}" }
+    android.widget.Toast.makeText(ctx, kg.forester.sg.data.tr(msg), android.widget.Toast.LENGTH_LONG).show()
 }
 
 /**
@@ -274,11 +274,13 @@ private fun saveLog(ctx: Context, f: File) {
 @Composable
 fun LogViewer(file: File, onClose: () -> Unit) {
     val ctx = LocalContext.current
+    // Back closes the log and returns to the screen it was opened from, not to Home
+    androidx.activity.compose.BackHandler(onBack = onClose)
     var data by remember(file) { mutableStateOf<LogData?>(null) }
     var error by remember(file) { mutableStateOf<String?>(null) }
     LaunchedEffect(file) {
         runCatching { withContext(Dispatchers.IO) { readLog(file, kg.forester.sg.ssm.RomRaider.load(ctx).associateBy { it.id }) } }
-            .onSuccess { data = it }.onFailure { error = it.message ?: it.javaClass.simpleName }
+            .onSuccess { data = it }.onFailure { kg.forester.sg.ssm.SsmTrace.log("log read: $it"); error = kg.forester.sg.data.Failure.text(it, "файл испорчен") }
     }
     var picked by remember(file) { mutableStateOf(listOf<String>()) }
     // the window shown: centre and width as fractions of the whole file
@@ -295,7 +297,7 @@ fun LogViewer(file: File, onClose: () -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         // top bar
-        Row(Modifier.fillMaxWidth().clip(Rounded).background(C.Card).border(1.dp, C.Border, Rounded)
+        Row(Modifier.fillMaxWidth().clip(Rounded).panelFill().border(1.dp, C.Border, Rounded)
             .padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
                 Icon(Lucide.ArrowLeft, null, tint = C.Text, modifier = Modifier.size(22.dp))
@@ -311,9 +313,9 @@ fun LogViewer(file: File, onClose: () -> Unit) {
                 } ?: (error?.let { "не удалось прочитать: $it" } ?: "читаю…")
                 T(info, 12.sp, C.Sub, maxLines = 1)
             }
-            ToolButton(Lucide.ZoomOut, zoom > 1f) { zoom = (zoom / 2f).coerceAtLeast(1f) }
-            ToolButton(Lucide.ZoomIn, d != null && zoom < 256f) { centre = windowAt(centre, zoom, cursor); zoom = (zoom * 2f).coerceAtMost(256f); cursor = 0.5f }
-            ToolButton(Lucide.Maximize2, zoom > 1f) { zoom = 1f; centre = 0.5f }
+            IconTap(Lucide.ZoomOut, "Уменьшить", { zoom = (zoom / 2f).coerceAtLeast(1f) }, tint = C.Text, enabled = zoom > 1f)
+            IconTap(Lucide.ZoomIn, "Увеличить", { centre = windowAt(centre, zoom, cursor); zoom = (zoom * 2f).coerceAtMost(256f); cursor = 0.5f }, tint = C.Text, enabled = d != null && zoom < 256f)
+            IconTap(Lucide.Maximize2, "Весь график", { zoom = 1f; centre = 0.5f }, tint = C.Text, enabled = zoom > 1f)
             Spacer(Modifier.width(6.dp))
             LogFileActions(file, onDeleted = onClose)
         }
@@ -453,7 +455,7 @@ fun LogViewer(file: File, onClose: () -> Unit) {
                                     if (k != null && !lo.isNaN()) {
                                         val px = ((d.t[k] - w0) / (w1 - w0) * size.width).toFloat()
                                         val py = size.height - (s.v[k] - lo) / (hi - lo) * size.height
-                                        drawCircle(Color.White, 6.5f, Offset(px, py))
+                                        drawCircle(C.Ink, 6.5f, Offset(px, py))
                                         drawCircle(color, 4.5f, Offset(px, py))
                                     }
                                 }
@@ -545,7 +547,7 @@ private fun TimeAxis(w0: Double, w1: Double, startMs: Long?) {
             val tt = w0 + (w1 - w0) * k / 4
             val label = startMs?.let { fmt.format(Date(it + (tt * 1000).toLong())) } ?: clock(tt)
             paint.textAlign = when (k) { 0 -> android.graphics.Paint.Align.LEFT; 4 -> android.graphics.Paint.Align.RIGHT; else -> android.graphics.Paint.Align.CENTER }
-            drawContext.canvas.nativeCanvas.drawText(label, left + (size.width - left - right) * k / 4, size.height - 2.dp.toPx(), paint)
+            drawContext.canvas.nativeCanvas.drawText(kg.forester.sg.data.tr(label), left + (size.width - left - right) * k / 4, size.height - 2.dp.toPx(), paint)
         }
     }
 }
@@ -629,13 +631,6 @@ private fun DrawScope.drawSeries(
         drawPath(area, androidx.compose.ui.graphics.Brush.verticalGradient(listOf(color.copy(alpha = 0.25f), Color.Transparent)))
     }
     drawPath(path, color, style = Stroke(2.5f))
-}
-
-@Composable
-private fun ToolButton(icon: ImageVector, enabled: Boolean, onClick: () -> Unit) {
-    Box(Modifier.size(40.dp).clip(CircleShape).clickable(enabled = enabled, onClick = onClick), contentAlignment = Alignment.Center) {
-        Icon(icon, null, tint = if (enabled) C.Text else C.Gray, modifier = Modifier.size(20.dp))
-    }
 }
 
 @Composable

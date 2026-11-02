@@ -21,10 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -50,12 +47,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.composables.icons.lucide.ChartScatter
 import com.composables.icons.lucide.Gauge
+import com.composables.icons.lucide.GitCompareArrows
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Ruler
 import com.composables.icons.lucide.Tag
 import com.composables.icons.lucide.TriangleAlert
 import com.composables.icons.lucide.X
 import kg.forester.sg.data.Repo
+import kg.forester.sg.service.DynoRun
+import kg.forester.sg.service.DynoStore
 import kg.forester.sg.service.Interval
 import kg.forester.sg.service.Measured
 import kg.forester.sg.service.Perf
@@ -74,15 +74,20 @@ import java.util.Locale
 // ---- names and texts of the results
 
 /** The keys of the results shown, in order: the intervals, then 60 ft, 201 and 402 m, then the braking 100–0. */
-fun resultKeys(intervals: List<Interval>) = intervals.map { it.key } + PerfCalc.DISTANCES.map { it.second } + PerfCalc.BRAKE
+fun resultKeys(intervals: List<Interval>) = Interval.shownNow(intervals).map { it.key } + PerfCalc.DISTANCES.map { it.second } + PerfCalc.BRAKE
 
-/** "0-100" → "0–100 км/ч", "402m" → "402 м (1/4 мили)". */
+/** The keys for [run]: a run kept without its samples has no mile results and shows what it has, in km/h and said so. */
+fun keysOfRun(run: PerfRun, keys: List<String>): List<String> =
+    if (!kg.forester.sg.data.DistanceUnits.miles || keys.any { it.endsWith(Interval.MI) && it in run.results }) keys
+    else run.results.keys.filter { k -> Interval.parse(k) != null } + keys.filter { k -> !k.endsWith(Interval.MI) }
+
+/** "0-100" → "0–100 км/ч", "0-60mi" → "0–60 миль/ч", "402m" → "402 м (1/4 мили)". */
 fun resultName(key: String) = when (key) {
     "18m" -> "60 футов (18 м)"
     "201m" -> "201 м (1/8 мили)"
     "402m" -> "402 м (1/4 мили)"
-    PerfCalc.BRAKE -> "Торможение 100–0 км/ч"
-    else -> key.replace("-", "–") + " км/ч"
+    PerfCalc.BRAKE -> "Торможение " + (if (kg.forester.sg.data.DistanceUnits.miles) PerfCalc.brakeFromMiles().toString() + "–0" else "100–0") + " " + kg.forester.sg.data.DistanceUnits.speedUnit
+    else -> key.removeSuffix(Interval.MI).replace("-", "–") + " " + (if (key.endsWith(Interval.MI)) "миль/ч" else kg.forester.sg.data.DistanceUnits.STORED_SPEED)
 }
 
 /** The short name for lists: "0–100", "60ft", "402м". */
@@ -90,7 +95,9 @@ fun resultShort(key: String) = when (key) {
     "18m" -> "60ft"
     "201m" -> "201м"
     "402m" -> "402м"
-    else -> key.replace("-", "–")
+    PerfCalc.BRAKE -> if (kg.forester.sg.data.DistanceUnits.miles) PerfCalc.brakeFromMiles().toString() + "–0" else "100–0"
+    // in miles a result timed to km/h says so: 100 is not 100 mph
+    else -> key.removeSuffix(Interval.MI).replace("-", "–") + if (kg.forester.sg.data.DistanceUnits.miles && Interval.parse(key)?.mi == false) " км/ч" else ""
 }
 
 fun flagText(flag: String, run: PerfRun?) = when (flag) {
@@ -117,9 +124,22 @@ fun condLine(run: PerfRun): String {
     ).joinToString(" · ")
 }
 
+private val DISTANCE_KEYS = PerfCalc.DISTANCES.map { it.second }
+
+/** [corrected] as text with its unit: seconds, or km/h for a trap speed. */
+fun correctedText(run: PerfRun, key: String): String? =
+    corrected(run, key)?.let { if (key.endsWith("v")) kg.forester.sg.data.DistanceUnits.speedText(it) else "%.2f с".format(it) }
+
 /** The run's result in standard air (SAE J1349), null without the intake temperature or the barometer, or for a braking. */
 fun corrected(run: PerfRun, key: String): Float? =
-    run.results[key]?.takeIf { key != PerfCalc.BRAKE }?.let { PerfCalc.corrected(it.toDouble(), run.cond.iatC?.toDouble(), run.cond.baroKpa?.toDouble())?.toFloat() }
+    run.results[key]?.takeIf { key != PerfCalc.BRAKE }?.let {
+        val fix: (Double, Double?, Double?) -> Double? = when {
+            key in DISTANCE_KEYS -> PerfCalc::correctedDistance
+            key.endsWith("v") -> PerfCalc::correctedSpeed // the trap speed at 201 / 402 m
+            else -> PerfCalc::corrected
+        }
+        fix(it.toDouble(), run.cond.iatC?.toDouble(), run.cond.baroKpa?.toDouble())?.toFloat()
+    }
 
 // ---- layout
 
@@ -135,21 +155,6 @@ fun PerfColumns(vararg parts: Pair<Float, @Composable (Modifier) -> Unit>) {
     }
 }
 
-/** A small tappable word with an icon, for the corners of the panels. */
-@Composable
-fun SmallAction(
-    text: String, icon: androidx.compose.ui.graphics.vector.ImageVector?, color: Color = C.Violet, modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier.clip(RoundedCornerShape(8.dp)).background(C.CardHi).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) { Icon(icon, null, tint = color, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)) }
-        T(text, 13.sp, C.Text, maxLines = 1)
-    }
-}
-
 // ---- a run from its samples
 
 /** A run counted from its samples on [intervals], read off the main thread; null while reading or for a run without them. */
@@ -161,12 +166,12 @@ fun rememberMeasured(run: PerfRun?, intervals: List<Interval>): Pair<RunTrace, M
     return v
 }
 
-private fun DrawScope.label(text: String, x: Float, y: Float, color: Color, size: Float = 22f, right: Boolean = false) {
+internal fun DrawScope.label(text: String, x: Float, y: Float, color: Color, size: Float = 22f, right: Boolean = false) {
     val paint = android.graphics.Paint().apply {
         this.color = color.toArgb(); textSize = size; isAntiAlias = true
         textAlign = if (right) android.graphics.Paint.Align.RIGHT else android.graphics.Paint.Align.LEFT
     }
-    drawContext.canvas.nativeCanvas.drawText(text, x, y, paint)
+    drawContext.canvas.nativeCanvas.drawText(kg.forester.sg.data.tr(text), x, y, paint)
 }
 
 /**
@@ -217,7 +222,7 @@ fun RunGraph(m: Measured, bySpeed: Boolean, modifier: Modifier) {
             val sp = Path()
             g.forEachIndexed { i, q -> val px = x(q.t, q.kmh); val py = (size.height - q.kmh / vMax * size.height).toFloat(); if (i == 0) sp.moveTo(px, py) else sp.lineTo(px, py) }
             drawPath(sp, C.Blue.copy(alpha = 0.7f), style = Stroke(2.5f))
-            label("%.0f км/ч".format(g.maxOf { it.kmh }), size.width - 4f, 44f, C.Blue, 20f, right = true)
+            label(kg.forester.sg.data.DistanceUnits.speedText(g.maxOf { it.kmh }), size.width - 4f, 44f, C.Blue, 20f, right = true)
         }
         val gp = Path()
         g.forEachIndexed { i, q -> val px = x(q.t, q.kmh); val py = yg(q.g); if (i == 0) gp.moveTo(px, py) else gp.lineTo(px, py) }
@@ -234,25 +239,40 @@ fun RunGraph(m: Measured, bySpeed: Boolean, modifier: Modifier) {
 @Composable
 fun RunLabelDialog(run: PerfRun?, onClose: () -> Unit) {
     val s = Repo.settings
-    var label by remember { mutableStateOf(run?.cond?.label ?: s.perfLabel) }
-    var note by remember { mutableStateOf(run?.cond?.note ?: s.perfNote) }
+    LabelDialog(if (run == null) "Метка новых замеров" else "Метка замера", run?.cond?.label ?: s.perfLabel, run?.cond?.note ?: s.perfNote, run == null, { label, note ->
+        if (run == null) { s.perfLabel = label.trim(); s.perfNote = note.trim() } else Perf.setRunInfo(run.timeMs, label, note)
+    }, onClose)
+}
+
+/** The label of a pull on the dyno. */
+@Composable
+fun RunLabelDialog(run: DynoRun, onClose: () -> Unit) {
+    LabelDialog("Метка заезда", run.label ?: "", null, false, { label, _ -> Perf.setDynoLabel(run, label) }, onClose)
+}
+
+@Composable
+private fun LabelDialog(title: String, label0: String, note0: String?, advice: Boolean, onSave: (String, String) -> Unit, onClose: () -> Unit) {
+    var label by remember { mutableStateOf(label0) }
+    var note by remember { mutableStateOf(note0 ?: "") }
     val perf by Repo.perf.collectAsState()
-    val known = perf.runs.map { it.cond.label }.filter { it.isNotEmpty() }.distinct().take(8)
-    AlertDialog(
+    val known = (perf.runs.map { it.cond.label } + perf.dynoRuns.mapNotNull { it.label }).filter { it.isNotEmpty() }.distinct().take(8)
+    CarAlertDialog(
         onDismissRequest = onClose,
-        containerColor = C.CardHi,
-        title = { T(if (run == null) "Метка новых замеров" else "Метка замера", 18.sp, weight = FontWeight.SemiBold) },
+        containerColor = C.CardHi, textScrolls = false,
+        title = { T(title, 18.sp, weight = FontWeight.SemiBold) },
         text = {
-            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+            Column(Modifier.heightIn(max = 420.dp).cueScroll(C.CardHi)) {
                 T("По метке замеры собираются в серии для сравнения: топливо (95, 98, 100), присадка, доработка.", 13.sp, C.Sub)
                 Spacer(Modifier.height(8.dp))
                 TextFieldDark("Метка серии", label) { label = it }
                 if (known.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     known.forEach { k -> SmallAction(k, null) { label = k } }
                 }
-                Spacer(Modifier.height(8.dp))
-                TextFieldDark("Заметка: пассажиры, груз, шины", note) { note = it }
-                if (run == null) {
+                if (note0 != null) {
+                    Spacer(Modifier.height(8.dp))
+                    TextFieldDark("Заметка: пассажиры, груз, шины", note) { note = it }
+                }
+                if (advice) {
                     Spacer(Modifier.height(8.dp))
                     T("Новая серия для A/B-сравнения? Сбросьте ЭБУ (клемму АКБ на 10–15 минут), проедьте одинаково для прогрева, " +
                         "и только потом мерьте: иначе выученные коррекции и IAM смешают результаты.", 12.sp, C.Orange)
@@ -260,16 +280,14 @@ fun RunLabelDialog(run: PerfRun?, onClose: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton({
-                if (run == null) { s.perfLabel = label.trim(); s.perfNote = note.trim() } else Perf.setRunInfo(run.timeMs, label, note)
-                onClose()
-            }) { T("Сохранить", 15.sp, C.Violet) }
+            TextButton({ onSave(label, note); onClose() }) { T("Сохранить", 15.sp, C.Violet) }
         },
         dismissButton = { TextButton(onClose) { T("Отмена", 15.sp, C.Sub) } },
     )
 }
 
 private val PRESETS = listOf("0-60", "0-100", "0-150", "0-200", "50-150", "60-100", "80-120", "100-150", "100-200", "150-200")
+private val PRESETS_MI = listOf("0-30mi", "0-60mi", "0-100mi", "30-70mi", "40-60mi", "50-70mi", "60-100mi")
 
 /** The intervals the runs are timed on; on «Готово» every kept run is counted again on them. */
 @Composable
@@ -278,26 +296,26 @@ fun IntervalsDialog(onClose: () -> Unit) {
     var from by remember { mutableStateOf("") }
     var to by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    AlertDialog(
+    CarAlertDialog(
         onDismissRequest = onClose,
-        containerColor = C.CardHi,
+        containerColor = C.CardHi, textScrolls = false,
         title = { T("Отрезки замера", 18.sp, weight = FontWeight.SemiBold) },
         text = {
-            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+            Column(Modifier.heightIn(max = 440.dp).cueScroll(C.CardHi)) {
                 T("От 0 — с места, остальные — на ходу: замер начинается, когда газ в полу. Старые замеры пересчитаются по сохранённой записи.", 13.sp, C.Sub)
                 Spacer(Modifier.height(10.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    list.forEach { iv -> SmallAction(resultShort(iv.key), Lucide.X, C.Sub) { list = list - iv } }
+                    list.filter { it.mi == kg.forester.sg.data.DistanceUnits.miles }.forEach { iv -> SmallAction(resultShort(iv.key), Lucide.X, C.Sub) { list = list - iv } }
                 }
                 Spacer(Modifier.height(10.dp))
                 T("Добавить", 13.sp, C.Sub)
                 Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    PRESETS.mapNotNull { Interval.parse(it) }.filter { it !in list }.forEach { iv -> SmallAction(resultShort(iv.key), null) { list = Interval.list((list + iv).joinToString(",") { it.key }) } }
+                    (if (kg.forester.sg.data.DistanceUnits.miles) PRESETS_MI else PRESETS).mapNotNull { Interval.parse(it) }.filter { it !in list }.forEach { iv -> SmallAction(resultShort(iv.key), null) { list = Interval.list((list + iv).joinToString(",") { it.key }) } }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(Modifier.weight(1f)) { NumberField("от, км/ч", from) { from = it } }
-                    Box(Modifier.weight(1f)) { NumberField("до, км/ч", to) { to = it } }
-                    val iv = Interval.parse("${from.substringBefore('.')}-${to.substringBefore('.')}")
+                    Box(Modifier.weight(1f)) { NumberField("от, ${kg.forester.sg.data.DistanceUnits.speedUnit}", from) { from = it } }
+                    Box(Modifier.weight(1f)) { NumberField("до, ${kg.forester.sg.data.DistanceUnits.speedUnit}", to) { to = it } }
+                    val iv = Interval.parse("${from.substringBefore('.')}-${to.substringBefore('.')}" + if (kg.forester.sg.data.DistanceUnits.miles) Interval.MI else "")
                     SmallAction("Добавить", null, if (iv != null) C.Violet else C.Sub) {
                         if (iv != null && iv !in list) { list = Interval.list((list + iv).joinToString(",") { it.key }); from = ""; to = "" }
                     }
@@ -325,7 +343,7 @@ fun IntervalsDialog(onClose: () -> Unit) {
 fun SeriesTab() {
     val p by Repo.perf.collectAsState()
     val keys = resultKeys(p.intervals)
-    var key by remember { mutableStateOf("0-100") }
+    var key by remember(PerfCalc.headline) { mutableStateOf(PerfCalc.headline) }
     // the interval picked, or the first one with runs
     if (key !in keys || p.runs.none { key in it.results }) keys.firstOrNull { k -> p.runs.any { k in it.results } }?.let { if (it != key) key = it }
     var weather by remember { mutableStateOf(false) }
@@ -352,18 +370,19 @@ fun SeriesTab() {
     PerfColumns(
         1.1f to { m ->
             Panel(m) {
+                ListWithHead({
                 PanelTitle(Lucide.Tag, "Серии замеров")
                 Spacer(Modifier.height(8.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     keys.filter { k -> p.runs.any { k in it.results } }.forEach { k -> Chip(resultShort(k), k == key, { key = k }) }
                 }
                 Spacer(Modifier.height(8.dp))
-                SwitchRow("С поправкой на погоду", "SAE J1349 по IAT и давлению, без учёта влажности", weather) { weather = it }
+                SwitchRow("С поправкой на погоду", "SAE J1349 по IAT и давлению, без учёта влажности; у турбо давление приблизительно", weather) { weather = it }
                 SwitchRow("Учитывать замеры с пометками", if (hidden > 0) "сейчас не учтено: $hidden" else "газ не в пол, уклон, пропуски", flagged) { flagged = it }
                 Spacer(Modifier.height(8.dp))
                 if (groups.isEmpty()) T("Замеров «${resultShort(key)}» ещё нет", 13.sp, C.Sub)
                 T("Нажмите на серию, чтобы выбрать её как A или B", 11.sp, C.Sub)
-                LazyColumn(Modifier.weight(1f)) {
+                }) {
                     items(groups, key = { it.key }) { (label, list) ->
                         val st = PerfCalc.stats(list.map { it.second })!!
                         val tag = when (label) { a -> "A"; b -> "B"; else -> null }
@@ -490,7 +509,7 @@ fun SpoolTab() {
                 }, 13.sp, if (sp.armed) C.Green else C.Sub)
                 if (sp.hint.isNotEmpty()) T(sp.hint, 13.sp, C.Orange)
                 Spacer(Modifier.height(12.dp))
-                FitValue((live.rpm ?: 0).toString(), "об/мин", 48f, Modifier.fillMaxWidth().height(64.dp), if (sp.pulling) C.Violet else C.Text)
+                FitValue(orDash(live.rpm), "об/мин", 48f, Modifier.fillMaxWidth().height(64.dp), if (sp.pulling) C.Violet else C.Text)
                 T("наддув " + (live.gaugeKpa?.let { "%+.2f бар".format(it / 100f) } ?: "—"), 18.sp)
                 Spacer(Modifier.height(12.dp))
                 test?.let { t ->
@@ -540,11 +559,16 @@ private fun SpoolRow(t: SpoolTest, on: Boolean, onClick: () -> Unit) {
     ) {
         Column(Modifier.weight(1f)) {
             T(SimpleDateFormat("dd.MM.yy HH:mm", Locale.getDefault()).format(Date(t.timeMs)) +
-                listOfNotNull(t.iatC?.let { "  ·  IAT $it°" }, t.rpmPerKmh?.let { "  ·  %.0f об/км/ч".format(it) }).joinToString("") +
+                listOfNotNull(t.iatC?.let { "  ·  IAT $it°" }, t.rpmPerKmh?.let { kg.forester.sg.data.DistanceUnits.label("  ·  %.0f об/км/ч".format(kg.forester.sg.data.DistanceUnits.perSpeed(it))) }).joinToString("") +
                 if (t.demo) "  ·  демо" else "", 11.sp, C.Sub, maxLines = 1)
             T("0 бар ${t.rpm0 ?: "—"}  ·  1 бар ${t.rpm1 ?: "—"}" + (t.rpmTarget?.let { "  ·  цель $it" } ?: ""), 13.sp, maxLines = 1)
         }
-        Icon(Lucide.X, "Удалить", tint = C.Sub, modifier = Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).clickable { Spool.delete(t.timeMs) }.padding(7.dp))
+        var ask by remember(t.timeMs) { mutableStateOf(false) }
+        IconTap(Lucide.X, "Удалить", { ask = true }, tint = C.Sub, iconSize = 20.dp)
+        if (ask) ConfirmDialog(
+            "Удалить тест спула?", "Тест от ${SimpleDateFormat("dd.MM.yy HH:mm", Locale.getDefault()).format(Date(t.timeMs))} вместе с кривой наддува. Вернуть его будет нельзя.",
+            "Удалить", { Spool.delete(t.timeMs) }, { ask = false },
+        )
     }
 }
 
@@ -571,6 +595,33 @@ private fun SpoolPlot(t: SpoolTest, ref: SpoolTest?, modifier: Modifier) {
     }
 }
 
+// ---- dyno
+
+/** A pull in the list: tap to show it, the second icon compares with it (orange when it is the one compared with). */
+@Composable
+fun DynoRow(r: DynoRun, view: DynoStore.View?, on: Boolean, compared: Boolean, onClick: () -> Unit, onCompare: () -> Unit, onDelete: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (on) C.Purple.copy(alpha = 0.2f) else Color.Transparent)
+            .clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            T(SimpleDateFormat("dd.MM.yy HH:mm", Locale.getDefault()).format(Date(r.startMs)) +
+                listOfNotNull(r.gear?.let { "  ·  $it-я" }, r.label?.let { "  ·  «$it»" }).joinToString(""), 11.sp, C.Sub, maxLines = 1)
+            val hp = view?.curve?.maxByOrNull { it.hp }
+            val nm = view?.curve?.maxByOrNull { it.nm }
+            T(if (hp != null && nm != null) "%.0f л.с.  ·  %.0f Н·м".format(hp.hp, nm.nm) else " ", 13.sp, maxLines = 1)
+        }
+        IconTap(Lucide.GitCompareArrows, "Сравнить", onCompare, tint = if (compared) C.Orange else C.Sub, iconSize = 22.dp)
+        var ask by remember(r.startMs) { mutableStateOf(false) }
+        IconTap(Lucide.X, "Удалить", { ask = true }, tint = C.Sub, iconSize = 20.dp)
+        if (ask) ConfirmDialog(
+            "Удалить заезд на диностенде?", "Заезд от ${SimpleDateFormat("dd.MM.yy HH:mm", Locale.getDefault()).format(Date(r.startMs))} уйдёт вместе с кривой. Вернуть его будет нельзя.",
+            "Удалить", onDelete, { ask = false },
+        )
+    }
+}
+
 // ---- the run under the graph
 
 /** Peak G, 60 ft, the shifts and where the speed came from, in one line. */
@@ -578,7 +629,7 @@ fun runFacts(run: PerfRun, m: Measured?): String = listOfNotNull(
     run.peakG?.let { "пик %.2f g".format(it) },
     run.results["18m"]?.let { "60 футов %.2f с".format(it) },
     // the same standing interval as a drag strip or Dragy times it, from one foot of roll-out
-    run.results.keys.filter(PerfCalc::isRollout).let { ks -> ks.firstOrNull { it == "0-100" + PerfCalc.ROLLOUT } ?: ks.firstOrNull() }
+    run.results.keys.filter { PerfCalc.isRollout(it) && it.removeSuffix(PerfCalc.ROLLOUT).endsWith(Interval.MI) == kg.forester.sg.data.DistanceUnits.miles }.let { ks -> ks.firstOrNull { it == PerfCalc.headline + PerfCalc.ROLLOUT } ?: ks.firstOrNull() }
         ?.let { k -> "${resultShort(k.removeSuffix(PerfCalc.ROLLOUT))} с roll-out 1 фут %.2f с".format(run.results[k]) },
     m?.shifts?.takeIf { it.isNotEmpty() }?.let { s -> "переключения " + s.joinToString(" / ") { "%.2f".format(it.sec) } + " с" },
     run.source.takeIf { it.isNotEmpty() },

@@ -15,7 +15,7 @@ import android.os.Bundle
  */
 class MediaListener : android.service.notification.NotificationListenerService() {
     override fun onListenerConnected() {
-        runCatching { activeNotifications?.forEach { NavGuidance.posted(this, it) } }
+        NavGuidance.onWorker { activeNotifications?.forEach { NavGuidance.posted(this, it) } }
     }
 
     override fun onNotificationPosted(sbn: android.service.notification.StatusBarNotification) {
@@ -27,15 +27,76 @@ class MediaListener : android.service.notification.NotificationListenerService()
     }
 }
 
+/** What another player's media session shows: track, cover, position, play state. */
+data class PlayerState(
+    val title: String = "", val artist: String = "", val album: String = "", val art: android.graphics.Bitmap? = null,
+    val posMs: Long = 0, val totalMs: Long = 0, val playing: Boolean = false, val session: Boolean = false,
+)
+
+fun playerState(c: android.media.session.MediaController): PlayerState {
+    val md = c.metadata
+    val st = c.playbackState
+    val playing = st?.state == android.media.session.PlaybackState.STATE_PLAYING
+    // the session reports the position at its last update: run it on while playing
+    val pos = st?.let {
+        if (playing && it.lastPositionUpdateTime > 0)
+            it.position + ((android.os.SystemClock.elapsedRealtime() - it.lastPositionUpdateTime) * it.playbackSpeed).toLong()
+        else it.position
+    } ?: 0L
+    return PlayerState(
+        title = md?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE).orEmpty(),
+        artist = md?.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
+        album = md?.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM).orEmpty(),
+        art = md?.getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART) ?: md?.getBitmap(android.media.MediaMetadata.METADATA_KEY_ART),
+        posMs = pos.coerceAtLeast(0), totalMs = md?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION) ?: 0,
+        playing = playing, session = true,
+    )
+}
+
+/**
+ * Units with two modules (TS18 and others) have Android's own stack on the OBD one: its session is there, idle, and
+ * nothing sent to it reaches the phone. A Bluetooth session counts when it plays, shows a track or a phone is connected.
+ */
+internal fun <T> pickBtSession(all: List<T>, playing: (T) -> Boolean, hasTrack: (T) -> Boolean, system: (T) -> Boolean, a2dp: () -> Boolean): T? =
+    all.firstOrNull(playing) ?: all.firstOrNull(hasTrack)
+        ?: if (a2dp()) all.firstOrNull { !system(it) } ?: all.firstOrNull() else null
+
+/** The session that plays, else the latest one that isn't such an idle Bluetooth session ([pickBtSession]). */
+internal fun <T> pickSession(all: List<T>, playing: (T) -> Boolean, hasTrack: (T) -> Boolean, isBt: (T) -> Boolean, a2dp: () -> Boolean): T? =
+    all.firstOrNull(playing) ?: all.firstOrNull { !isBt(it) || hasTrack(it) || a2dp() }
+
 object MediaSessions {
     fun allowed(ctx: Context): Boolean =
         androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
 
-    /** The session that plays now, else the latest one; null without the listener permission. */
+    /** The session that plays now, else the latest one that counts ([pickSession]); null without the listener permission. */
     fun controller(ctx: Context): MediaController? = runCatching {
-        val all = sessions(ctx)
-        all.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING } ?: all.firstOrNull()
+        pickSession(sessions(ctx), ::isPlaying, ::hasTrack, { isBt(it.packageName) }, { a2dpConnected(ctx) })
     }.getOrNull()
+
+    private fun isPlaying(c: MediaController) = c.playbackState?.state == PlaybackState.STATE_PLAYING
+    private fun hasTrack(c: MediaController) = !c.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE).isNullOrBlank()
+
+    /** BluetoothProfile.A2DP_SINK, which the SDK hides. */
+    private const val A2DP_SINK = 11
+
+    /** A phone is connected to Android's stack for its sound to come here; false when it can't be asked. */
+    fun a2dpConnected(ctx: Context): Boolean {
+        // Android 12+ asks for the runtime permission; some firmware throws even with it
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+            ctx.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED) return false
+        return try {
+            val a = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
+            a != null && a.getProfileConnectionState(A2DP_SINK) == android.bluetooth.BluetoothAdapter.STATE_CONNECTED
+        } catch (e: SecurityException) {
+            false
+        } catch (e: RuntimeException) {
+            false
+        }
+    }
+
+    /** Whether a Bluetooth session taken from elsewhere (the stack's browser) counts, as in [pickBtSession]. */
+    fun counts(ctx: Context, c: MediaController) = isPlaying(c) || hasTrack(c) || a2dpConnected(ctx)
 
     private fun sessions(ctx: Context): List<MediaController> = runCatching {
         ctx.getSystemService(MediaSessionManager::class.java).getActiveSessions(ComponentName(ctx, MediaListener::class.java))
@@ -53,15 +114,13 @@ object MediaSessions {
     /**
      * The phone's music over Bluetooth, as a media session. Units with two modules (TS18 and others: one for the
      * phone and music, the other for OBD dongles) have Android's own stack on the OBD one: the session that plays or
-     * shows a track wins, then a head unit's own Bluetooth app before Android's.
+     * shows a track wins, then, with a phone connected, a head unit's own Bluetooth app before Android's.
      */
     fun btController(ctx: Context): MediaController? {
         val bt = sessions(ctx).filter { isBt(it.packageName) }
         bt.joinToString(",") { it.packageName }.let { if (it != btSeen) { btSeen = it; kg.forester.sg.ssm.SsmTrace.log("bt sessions: ${it.ifEmpty { "none" }}", keep = true) } }
         fun system(c: MediaController) = c.packageName == "com.android.bluetooth" || c.packageName == "com.google.android.bluetooth"
-        return bt.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
-            ?: bt.firstOrNull { !it.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE).isNullOrBlank() }
-            ?: bt.firstOrNull { !system(it) } ?: bt.firstOrNull()
+        return pickBtSession(bt, ::isPlaying, ::hasTrack, ::system) { a2dpConnected(ctx) }
     }
 
     /** The session of the player [pkg], if it has one now (the app was started at least once). */

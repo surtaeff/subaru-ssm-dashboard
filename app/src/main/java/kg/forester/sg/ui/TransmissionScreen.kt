@@ -3,8 +3,6 @@ package kg.forester.sg.ui
 import androidx.compose.foundation.layout.padding
 import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Icon
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.animation.AnimatedContent
@@ -58,16 +56,21 @@ private val TcuEdit = BoardEdit(TcuBoard, gaugeable = setOf("atf", "lockup", "li
 
 /** Row heights: big cards 1.1, charts 1.2, small tiles 0.55 (or 1.1 once shown as a needle). */
 private fun tcuRowWeight(t: TileCfg) = when {
-    t.id.startsWith("chart") -> 1.2f
-    t.id in setOf("range", "atf", "converter") -> 1.1f
+    t.id.startsWith("chart") -> if (CarScreen.small) 1f else 1.2f
+    // on a small screen the big cards' lines need the room, the charts give it up
+    t.id in setOf("range", "atf", "converter") -> if (CarScreen.small) 1.85f else 1.1f
     t.style.isNotEmpty() -> 1.1f
     else -> 0.55f
 }
 
+/** The TCU answers less often than the ECU: two minutes on the width, and the line runs further behind its readings. */
+@Composable
+private fun tcuChart(vararg lines: ChartLine<kg.forester.sg.ssm.TcuSnapshot>) =
+    rememberChart(Repo.tcuHistory, *lines, capacity = 600, windowMs = 120_000L, lagMs = 1500L, breakMs = 6000L)
+
 @Composable
 fun TransmissionScreen() {
     val t by Repo.tcu.collectAsState()
-    val th by Repo.tcuHistory.collectAsState()
     val e by Repo.live.collectAsState()
     val status by Repo.tcuStatus.collectAsState()
 
@@ -85,7 +88,7 @@ fun TransmissionScreen() {
             }
         when (cfg.id) {
             "range" -> Panel(m) {
-                CardHeader(Lucide.Cog, "Селектор / передача", C.Violet, info)
+                CardHeader(Lucide.Cog, "Селектор", C.Violet, info)
                 val range = t?.range
                 val driving = range == "D" || range == "3" || range == "2" || range == "1"
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -94,7 +97,7 @@ fun TransmissionScreen() {
                             targetState = range,
                             transitionSpec = { (slideInVertically { it } + fadeIn()) togetherWith (slideOutVertically { -it } + fadeOut()) },
                             label = "range",
-                        ) { r -> T(r ?: "—", if ((r?.length ?: 1) > 1) 52.sp else 72.sp, if (r == null) C.Gray else C.Violet, FontWeight.Bold) }
+                        ) { r -> T(r ?: "—", if ((r?.length ?: 1) > 1) 52.sp else 72.sp, if (r == null) C.Sub else C.Violet, FontWeight.Bold) }
                         if (driving) {
                             Spacer(Modifier.width(16.dp))
                             Column {
@@ -130,7 +133,7 @@ fun TransmissionScreen() {
                 CardHeader(Lucide.Lock, "Гидротрансформатор", C.Blue, info)
                 Spacer(Modifier.height(6.dp))
                 val stColor = when (lock) {
-                    LockState.UNKNOWN -> C.Gray
+                    LockState.UNKNOWN -> C.Sub
                     LockState.OPEN -> C.Blue
                     LockState.ENGAGING -> C.Violet
                     LockState.LOCKED -> C.Green
@@ -157,36 +160,36 @@ fun TransmissionScreen() {
                     T(status, 12.sp, if (t == null) C.Orange else C.Sub, maxLines = 2)
                 }
             }
-            "lockup" -> Small(Lucide.Lock, "Блокировка (Lock-up)", t?.lockUpPct, "%")
-            "line" -> Small(Lucide.ArrowDownUp, "Давление в линии", t?.linePressurePct, "%")
+            "lockup" -> Small(Lucide.Lock, if (LocalCar.current.small) "Блокировка" else "Блокировка (Lock-up)", t?.lockUpPct, "%")
+            "line" -> Small(Lucide.ArrowDownUp, if (LocalCar.current.small) "Давление" else "Давление в линии", t?.linePressurePct, "%")
             "awd" -> AwdTile(t?.transferPct, t?.frontWheelKmh, t?.rearWheelKmh, t?.fwdFuse == true, m)
-            "wheels" -> Tile(Lucide.CarFront, "Колёса перед / зад", "${t?.frontWheelKmh ?: "—"} / ${t?.rearWheelKmh ?: "—"}", "км/ч", m, info)
+            "wheels" -> Tile(Lucide.CarFront, if (LocalCar.current.small) "Колёса п/з" else "Колёса перед / зад", "${t?.frontWheelKmh?.let { kg.forester.sg.data.DistanceUnits.speed(it) } ?: "—"} / ${t?.rearWheelKmh?.let { kg.forester.sg.data.DistanceUnits.speed(it) } ?: "—"}", kg.forester.sg.data.DistanceUnits.speedUnit, m, info)
             "chartAtf" -> ChartCard(
                 "Температура ATF, °C",
-                listOf(Series("ATF", th.map { it.atfC?.toFloat() }, C.Orange)),
+                tcuChart(ChartLine("ATF", C.Orange) { it.atfC?.toFloat() }),
                 0f, 130f, m, "%.0f", info = info, icon = Lucide.ThermometerSun, tint = C.Orange,
             )
             "chartLock" -> ChartCard(
-                "Блокировка и полный привод, %",
-                listOf(
-                    Series("lock-up", th.map { it.lockUpPct }, C.Green),
-                    Series("AWD", th.map { it.transferPct }, C.Blue),
-                    Series("линия", th.map { it.linePressurePct }, C.Violet),
+                "Блокировка, %",
+                tcuChart(
+                    ChartLine("lock-up", C.Green) { it.lockUpPct },
+                    ChartLine("AWD", C.Blue) { it.transferPct },
+                    ChartLine("линия", C.Violet) { it.linePressurePct },
                 ),
                 0f, 100f, m, "%.0f", info = info, icon = Lucide.Lock, tint = C.Green,
             )
             "chartTurbine" -> ChartCard(
                 "Обороты турбины, об/мин",
-                listOf(Series("турбина", th.map { it.turbineRpm?.toFloat() }, C.Violet)),
+                tcuChart(ChartLine("турбина", C.Violet) { it.turbineRpm?.toFloat() }),
                 0f, 7000f, m, "%.0f", info = info, icon = Lucide.Fan,
             )
             "chartWheels" -> ChartCard(
-                "Скорость колёс, км/ч",
-                listOf(
-                    Series("перед", th.map { it.frontWheelKmh?.toFloat() }, C.Blue),
-                    Series("зад", th.map { it.rearWheelKmh?.toFloat() }, C.Orange),
+                kg.forester.sg.data.DistanceUnits.label("Скорость колёс, км/ч"),
+                tcuChart(
+                    ChartLine("перед", C.Blue) { it.frontWheelKmh?.toFloat()?.let { v -> kg.forester.sg.data.DistanceUnits.speed(v) } },
+                    ChartLine("зад", C.Orange) { it.rearWheelKmh?.toFloat()?.let { v -> kg.forester.sg.data.DistanceUnits.speed(v) } },
                 ),
-                0f, 200f, m, "%.0f", info = info, icon = Lucide.CarFront, tint = C.Blue,
+                0f, kg.forester.sg.data.DistanceUnits.top(kg.forester.sg.data.DistanceUnits.Kind.SPEED, 200f), m, "%.0f", info = info, icon = Lucide.CarFront, tint = C.Blue,
             )
         }
     }
@@ -209,8 +212,8 @@ private fun AtfCard(atf: Int?, modifier: Modifier) {
         Row(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))) {
             zones.forEach { (w, c) -> Box(Modifier.weight(w).fillMaxHeight().background(c.copy(alpha = 0.7f))) }
         }
-        Box(Modifier.fillMaxWidth().height(14.dp)) {
-            listOf(0f to "0", 40f to "40", 100f to "100", 115f to "115", 130f to "130").forEach { (v, l) ->
+        Box(Modifier.fillMaxWidth().height(18.dp)) {
+            listOf(0f to "0", 40f to "40", 100f to "100", 115f to "115").forEach { (v, l) ->
                 androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
                     val x = maxWidth * (v / 130f)
                     T(l, 10.sp, C.Sub, modifier = Modifier.padding(start = (x - if (v == 0f) 0.dp else if (v == 130f) 20.dp else 9.dp).coerceAtLeast(0.dp)))
@@ -225,8 +228,8 @@ private fun ConvRow(icon: ImageVector, label: String, value: String, unit: Strin
     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, tint = C.Sub, modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(8.dp))
-        T(label, 13.sp, C.Sub, modifier = Modifier.weight(1f))
-        T(value, 15.sp, color, FontWeight.SemiBold)
+        FitText(label, LocalCar.current.secondary, Modifier.weight(1f), C.Sub)
+        T(value, 15.sp, color, FontWeight.SemiBold, maxLines = 1)
         Spacer(Modifier.width(4.dp))
         T(unit, 11.sp, C.Sub)
     }
@@ -256,7 +259,7 @@ private fun AwdTile(duty: Float?, front: Int?, rear: Int?, fwd: Boolean, modifie
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Lucide.Waypoints, null, tint = C.Sub, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                T("Муфта полного привода", 12.sp, C.Sub, maxLines = 1)
+                FitText(if (LocalCar.current.small) "Муфта" else "Муфта привода", LocalCar.current.secondary, color = C.Sub)
             }
             Row(Modifier.fillMaxWidth().weight(1f), verticalAlignment = Alignment.Bottom) {
                 FitValue(fmtF(duty, 0), "%", 20f, Modifier.weight(1f).fillMaxHeight(), widest = "100")
@@ -275,7 +278,7 @@ private fun AwdTile(duty: Float?, front: Int?, rear: Int?, fwd: Boolean, modifie
         Icon(Lucide.Waypoints, null, tint = C.Sub, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
-            T("Муфта полного привода", 11.sp, C.Sub, maxLines = 1)
+            FitText(if (LocalCar.current.small) "Муфта" else "Муфта привода", LocalCar.current.secondary, color = C.Sub)
             Row(verticalAlignment = Alignment.Bottom) {
                 T(fmtF(duty, 0), 20.sp, weight = FontWeight.Bold, maxLines = 1)
                 Spacer(Modifier.width(4.dp))

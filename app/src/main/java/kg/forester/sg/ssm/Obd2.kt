@@ -201,6 +201,7 @@ class Obd2(val link: ObdLink) {
             fuelLevelPct = a(0x2F)?.let { it * 100f / 255f },
             fuelSystem = a(0x03),
             fuelRateLh = ab(0x5E)?.let { it / 20f },
+            engineLoadPct = a(0x04)?.let { it * 100f / 255f },
         )
     }
 
@@ -295,7 +296,7 @@ class Obd2(val link: ObdLink) {
     data class VehicleInfo(val vin: String?, val calIds: List<String>, val cvns: List<String>, val ecuName: String?)
 
     fun vehicleInfo(): VehicleInfo {
-        val vin = info(0x02)?.let { vinOf(it) }
+        val vin = vinInfo()?.let { vinOf(it) }
         val cal = info(0x04)?.let { d -> d.toList().chunked(16).map { c -> ascii(c.toByteArray()) }.filter { it.isNotEmpty() } } ?: emptyList()
         val cvn = info(0x06)?.let { d -> d.toList().chunked(4).filter { it.size == 4 }.map { it.toByteArray().toHex() } } ?: emptyList()
         val name = info(0x0A)?.let { ascii(it) }?.ifEmpty { null }
@@ -310,7 +311,10 @@ class Obd2(val link: ObdLink) {
     }
 
     /** The VIN alone (mode 09 PID 02), read once at the start of a session. */
-    fun vin(): String? = info(0x02)?.let { vinOf(it) }
+    fun vin(): String? = vinInfo()?.let { vinOf(it) }
+
+    /** The raw VIN data: the frames of it are not logged (SsmTrace.muted), they spell the VIN out. */
+    private fun vinInfo(): ByteArray? = SsmTrace.muted { info(0x02) }
 
     /**
      * Mode 09 data of [pid]: on CAN one answer 49 <pid> <count> <data>, before CAN several 49 <pid> <n> <4 bytes>
@@ -339,7 +343,7 @@ class Obd2(val link: ObdLink) {
         fun fastPids(supported: Set<Int>): List<Int> =
             FAST.filter { it in supported } + listOfNotNull(if (0x5E in supported) 0x5E else 0x03.takeIf { it in supported })
         /** One per cycle in turn. */
-        private val SLOW = listOf(0x05, 0x0F, 0x42, 0x33, 0x07, 0x2F, 0x49, 0x34, 0x24)
+        private val SLOW = listOf(0x05, 0x0F, 0x42, 0x33, 0x07, 0x2F, 0x49, 0x34, 0x24, 0x04)
         /** What the freeze frame is asked for (when the unit kept it). */
         private val FREEZE = listOf(0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
             0x11, 0x1F, 0x2F, 0x33, 0x42, 0x43, 0x44, 0x45, 0x46, 0x49, 0x5C, 0x5E)

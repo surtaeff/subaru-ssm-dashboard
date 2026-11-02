@@ -62,8 +62,8 @@ class Board(
      * to the free layout changes nothing on screen. [rowWeight] gives the relative height of a card's row,
      * [band] the top and height of the grid within the free area.
      */
-    fun withFreeRects(list: List<TileCfg>, rowWeight: (TileCfg) -> Float, band: Pair<Float, Float> = 0f to 1f): List<TileCfg> {
-        val rows = rows(list)
+    fun withFreeRects(list: List<TileCfg>, rowWeight: (TileCfg) -> Float, band: Pair<Float, Float> = 0f to 1f, columns: Int = this.columns): List<TileCfg> {
+        val rows = rows(list, columns)
         val heights = rows.map { r -> r.maxOf(rowWeight) }
         val total = heights.sum().takeIf { it > 0f } ?: return list
         val placed = HashMap<String, FreeRect>()
@@ -86,7 +86,7 @@ class Board(
         const val FREE = "!free;"
     }
 
-    fun rows(list: List<TileCfg>): List<List<TileCfg>> {
+    fun rows(list: List<TileCfg>, columns: Int = this.columns): List<List<TileCfg>> {
         val rows = mutableListOf<MutableList<TileCfg>>()
         var used = columns
         list.filter { it.on && it.id !in freeOnly }.forEach { t ->
@@ -101,14 +101,76 @@ class Board(
 /** Values of the common catalogue (ui/Metrics.kt) offered as home cards since 0.9-beta12. */
 val MORE_VALUES = listOf(
     "rpm", "speed", "oil", "load", "injDuty", "tripAvg", "tripFuel", "fuelLeft", "iamV", "fbkc", "flkc",
-    "gaugeKpa", "targetBoost", "gear", "lockupPct", "slip", "transfer", "altitude",
+    "gaugeKpa", "targetBoost", "ve", "gear", "lockupPct", "slip", "transfer", "altitude",
 )
 
+/** The ready full-card panels (ui/GaugePanels.kt) and the G-force card: off everywhere until the driver picks one. */
+val GAUGE_PANELS = listOf("gforce", "p_tacho_blue", "p_tacho_orange", "p_tacho_teal", "p_turbo", "p_tilt", "p_gradar", "p_web", "p_pid", "p_accel", "p_brake")
+
 /** Engine guard, performance and sensor cards (see ui/ExtraCards.kt), offered on the home and "Динамика" boards. */
-val EXTRA_CARDS = listOf("defi", "navcluster", "gmeter", "incline", "iam", "btarget", "peaks", "run", "turbo", "tyres", "service") + (1..6).map { "s$it" }
+val EXTRA_CARDS = listOf("defi", "navcluster", "gmeter", "incline", "iam", "btarget", "peaks", "run", "turbo", "tyres", "service") + (1..6).map { "s$it" } + GAUGE_PANELS
+
+
+/**
+ * What is known of a turbo on another make, whose ECU doesn't say ([state], by [TurboWatch] and the unit's PIDs) and
+ * what the layouts were built for ([applied], taken from [state] at each connection, so nothing moves in the middle of
+ * a drive). Unknown shows the picture without boost: a missing card is less wrong than 0.00 бар on a car with no turbo.
+ * Another VIN is another car: nothing of the last one's stays.
+ */
+data class OtherTurbo(val car: String = "", val state: TurboState = TurboState.UNKNOWN, val applied: TurboState = TurboState.UNKNOWN) {
+    val shown get() = applied == TurboState.TURBO
+
+    /** [id]: the car's VIN, "" if it gave none, which says nothing of a change. */
+    fun identified(id: String) = when {
+        id.isEmpty() || id == car -> this
+        car.isEmpty() -> copy(car = id)
+        else -> OtherTurbo(id)
+    }
+
+    fun connected() = copy(applied = state)
+    fun with(s: TurboState) = if (s == state) this else copy(state = s)
+    fun format() = "$car|${state.name}|${applied.name}"
+
+    companion object {
+        fun parse(s: String): OtherTurbo {
+            val f = s.split('|')
+            if (f.size != 3) return OtherTurbo()
+            // the older format: seen true/false, applied true/empty
+            fun st(v: String) = when (v) {
+                "true" -> TurboState.TURBO
+                "false", "" -> TurboState.UNKNOWN
+                else -> TurboState.entries.firstOrNull { it.name == v } ?: TurboState.UNKNOWN
+            }
+            return OtherTurbo(f[0], st(f[1]), st(f[2]))
+        }
+    }
+}
+
+/** One card of a saved layout and where it goes, as fractions of the screen. */
+data class PlacedCard(val tile: TileCfg, val rect: FreeRect)
+
+/** A layout of the driver's own screens worked out for a panel with no window of its own (the big USB screens). */
+object ScreenBoards {
+    /** The shown cards of [saved] (the layout's text; "" factory), in order, each with its place. */
+    fun place(board: Board, saved: String, rowWeight: (TileCfg) -> Float, columns: Int = board.columns): List<PlacedCard> {
+        val list = board.parse(saved)
+        val shown = if (board.isFree(saved)) list.filter { it.on } else board.rows(list, columns).flatten()
+        val placed = board.withFreeRects(list, rowWeight, columns = columns).associateBy { it.id }
+        return shown.map { t ->
+            val r = (if (board.isFree(saved)) t.free else null) ?: placed.getValue(t.id).free!!
+            // a card hanging over the edge is moved in, as the screen's own free layout never shows it cut
+            val w = r.w.coerceAtMost(1f)
+            val h = r.h.coerceAtMost(1f)
+            PlacedCard(t, FreeRect(r.x.coerceAtMost(1f - w), r.y.coerceAtMost(1f - h), w, h))
+        }
+    }
+}
 
 object HomeLayout {
     const val COLUMNS = 5
+
+    /** The night road card (ui/NightRoad.kt) of another make, whose 3D block shows the stand-in car. */
+    const val ROAD = "road3d"
 
     /** The factory layout: the 15 cards of v0.8, then extras that start switched off. */
     val board = Board(
@@ -119,14 +181,140 @@ object HomeLayout {
             "inj", "wgdc", "fuel", "boost", "gps",
         ).map { TileCfg(it, true) } + listOf(
             "pedal", "avcs", "map", "atm", "alt", "atf", "per100", "range", "tach", "speedo", "car3d", "minimap",
-        ).map { TileCfg(it, false) } + EXTRA_CARDS.map { TileCfg(it, false, when (it) { "defi" -> 2; "navcluster" -> 3; else -> 1 }) } +
+        ).map { TileCfg(it, false) } + TileCfg(ROAD, false, ROAD_SPAN) + EXTRA_CARDS.map { TileCfg(it, false, when (it) { "defi", in GAUGE_PANELS -> 2; "navcluster" -> 3; else -> 1 }) } +
             MORE_VALUES.map { TileCfg(it, false) } +
             OUT_WIDGETS.map { TileCfg(it, false) },
         freeOnly = setOf("car3d"),
     )
 
+    private const val ROAD_SPAN = 2
+
+    /**
+     * Another make's factory cards ([ids], see [CarKind.obdHomeCards]) as a layout: with the night road card where the
+     * three rows have room for it. The rpm and speed cards give way to it first (the dials above show those anyway), then
+     * the barometer and the pedal, which a driver looks at least; nothing else does.
+     */
+    fun obdTiles(ids: List<String>): List<TileCfg> {
+        val room = COLUMNS * 3 - ROAD_SPAN
+        val slim = ids - listOf("rpm", "speed", "atm", "pedal").filter { it in ids }.take((ids.size - room).coerceAtLeast(0)).toSet()
+        return if (slim.size > room) ids.map { TileCfg(it, true) } else slim.map { TileCfg(it, true) } + TileCfg(ROAD, true, ROAD_SPAN)
+    }
+
     fun parse(s: String) = board.parse(s)
-    fun rows(list: List<TileCfg>) = board.rows(list)
+    fun rows(list: List<TileCfg>, columns: Int = COLUMNS) = board.rows(list, columns)
+
+    /** What a 7" or 8" factory screen shows, in this order; the ATF never: on a manual it would be an empty card. */
+    private val SMALL_PICKS = listOf("coolant", "boost", "intake", "battery", "afr", "knock", "per100", "timing")
+
+    /** The shown cards in order with their widths, plain ones only: what a layout is, whatever else its text holds. */
+    private fun shape(list: List<TileCfg>) = list.filter { it.on }.map { it.id to it.span }
+
+    /**
+     * The layout is one this app wrote and the driver has not touched: empty, or the cards of the factory screen, of the
+     * one for a car without a turbo or for a Link, or of what another make's car fills ([CarKind.obdHomeCards]). An
+     * older version wrote the same cards with other ones switched off after them. Any change of the driver's (a card,
+     * its place, its width, its dial, the free layout) makes it his.
+     */
+    fun isUntouched(saved: String) = isFactory(saved)
+
+    /**
+     * The one-time step for another make's layout this app wrote before it kept a mark (when a car with no answer was
+     * taken for a turbo one): only an untouched layout, and only by what the applied state [applied] says. NON_TURBO: the
+     * boost card is switched off, every other card and its place as saved. TURBO: the same text, so the caller writes
+     * the mark. UNKNOWN waits for evidence (null), and so does a layout that is the driver's.
+     */
+    fun migrateUnmarked(saved: String, applied: TurboState): String? {
+        if (saved.isBlank() || !isUntouched(saved)) return null
+        return when (applied) {
+            TurboState.UNKNOWN -> null
+            TurboState.TURBO -> saved
+            TurboState.NON_TURBO -> board.format(parse(saved).map { if (it.id == "boost") it.copy(on = false) else it })
+        }
+    }
+
+    private fun isFactory(saved: String): Boolean {
+        if (saved.isBlank()) return true
+        if (board.isFree(saved)) return false
+        val list = parse(saved)
+        if (list.any { it.on && (it.style.isNotEmpty() || it.free != null) }) return false
+        // the night road card at its place behind the factory cards is part of the factory screen, narrowed it is the driver's
+        val cards = shape(list).let { if (it.lastOrNull() == (ROAD to ROAD_SPAN)) it.dropLast(1) else it }
+        if (cards == shape(board.defaults) || cards == shape(parse(atmoDefault())) || cards == shape(parse(linkDefault()))) return true
+        if (cards.any { it.second != 1 }) return false
+        val ids = cards.map { it.first }
+        // the "maf" and "map" a car has both of: the first is all it shows
+        return listOf(ids.toSet(), ids.toSet() + "map").any { seen -> listOf(false, true).any { CarKind.obdHomeCards(seen, it) == ids } }
+    }
+
+    /**
+     * The layout to show: on a small screen a factory one comes down to eight cards, the most important first, and
+     * anything the driver saved, free layouts too, is read as it is.
+     */
+    fun effective(saved0: String, small: Boolean): String {
+        // another make over OBD-II with no turbo known: the layout with no boost until something is saved
+        val saved = forCar(saved0, CarKind.other.value && Repo.obdMode.value, Repo.carTurbo.value)
+        if (!small || !isFactory(saved)) return saved
+        val list = parse(saved)
+        val shown = list.filter { it.on }
+        // l/100 reads better than l/h: it takes the place of «fuel», switched off in the factory list
+        val offer = if (shown.any { it.id == "fuel" } && shown.none { it.id == "per100" }) shown.map { if (it.id == "fuel") it.copy(id = "per100") else it } else shown
+        val picks = SMALL_PICKS.mapNotNull { id -> offer.firstOrNull { it.id == id } }
+        // what a car hasn't got is filled from its own list; on the factory screen with no turbo that is the range
+        val atmo = shape(list) == shape(parse(atmoDefault()))
+        val fill = (if (atmo) offer.filter { it.id == "range" } else emptyList()) + offer.filter { it.id != "atf" }
+        // the night road card keeps its two places, the cards take what is left
+        val road = shown.firstOrNull { it.id == ROAD }
+        val on = (picks + fill).filter { it.id != ROAD }.distinctBy { it.id }.take(SMALL_CARDS - (road?.span ?: 0)) + listOfNotNull(road)
+        return board.format(on + list.filter { t -> on.none { it.id == t.id } }.map { it.copy(on = false) })
+    }
+
+    /** Four columns on a small screen for as many cards as two such rows hold; a saved screen of more keeps its five. */
+    fun columnsFor(list: List<TileCfg>, small: Boolean): Int =
+        if (small && list.filter { it.on && it.id !in board.freeOnly }.sumOf { it.span } in 6..SMALL_CARDS) 4 else COLUMNS
+
+    /** Real boost on a car that got the no-turbo factory screen: back to the factory one. Anything the driver saved stays. */
+    fun tilesAfterBoost(saved: String): String = if (saved == atmoDefault()) "" else saved
+
+    /** A car whose ECU says: the init (see EngineId.turbo) or a Link's setting. Another make: see [OtherTurbo]. Nothing known: the factory picture, with boost. */
+    fun carHasTurbo(initKnown: Boolean, wgdcReported: Boolean, link: Boolean, linkTurbo: Boolean) = when {
+        link -> linkTurbo
+        initKnown -> wgdcReported
+        else -> true
+    }
+
+    /**
+     * «Динамика» on a small screen until the driver saves his own: four gauges, two charts, three wide tiles. [turbo] is
+     * decided per connection (see Repo.carTurbo), so the screen doesn't change in the middle of a drive, unless real boost
+     * shows that a car taken for one without a turbo has one.
+     */
+    fun driveEffective(saved: String, small: Boolean, turbo: Boolean): String {
+        if (saved.isNotBlank()) return saved
+        // no turbo: no boost gauge, boost chart or wastegate at any size, until the driver saves his own
+        if (!small) {
+            if (turbo) return saved
+            val off = setOf("boost", "chartBoost", "wgdc")
+            return DriveBoard.format(DriveBoard.defaults.map { if (it.id in off) it.copy(on = false) else it })
+        }
+        val on = listOf("throttle", if (turbo) "boost" else "pedal", "load", "knock").map { TileCfg(it, true, 3) } +
+            listOf(if (turbo) "chartBoost" else "chartTiming", "chartAfr").map { TileCfg(it, true, 6) } +
+            listOf("injDuty", "maf", "avcs").map { TileCfg(it, true, 4) }
+        return DriveBoard.format(on + DriveBoard.defaults.filter { d -> on.none { it.id == d.id } }.map { it.copy(on = false) })
+    }
+
+    private const val SMALL_CARDS = 8
+
+    /**
+     * The factory layout of another make on OBD-II ([otherObd]) with no turbo ([turbo] false: unknown or none) until the
+     * app or the driver has saved one: the same cards with the night road card for boost and wastegate. Anything saved is the saved one.
+     */
+    fun forCar(saved: String, otherObd: Boolean, turbo: Boolean): String =
+        if (saved.isBlank() && otherObd && !turbo) board.format(board.defaults.map {
+            when (it.id) {
+                "boost", "wgdc" -> it.copy(on = false)
+                ROAD -> it.copy(on = true) // in the two places they leave
+                else -> it
+            }
+        }) else saved
 
     /** The factory layout for an engine without a turbo: boost and wastegate give way to range and ATF. */
     fun atmoDefault(): String = board.format(board.defaults.map {
@@ -181,7 +369,7 @@ val DriveBoard = Board(
         TileCfg("throttleMotor", true, 2), TileCfg("wgdc", true, 2), TileCfg("pressure", true, 2),
         TileCfg("rpm", false, 2), TileCfg("chartRpm", false, 6), TileCfg("chartTrims", false, 6),
         TileCfg("chartMaf", false, 6),
-    ) + EXTRA_CARDS.map { TileCfg(it, false, if (it == "navcluster") 12 else if (it == "defi") 6 else if (it == "gmeter" || it == "peaks") 4 else 3) },
+    ) + EXTRA_CARDS.map { TileCfg(it, false, if (it == "navcluster") 12 else if (it == "defi" || it in GAUGE_PANELS) 6 else if (it == "gmeter" || it == "peaks") 4 else 3) },
 )
 
 /** "АКПП": selector 3 + ATF 4 + torque converter 5 columns, the proportions of the fixed layout. */
@@ -214,7 +402,7 @@ val MyBoard: Board by lazy {
         TileCfg("oil", true, 3), TileCfg("battery", true, 3), TileCfg("per100", true, 3), TileCfg("range", true, 3),
     )
     val rest = (kg.forester.sg.ui.Metrics.builtIn.map { it.id } + kg.forester.sg.ui.Metrics.derivedIds).filter { id -> on.none { it.id == id } }.map { TileCfg(it, false, 3) } +
-        EXTRA_CARDS.map { TileCfg(it, false, when (it) { "navcluster" -> 12; "defi" -> 6; else -> 4 }) } + BOX_VALUES.map { TileCfg(it, false, 3) } +
+        EXTRA_CARDS.map { TileCfg(it, false, when (it) { "navcluster" -> 12; "defi", in GAUGE_PANELS -> 6; else -> 4 }) } + BOX_VALUES.map { TileCfg(it, false, 3) } +
         CAN_VALUES.map { TileCfg(it, false, 3) } + OUT_WIDGETS.map { TileCfg(it, false, 3) }
     Board("myTiles", 12, 12, stretch = true, defaults = on + rest)
 }

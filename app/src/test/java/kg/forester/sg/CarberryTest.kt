@@ -10,6 +10,27 @@ class CarberryTest {
     private fun asset(name: String) = File("src/main/assets/$name").readText()
     private fun params() = RomRaider.parseCarberry(asset("carberry42_logger.json"))
 
+    @Test fun theEcusOwnVeIsThereForThisRomOnly() {
+        val ve = params().single { it.id == RomRaider.CARBERRY_VE }
+        assertEquals("Volumetric Efficiency", ve.nameEn)
+        assertEquals("Наполнение VE (из ЭБУ)", ve.name)
+        // the stock base has no live VE for any 16-bit ROM (only MerpMod's patched E1101 and the calculated P242, P243)
+        val defs = org.json.JSONObject(asset("romraider_ssm.json")).getJSONArray("ecuparams")
+        val named = (0 until defs.length()).map { defs.getJSONObject(it) }.filter { "volumetric" in it.getString("n").lowercase() }
+        assertEquals(listOf("E1101"), named.map { it.getString("id") })
+    }
+
+    /** The petrol ECU's exhaust temperature: a standard parameter, there only with its capability bit. */
+    @Test fun exhaustTemperatureGoesByTheCapabilityBit() {
+        val ps = org.json.JSONObject(asset("romraider_ssm.json")).getJSONArray("params")
+        val egt = (0 until ps.length()).map { ps.getJSONObject(it) }.filter { it.getString("id") in RomRaider.ECU_EGT }
+        assertEquals(2, egt.size)
+        for (p in egt) { assertTrue(p.getInt("b") >= 0); assertTrue(p.getInt("cb") >= 0) }
+        val metrics = File("src/main/java/kg/forester/sg/ui/Metrics.kt").readText()
+        assertTrue("it.id in kg.forester.sg.ssm.RomRaider.ECU_EGT" in metrics)
+        assertTrue("\"egtEcu\"" in File("src/main/java/kg/forester/sg/service/EngineGuard.kt").readText())
+    }
+
     @Test fun profileIsExplicitAndRestrictedToEngineId() {
         assertTrue(RomRaider.useCarberry("carberry42", "3d04ea4605", false))
         assertFalse(RomRaider.useCarberry("stock", "3D04EA4605", false))

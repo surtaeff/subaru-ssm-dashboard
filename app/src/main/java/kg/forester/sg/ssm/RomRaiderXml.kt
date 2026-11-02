@@ -73,8 +73,8 @@ object RomRaiderXml {
                 }
             }
         } catch (e: XmlPullParserException) {
-            val why = e.message.orEmpty().substringBefore(" (position").substringBefore("(position").trim()
-            throw BadFile("ошибка в XML, строка ${e.lineNumber}: $why")
+            SsmTrace.log("defs xml: $e")
+            throw BadFile("ошибка в XML, строка ${e.lineNumber}")
         }
         if (params.isEmpty() && ext.isEmpty())
             throw BadFile(if (protocols > 0) "в файле нет параметров протокола SSM" else "в файле нет элементов parameter, ecuparam или switch")

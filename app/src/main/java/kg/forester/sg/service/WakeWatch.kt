@@ -14,14 +14,34 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+private val ACC_ACTIONS = listOf("com.fyt.boot.ACCON", "com.glsx.boot.ACCON", "android.intent.action.ACC_ON")
+private const val SLEEP_GAP = "deep sleep"
+private const val SAME_WAKE_MS = 60_000L
+
+/**
+ * Which wakes are the unit coming back from sleep: ACC or a gap in the deep-sleep time, once per wake. Not the screen or
+ * an unlock, which happen any time. Counted apart from [WakeWatch]'s own 60 s, where the screen, coming first, would use ACC up.
+ */
+class SleepWakes {
+    private var lastMs = Long.MIN_VALUE
+
+    fun take(why: String, nowMs: Long): Boolean {
+        if (why !in ACC_ACTIONS && !why.startsWith(SLEEP_GAP)) return false
+        if (lastMs != Long.MIN_VALUE && nowMs - lastMs < SAME_WAKE_MS) return false
+        lastMs = nowMs
+        return true
+    }
+}
+
 /**
  * Notices the head unit waking up from ACC sleep while the service is still alive. Head units don't cold-boot,
  * so BOOT_COMPLETED rarely comes, and since Android 8 the FYT "ACC on" broadcasts don't reach receivers declared
  * in the manifest; registered here at run time they do. As a fallback, a jump in deep-sleep time between two
  * ticks means the unit slept, whatever the firmware sends.
  */
-class WakeWatch(private val ctx: Context, private val onWake: (String) -> Unit) {
+class WakeWatch(private val ctx: Context, private val onSleptWake: () -> Unit, private val onWake: (String) -> Unit) {
     private var lastWakeMs = 0L
+    private val sleepWakes = SleepWakes()
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) = wake(i.action ?: "?")
@@ -41,7 +61,7 @@ class WakeWatch(private val ctx: Context, private val onWake: (String) -> Unit) 
             while (isActive) {
                 delay(5000)
                 val now = SystemClock.elapsedRealtime() - SystemClock.uptimeMillis()
-                if (now - slept > 20_000) wake("deep sleep %d s".format((now - slept) / 1000))
+                if (now - slept > 20_000) wake("$SLEEP_GAP %d s".format((now - slept) / 1000))
                 slept = now
             }
         }
@@ -53,6 +73,7 @@ class WakeWatch(private val ctx: Context, private val onWake: (String) -> Unit) 
 
     private fun wake(why: String) {
         val now = SystemClock.elapsedRealtime()
+        if (sleepWakes.take(why, now)) onSleptWake()
         if (now - lastWakeMs < 60_000) return // the screen, ACC and the sleep gap all come at once
         lastWakeMs = now
         SsmTrace.log("wake: $why")
@@ -62,8 +83,7 @@ class WakeWatch(private val ctx: Context, private val onWake: (String) -> Unit) 
     companion object {
         val ACTIONS = listOf(
             Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT,
-            "com.fyt.boot.ACCON", "com.glsx.boot.ACCON", "android.intent.action.ACC_ON",
-        )
+        ) + ACC_ACTIONS
 
         /** Set by [MainActivity] between onResume and onPause. */
         @Volatile var appOnScreen = false

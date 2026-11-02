@@ -7,7 +7,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Icon
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,10 +26,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import com.composables.icons.lucide.Wind
 import com.composables.icons.lucide.Box
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -77,15 +73,15 @@ fun HealthScreen() {
     if (other && tab in setOf(4, 5, 6)) tab = 0
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Chip("Мотор", tab == 0, { tab = 0 }, Lucide.HeartPulse)
+            Chip("Мотор", tab == 0, { tab = 0 }, Lucide.HeartPulse, Modifier.keepInView(tab == 0))
             if (!other) {
-                Chip("Обучение", tab == 4, { tab = 4 }, Lucide.Wind)
-                Chip("Проверка", tab == 5, { tab = 5 }, Lucide.Stethoscope)
-                Chip("Откаты и наддув", tab == 6, { tab = 6 }, Lucide.Grid3x3)
+                Chip("Обучение", tab == 4, { tab = 4 }, Lucide.Wind, Modifier.keepInView(tab == 4))
+                Chip("Проверка", tab == 5, { tab = 5 }, Lucide.Stethoscope, Modifier.keepInView(tab == 5))
+                Chip("Откаты и наддув", tab == 6, { tab = 6 }, Lucide.Grid3x3, Modifier.keepInView(tab == 6))
             }
-            Chip("ТО", tab == 1, { tab = 1 }, Lucide.Wrench)
-            Chip("Шины", tab == 2, { tab = 2 }, Lucide.Disc3)
-            Chip("Предупреждения", tab == 3, { tab = 3 }, Lucide.Bell)
+            Chip("ТО", tab == 1, { tab = 1 }, Lucide.Wrench, Modifier.keepInView(tab == 1))
+            Chip("Шины", tab == 2, { tab = 2 }, Lucide.Disc3, Modifier.keepInView(tab == 2))
+            Chip("Предупреждения", tab == 3, { tab = 3 }, Lucide.Bell, Modifier.keepInView(tab == 3))
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (tab) {
@@ -146,9 +142,9 @@ private fun CheckTab() {
                 Spacer(Modifier.height(8.dp))
                 ColorLegend(listOf(
                     C.Green to "норма",
-                    Color(0xFFD9C24A) to "чуть за границей (у исправных бывает)",
+                    C.Yellow to "чуть за границей (у исправных бывает)",
                     C.Red to "вне нормы",
-                    C.Gray to "нет данных",
+                    C.Sub to "нет данных",
                 ))
                 Spacer(Modifier.height(4.dp))
                 val cmpLines = cmp?.let { c -> kg.forester.sg.service.IdleRef.judge(table, c.values).associateBy { it.row.key } }
@@ -157,7 +153,7 @@ private fun CheckTab() {
                     T(if (cmp != null && sample != null) fmt.format(Date(sample.timeMs)) else "У вас", 12.sp, C.Sub, modifier = Modifier.weight(0.8f), maxLines = 1)
                     if (cmp != null) Row(Modifier.weight(0.9f), verticalAlignment = Alignment.CenterVertically) {
                         T(fmt.format(Date(cmp.timeMs)), 12.sp, C.Violet, modifier = Modifier.weight(1f), maxLines = 1)
-                        Icon(Lucide.X, "Убрать сравнение", tint = C.Sub, modifier = Modifier.size(18.dp).clip(CircleShape).clickable { compare = null })
+                        IconTap(Lucide.X, "Убрать сравнение", { compare = null }, iconSize = 18.dp)
                     }
                     T("Завод", 12.sp, C.Sub, modifier = Modifier.weight(if (cmp != null) 1.0f else 1.4f))
                 }
@@ -165,8 +161,8 @@ private fun CheckTab() {
                     if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border.copy(alpha = 0.6f)))
                     val col = when (l.verdict) {
                         kg.forester.sg.service.IdleRef.Verdict.OK -> C.Green
-                        kg.forester.sg.service.IdleRef.Verdict.NEAR -> Color(0xFFD9C24A)
-                        kg.forester.sg.service.IdleRef.Verdict.NONE -> C.Gray
+                        kg.forester.sg.service.IdleRef.Verdict.NEAR -> C.Yellow
+                        kg.forester.sg.service.IdleRef.Verdict.NONE -> C.Sub
                         else -> C.Red
                     }
                     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -185,7 +181,7 @@ private fun CheckTab() {
                             Column(Modifier.weight(0.9f)) {
                                 T(ov?.let { "%.${d}f".format(it) } ?: "—", 14.sp, when (o?.verdict) {
                                     kg.forester.sg.service.IdleRef.Verdict.OK -> C.Green
-                                    kg.forester.sg.service.IdleRef.Verdict.NEAR -> Color(0xFFD9C24A)
+                                    kg.forester.sg.service.IdleRef.Verdict.NEAR -> C.Yellow
                                     kg.forester.sg.service.IdleRef.Verdict.NONE, null -> C.Sub
                                     else -> C.Red
                                 }, FontWeight.Medium, maxLines = 1)
@@ -329,9 +325,9 @@ private fun KnockBoostTab() {
                 NoteBox("Атмосферный мотор: наддува нет. Здесь передачи, которые приложение выучило по оборотам и скорости: по ним оно замечает пробуксовку сцепления или коробки на полном газу.")
             }
             Spacer(Modifier.height(12.dp))
-            SectionLine(Lucide.Cog, "Передачи (обороты на 1 км/ч)")
+            SectionLine(Lucide.Cog, kg.forester.sg.data.DistanceUnits.label("Передачи (обороты на 1 км/ч)"))
             if (d.gears.isEmpty()) T("Выучатся сами за несколько поездок.", 13.sp, C.Sub)
-            else T(d.gears.mapIndexed { i, r -> "${i + 1}-я  %.1f".format(r) }.joinToString("   "), 14.sp)
+            else T(d.gears.mapIndexed { i, r -> "${i + 1}-я  %.1f".format(kg.forester.sg.data.DistanceUnits.perSpeed(r)) }.joinToString("   "), 14.sp)
             d.ambientC?.let {
                 Spacer(Modifier.height(8.dp))
                 T("Улица сегодня около %.0f° (по впуску после стоянки): от неё считается нагрев впуска".format(it), 12.sp, C.Sub)
@@ -349,7 +345,7 @@ private fun KnockGrid(map: kg.forester.sg.data.KnockMap, turbo: Boolean, picked:
     val most = map.cells.values.maxOfOrNull { it.count }?.coerceAtLeast(1) ?: 1
     for (row in rows - 1 downTo 0) {
         Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
-            T(if (!turbo && row == rows - 1) "1,4+" else "%.1f".format(km.LOAD[row]), 10.sp, C.Sub, modifier = Modifier.width(30.dp), maxLines = 1)
+            T(if (!turbo && row == rows - 1) "1,4+" else "%.1f".format(km.LOAD[row]), 10.sp, C.Sub, modifier = Modifier.width(roomFor(30.dp, 10f)), maxLines = 1)
             for (col in 0 until km.COLS) {
                 // the top row of an atmospheric engine gathers every row above it
                 val cells = if (!turbo && row == rows - 1) (row until km.ROWS).mapNotNull { map.cell(it, col) } else listOfNotNull(map.cell(row, col))
@@ -374,7 +370,7 @@ private fun KnockGrid(map: kg.forester.sg.data.KnockMap, turbo: Boolean, picked:
         }
     }
     Row(Modifier.fillMaxWidth()) {
-        T("г/об", 9.sp, C.Sub, modifier = Modifier.width(30.dp), maxLines = 1)
+        T("г/об", 9.sp, C.Sub, modifier = Modifier.width(roomFor(30.dp, 10f)), maxLines = 1)
         for (col in 0 until km.COLS) {
             T(if (col % 2 == 0) "${km.RPM[col] / 1000.0}".removeSuffix(".0") + "к" else "", 9.sp, C.Sub, modifier = Modifier.weight(1f), maxLines = 1,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -460,7 +456,7 @@ private fun SpoolCard(t: kg.forester.sg.service.SpoolTrend) {
         val last = t.inGear(gear).takeLast(3)
         val late = base != null && last.lastOrNull()?.let { it.rpm - base >= kg.forester.sg.service.SpoolTrend.LATE_RPM } == true
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            T("$gear-я", 14.sp, weight = FontWeight.Medium, modifier = Modifier.width(44.dp))
+            T("$gear-я", 14.sp, weight = FontWeight.Medium, modifier = Modifier.width(roomFor(44.dp, 14f)))
             T(base?.let { "обычно $it" } ?: "учится", 13.sp, C.Sub, modifier = Modifier.weight(1f), maxLines = 1)
             T(last.joinToString("  ") { "${it.rpm}" }, 14.sp, if (late) C.Orange else C.Text, FontWeight.SemiBold, maxLines = 1)
         }
@@ -489,13 +485,13 @@ private fun EngineViewSwitch(engine3d: Boolean, onChange: (Boolean) -> Unit) {
         listOf(Triple(true, "3D", Lucide.Box), Triple(false, "Таблица", Lucide.Table)).forEach { (v, text, icon) ->
             val on = engine3d == v
             Row(
-                Modifier.clip(RoundedCornerShape(9.dp)).background(if (on) C.Purple.copy(alpha = 0.28f) else Color.Transparent)
+                Modifier.clip(RoundedCornerShape(9.dp)).background(if (on) C.selectFill(C.Purple.copy(alpha = 0.28f)) else Color.Transparent)
                     .clickable { onChange(v) }.padding(horizontal = 14.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(icon, null, tint = if (on) C.Text else C.Sub, modifier = Modifier.size(15.dp))
+                Icon(icon, null, tint = if (on) C.selectText(C.Text) else C.Sub, modifier = Modifier.size(15.dp))
                 Spacer(Modifier.width(6.dp))
-                T(text, 13.sp, if (on) C.Text else C.Sub, FontWeight.Medium)
+                T(text, 13.sp, if (on) C.selectText(C.Text) else C.Sub, FontWeight.Medium)
             }
         }
     }
@@ -549,10 +545,10 @@ internal fun KnockDetails() {
     val log = remember(g.iam) {
         runCatching { JSONArray(Repo.settings.iamLog) }.getOrNull()?.let { a -> List(a.length()) { a.getJSONObject(it) } }.orEmpty().reversed()
     }
-    val refills = remember { runCatching { Repo.db.refills() }.getOrDefault(emptyList()) }
+    val refills = rememberQuery(Unit) { runCatching { Repo.db.refills() }.getOrDefault(emptyList()) }.value ?: emptyList()
     val iam = g.iam
     Row(verticalAlignment = Alignment.Bottom) {
-        T(iam?.let { "%.2f".format(it) } ?: "—", 34.sp, iam?.let { iamColor(it.toDouble()) } ?: C.Gray, FontWeight.Bold)
+        T(iam?.let { "%.2f".format(it) } ?: "—", 34.sp, iam?.let { iamColor(it.toDouble()) } ?: C.Sub, FontWeight.Bold)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.padding(bottom = 6.dp)) {
             T("IAM", 13.sp, C.Sub)
@@ -566,9 +562,9 @@ internal fun KnockDetails() {
     Spacer(Modifier.height(10.dp))
     Row(Modifier.height(androidx.compose.foundation.layout.IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StatTile(Lucide.Activity, "FBKC (откат)", g.fbkc?.let { "%.1f°".format(it) } ?: "—", "сейчас", Modifier.weight(1f),
-            if ((g.fbkc ?: 0f) < -1f) C.Orange else C.Text)
+            if (Warn.of("fbkc").hits(g.fbkc)) C.Orange else C.Text, warn = Warn.of("fbkc").hits(g.fbkc))
         StatTile(Lucide.Waves, "FLKC (обучение)", g.flkc?.let { "%.1f°".format(it) } ?: "—", "выученная", Modifier.weight(1f),
-            if ((g.flkc ?: 0f) <= -2.8f) C.Red else if ((g.flkc ?: 0f) < -1f) C.Orange else C.Text)
+            if (Warn.of("flkc").hits(g.flkc)) C.Orange else C.Text, warn = Warn.of("flkc").hits(g.flkc))
     }
     if (iam == null) {
         Spacer(Modifier.height(8.dp))
@@ -589,8 +585,8 @@ internal fun KnockDetails() {
         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(8.dp).clip(CircleShape).background(iamColor(v)))
             Spacer(Modifier.width(8.dp))
-            T(fmt.format(Date(t)), 13.sp, C.Sub, modifier = Modifier.width(72.dp))
-            T("%.2f".format(v), 15.sp, iamColor(v), FontWeight.SemiBold, Modifier.width(52.dp))
+            T(fmt.format(Date(t)), 13.sp, C.Sub, modifier = Modifier.width(roomFor(72.dp, 13f)), maxLines = 1)
+            T("%.2f".format(v), 15.sp, iamColor(v), FontWeight.SemiBold, Modifier.width(roomFor(52.dp, 15f)), maxLines = 1)
             T(refill?.let { "после заправки ${fmt.format(Date(it.timeMs))}" } ?: "", 12.sp, C.Sub, maxLines = 1)
         }
     }
@@ -671,7 +667,7 @@ private fun WatchedList() {
         Triple(Lucide.Droplets, "Смесь", "ЭБУ долго добавляет или убирает больше 15 % топлива, подсос только на холостых, коррекция качается от упора до упора, датчик расхода завышает, датчик состава смеси не работает или его нет, форсунки на пределе"),
         Triple(Lucide.Fan, "Наддув", "перенаддув и крип, отсечка топлива, езда на пружине, недобор цели при соленоиде на пределе, плавающий наддув, точка выхода на наддув уехала вверх, бедная смесь под наддувом, турботаймер"),
         Triple(Lucide.Gauge, "Холостой ход", "плавающие, высокие или низкие обороты, AVCS не возвращается, слабое разрежение"),
-        Triple(Lucide.Thermometer, "Охлаждение", "горячо от 102°, перегрев от 105°, выше 100° на скорости, перегрев только в пробке (вентиляторы), рост с 90 до 95° за минуту на ходу при работающем вентиляторе, рост в пробке при включённом вентиляторе (реле первой скорости)"),
+        Triple(Lucide.Thermometer, "Охлаждение", "горячо от 102°, перегрев от 105°, выше 100° на скорости, перегрев только в пробке (вентиляторы), резкий рост за минуту на ровном ходу при работающем вентиляторе (про прокладку только с третьей такой поездки), рост в пробке при включённом вентиляторе (реле первой скорости)"),
         Triple(Lucide.Snowflake, "Холодный мотор", "высокие обороты, полный газ или наддув на непрогретом масле"),
         Triple(Lucide.Repeat, "Термостат", "20 минут езды, а ОЖ ниже 72°"),
         Triple(Lucide.Cog, "АКПП", "ATF от 100°, 110° и 120°, странный датчик, проскальзывание блокировки и пробуксовка на полном газу (и сцепления на МКПП), аварийный режим на третьей"),
@@ -701,8 +697,8 @@ private fun VoiceSwitch() {
     val ctx = LocalContext.current
     val speech by kg.forester.sg.service.Speech.status.collectAsState()
     SwitchRow("Голосовые предупреждения", "Встроенный русский голос (" +
-        (kg.forester.sg.service.Speech.current.mb.takeIf { it > 0 }?.let { "$it МБ, один раз" } ?: "голос магнитолы") + ")" +
-        if (speech.isNotEmpty()) " · $speech" else "", voice) {
+        (kg.forester.sg.service.Speech.current.mb.takeIf { it > 0 }?.let { "$it МБ, один раз" } ?: "голос магнитолы") + ")", voice,
+        status = kg.forester.sg.service.Speech.shown(voice, speech), statusColor = speechColor()) {
         voice = it; Repo.settings.voiceAlerts = it
         if (it) kg.forester.sg.service.Speech.prepare(ctx)
     }
@@ -713,12 +709,19 @@ private fun VoiceSwitch() {
 private fun StatTile(
     icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String, note: String,
     modifier: Modifier, color: androidx.compose.ui.graphics.Color = C.Text, small: Boolean = false,
+    /** Over its warning line (see Warn): a thick frame and a triangle, not only the colour of the number. */
+    warn: Boolean = false,
 ) {
-    Column(modifier.fillMaxHeight().clip(RoundedCornerShape(12.dp)).background(C.CardHi).padding(horizontal = 12.dp, vertical = 10.dp)) {
+    Column(
+        modifier.fillMaxHeight().clip(RoundedCornerShape(12.dp)).background(C.CardHi)
+            .then(if (warn) Modifier.border(3.dp, C.Orange, RoundedCornerShape(12.dp)) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = C.Sub, modifier = Modifier.size(15.dp))
             Spacer(Modifier.width(6.dp))
-            T(label, 12.sp, C.Sub, maxLines = 1)
+            T(label, 12.sp, C.Sub, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+            if (warn) { Spacer(Modifier.width(6.dp)); Icon(Lucide.TriangleAlert, "Выше нормы", tint = C.Orange, modifier = Modifier.size(16.dp)) }
         }
         Spacer(Modifier.height(4.dp))
         T(value, if (small) 15.sp else 22.sp, color, FontWeight.Bold, maxLines = 2)
@@ -747,10 +750,13 @@ internal fun NoteBox(text: String) {
 @Composable
 private fun Line(k: String, v: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-        T(k, 13.sp, C.Sub, modifier = Modifier.width(150.dp))
+        T(k, 13.sp, C.Sub, modifier = Modifier.width(roomFor(150.dp, 13f)))
         T(v, 13.sp, modifier = Modifier.weight(1f))
     }
 }
+
+/** A distance in the driver's unit, in the way this tab writes its numbers: «60 000 км». */
+private fun spacedDistance(km: Double) = spaced(kg.forester.sg.data.DistanceUnits.distance(km).roundToInt()) + " " + kg.forester.sg.data.DistanceUnits.distanceUnit
 
 @Composable
 private fun ServiceTab() {
@@ -758,7 +764,7 @@ private fun ServiceTab() {
     val odo = Maintenance.odometer()
     val now = System.currentTimeMillis()
     val items = Maintenance.items()
-    var odoText by remember { mutableStateOf(odo?.roundToInt()?.toString() ?: "") }
+    var odoText by remember(kg.forester.sg.data.DistanceUnits.miles) { mutableStateOf(odo?.let { kg.forester.sg.data.DistanceUnits.distanceField(it) } ?: "") }
     var editing by remember { mutableStateOf<ServiceItem?>(null) }
     val fmt = remember { SimpleDateFormat("dd.MM.yy", Locale.getDefault()) }
     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -766,11 +772,12 @@ private fun ServiceTab() {
             PanelTitle(Lucide.Gauge, "Пробег")
             Spacer(Modifier.height(8.dp))
             T(if (odo == null) "Введите пробег с приборки один раз — дальше приложение прибавляет пройденное по поездкам."
-            else "Сейчас ≈ ${odo.roundToInt()} км (введённый пробег + поездки)", 12.sp, C.Sub)
+            else "Сейчас ≈ ${kg.forester.sg.data.DistanceUnits.distanceText(odo)} (введённый пробег + поездки)", 12.sp, C.Sub)
             Spacer(Modifier.height(8.dp))
-            NumberField("Пробег по одометру, км", odoText) { odoText = it }
+            NumberField("Пробег по одометру, ${kg.forester.sg.data.DistanceUnits.distanceUnit}", odoText) { odoText = it }
             Spacer(Modifier.height(8.dp))
-            ActionButton("Сохранить пробег", odoText.toDoubleOrNull() != null) { odoText.toDoubleOrNull()?.let { Maintenance.setOdometer(it) } }
+            val odoTyped = kg.forester.sg.data.DistanceUnits.distanceFromField(odoText, odo)
+            ActionButton("Сохранить пробег", odoTyped != null) { odoTyped?.let { Maintenance.setOdometer(it) } }
             Spacer(Modifier.height(14.dp))
             var hoursText by remember { mutableStateOf("%.1f".format(java.util.Locale.US, Maintenance.hours())) }
             Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
@@ -833,7 +840,7 @@ private fun ServiceTab() {
 }
 
 private enum class ServiceState(val color: androidx.compose.ui.graphics.Color) {
-    OVERDUE(C.Red), DUE(C.Orange), OK(C.Green), UNKNOWN(C.Gray), OFF(C.Gray)
+    OVERDUE(C.Red), DUE(C.Orange), OK(C.Green), UNKNOWN(C.Sub), OFF(C.Sub)
 }
 
 private fun serviceState(it: ServiceItem, odo: Double?, now: Long): ServiceState {
@@ -897,7 +904,7 @@ private fun ServiceRow(it: ServiceItem, odo: Double?, now: Long, fmt: SimpleDate
             .clickable(onClick = onEdit).padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val tint = if (st == ServiceState.OFF) C.Gray else if (st == ServiceState.UNKNOWN) C.Violet else st.color
+        val tint = if (st == ServiceState.OFF) C.Sub else if (st == ServiceState.UNKNOWN) C.Violet else st.color
         Box(Modifier.size(36.dp).clip(CircleShape).background(tint.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
             Icon(serviceIcon(it), null, tint = tint, modifier = Modifier.size(18.dp))
         }
@@ -912,8 +919,8 @@ private fun ServiceRow(it: ServiceItem, odo: Double?, now: Long, fmt: SimpleDate
                     else -> {}
                 }
             }
-            T(listOfNotNull("каждые ${spaced(it.km)} км", "${it.months} мес.", if (it.hours > 0) "${it.hours} м·ч" else null).joinToString(" · ") +
-                (if (it.lastMs > 0) "   ·   было ${fmt.format(Date(it.lastMs))}" + (if (it.lastKm >= 0) " на ${spaced(it.lastKm.roundToInt())} км" else "") else ""),
+            T(listOfNotNull("каждые ${spacedDistance(it.km.toDouble())}", "${it.months} мес.", if (it.hours > 0) "${it.hours} м·ч" else null).joinToString(" · ") +
+                (if (it.lastMs > 0) "   ·   было ${fmt.format(Date(it.lastMs))}" + (if (it.lastKm >= 0) " на ${spacedDistance(it.lastKm)}" else "") else ""),
                 11.sp, C.Sub, maxLines = 1)
             Spacer(Modifier.height(5.dp))
             Box(Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp)).background(C.Border)) {
@@ -923,7 +930,7 @@ private fun ServiceRow(it: ServiceItem, odo: Double?, now: Long, fmt: SimpleDate
             if (used == null) T("нажмите, чтобы указать, когда делали, или «Сделано», если сегодня", 11.sp, C.Sub)
             else {
                 val left = listOfNotNull(
-                    km?.let { k -> if (k < 0) "−${spaced(-k)} км" else "${spaced(k)} км" },
+                    km?.let { k -> if (k < 0) "−${spacedDistance(-k.toDouble())}" else spacedDistance(k.toDouble()) },
                     days?.let { d -> if (d < 0) "−${-d} дн." else "$d дн." },
                     hours?.let { h -> if (h < 0) "−${-h} м·ч" else "$h м·ч" },
                 ).joinToString(" · ")
@@ -960,16 +967,16 @@ private fun ServiceDialog(item: ServiceItem, onClose: () -> Unit) {
     val fmt = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
     val dayFmt = remember { SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()) }
     var name by remember { mutableStateOf(item.name) }
-    var km by remember { mutableStateOf(item.km.toString()) }
+    var km by remember { mutableStateOf(kg.forester.sg.data.DistanceUnits.distanceField(item.km.toDouble())) }
     var months by remember { mutableStateOf(item.months.toString()) }
-    var lastKm by remember { mutableStateOf(if (item.lastKm >= 0) item.lastKm.roundToInt().toString() else "") }
+    var lastKm by remember { mutableStateOf(if (item.lastKm >= 0) kg.forester.sg.data.DistanceUnits.distanceField(item.lastKm) else "") }
     // not entered yet: today and now, the usual case is "just did it"
     var lastDate by remember { mutableStateOf(fmt.format(Date(if (item.lastMs > 0) item.lastMs else System.currentTimeMillis()))) }
     var hours by remember { mutableStateOf(if (item.hours > 0) item.hours.toString() else "") }
     var lastHours by remember { mutableStateOf(if (item.lastHours >= 0) "%.0f".format(item.lastHours) else "") }
     var on by remember { mutableStateOf(item.on) }
-    AlertDialog(
-        onDismissRequest = onClose,
+    CarAlertDialog(
+        onDismissRequest = onClose, textScrolls = false,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(36.dp).clip(CircleShape).background(C.Violet.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
@@ -980,25 +987,25 @@ private fun ServiceDialog(item: ServiceItem, onClose: () -> Unit) {
             }
         },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.cueScroll(C.DialogHi), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (item.note.isNotEmpty()) Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.Violet.copy(alpha = 0.10f)).padding(10.dp),
                 ) {
                     Icon(Lucide.Info, null, tint = C.Violet, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(8.dp))
-                    T(item.note, 12.sp, C.Text)
+                    T(kg.forester.sg.data.DistanceUnits.shownProse(item.note), 12.sp, C.Text)
                 }
                 if (item.custom) TextFieldDark("Название", name) { name = it }
                 DialogSection(Lucide.Repeat, "Интервал — что наступит раньше")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(Modifier.weight(1f)) { NumberField("км", km) { km = it } }
+                    Box(Modifier.weight(1f)) { NumberField(kg.forester.sg.data.DistanceUnits.distanceUnit, km) { km = it } }
                     Box(Modifier.weight(1f)) { NumberField("месяцев", months) { months = it } }
                     Box(Modifier.weight(1f)) { NumberField("моточасов", hours) { hours = it } }
                 }
                 T("Моточасы можно оставить пустыми — тогда только по пробегу и времени.", 11.sp, C.Sub)
                 DialogSection(Lucide.History, "Когда делали в последний раз")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(Modifier.weight(1f)) { NumberField("пробег, км", lastKm) { lastKm = it } }
+                    Box(Modifier.weight(1f)) { NumberField("пробег, ${kg.forester.sg.data.DistanceUnits.distanceUnit}", lastKm) { lastKm = it } }
                     Box(Modifier.weight(1f)) { NumberField("моточасы", lastHours) { lastHours = it } }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1006,7 +1013,7 @@ private fun ServiceDialog(item: ServiceItem, onClose: () -> Unit) {
                     Spacer(Modifier.width(8.dp))
                     Chip("Сегодня", false, {
                         lastDate = fmt.format(Date())
-                        Maintenance.odometer()?.let { lastKm = it.roundToInt().toString() }
+                        Maintenance.odometer()?.let { lastKm = kg.forester.sg.data.DistanceUnits.distanceField(it) }
                         lastHours = "%.0f".format(Maintenance.hours())
                     }, Lucide.CalendarCheck)
                 }
@@ -1021,8 +1028,8 @@ private fun ServiceDialog(item: ServiceItem, onClose: () -> Unit) {
                     ?: runCatching { dayFmt.parse(lastDate.trim())?.time }.getOrNull() ?: item.lastMs
                 Maintenance.update(item.copy(
                     name = name.ifBlank { item.name.ifBlank { "Свой пункт" } },
-                    km = km.toIntOrNull() ?: item.km, months = months.toIntOrNull() ?: item.months,
-                    lastKm = lastKm.toDoubleOrNull() ?: -1.0, lastMs = if (lastDate.isBlank()) 0L else ms, on = on,
+                    km = kg.forester.sg.data.DistanceUnits.distanceFromField(km, item.km.toDouble())?.roundToInt() ?: item.km, months = months.toIntOrNull() ?: item.months,
+                    lastKm = kg.forester.sg.data.DistanceUnits.distanceFromField(lastKm, item.lastKm) ?: -1.0, lastMs = if (lastDate.isBlank()) 0L else ms, on = on,
                     hours = hours.toIntOrNull() ?: 0, lastHours = lastHours.toDoubleOrNull() ?: -1.0,
                 ))
                 onClose()
@@ -1111,7 +1118,7 @@ private fun AlertsTab() {
         LazyColumn {
             items(list) { a ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                    T(fmt.format(Date(a.timeMs)), 13.sp, C.Sub, modifier = Modifier.width(100.dp))
+                    T(fmt.format(Date(a.timeMs)), 13.sp, C.Sub, modifier = Modifier.width(roomFor(100.dp, 13f)), maxLines = 1)
                     T(a.text, 14.sp, when (a.level) { Alerts.Level.DANGER -> C.Red; Alerts.Level.WARN -> C.Orange; else -> C.Text })
                 }
             }

@@ -141,4 +141,46 @@ class SpeechTextTest {
         )
         cases.forEach { (raw, said) -> assertEquals(raw, said, say(raw)) }
     }
+
+    @Test
+    fun englishForTheVoiceHasNoSymbols() {
+        assertEquals("Overheating! Coolant 105 degrees, stop", SpeechText.prepareEnglish("Overheating! Coolant 105 °C — stop"))
+        assertEquals("Speed 120 kilometers per hour", SpeechText.prepareEnglish("Speed 120 km/h"))
+        assertEquals("Consumption 9.5 liters per 100 kilometers", SpeechText.prepareEnglish("Consumption 9.5 l/100 km"))
+        assertEquals("Duty 85 percent", SpeechText.prepareEnglish("Duty 85 %"))
+        assertEquals("Hint here.", SpeechText.prepareEnglish("“Hint” here…"))
+    }
+
+    @Test
+    fun englishNumbersAndUnitsAgree() {
+        assertEquals("Coolant 1 degree", SpeechText.prepareEnglish("Coolant 1 °C"))
+        assertEquals("Coolant 1.5 degrees", SpeechText.prepareEnglish("Coolant 1.5°"))
+        assertEquals("Voltage 12.5 volts", SpeechText.prepareEnglish("Voltage 12,5 V"))
+        assertEquals("1 kilometer left", SpeechText.prepareEnglish("1 km left"))
+        assertEquals("Range 31 miles", SpeechText.prepareEnglish("Range 31 mi"))
+        assertEquals("Speed 1 mile per hour", SpeechText.prepareEnglish("Speed 1 mph"))
+        assertEquals("25 miles per gallon", SpeechText.prepareEnglish("25 mpg"))
+        assertEquals("Wait 30 seconds", SpeechText.prepareEnglish("Wait 30 s"))
+        assertEquals("2 minutes", SpeechText.prepareEnglish("2 min"))
+        assertEquals("Odometer 150000 kilometers", SpeechText.prepareEnglish("Odometer 150 000 km"))
+        assertEquals("3000 r p m", SpeechText.prepareEnglish("3000 rpm"))
+        assertEquals("Boost 250 kilopascals", SpeechText.prepareEnglish("Boost 250 kPa"))
+        assertEquals("Fuel 40 liters", SpeechText.prepareEnglish("Fuel 40 l"))
+    }
+
+    @Test
+    fun englishSignsRangesAndCodes() {
+        assertEquals("Outside minus 5 degrees", SpeechText.prepareEnglish("Outside -5 °C"))
+        assertEquals("Timing plus 3 degrees", SpeechText.prepareEnglish("Timing +3°"))
+        assertEquals("0 to 100 kilometers per hour in 7.5 seconds", SpeechText.prepareEnglish("0-100 km/h in 7,5 s"))
+        assertEquals("From 70 to 90 degrees", SpeechText.prepareEnglish("From 70–90 °C"))
+        assertEquals("Code P 0 4 2 0", SpeechText.prepareEnglish("Code P0420"))
+        assertEquals("EJ 20 engine", SpeechText.prepareEnglish("EJ20 engine"))
+        assertEquals("I A M dropped to 8", SpeechText.prepareEnglish("IAM dropped to 8"))
+    }
+
+    @Test
+    fun englishLeavesWordsAlone() {
+        for (s in listOf("Wi-Fi is off", "Mile marker", "Main street", "The miles are fine", "Turn left at Sam's", "Volume 12")) assertEquals(s, SpeechText.prepareEnglish(s))
+    }
 }

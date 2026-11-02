@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -41,7 +40,7 @@ private fun myCards(): CardNames {
 /** Row heights of «Мой экран» (also used to draw the ready-made layouts); the extra cards first, their style is their own settings. */
 fun myRowWeight(t: TileCfg) = when {
     t.id == "navcluster" -> 2.4f
-    t.id == "defi" -> 2.2f
+    t.id == "defi" || t.id in kg.forester.sg.data.GAUGE_PANELS -> 2.2f
     t.id in kg.forester.sg.data.EXTRA_CARDS -> 1.1f
     t.style.isNotEmpty() -> 1.6f
     t.id.startsWith("outw_") -> 1.0f
@@ -68,22 +67,22 @@ fun MyScreen() {
         if (layout.isEmpty()) Row(Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Lucide.Hand, null, tint = C.Violet, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(8.dp))
-            T("Это ваш экран: нажмите и удерживайте любую карточку, чтобы добавить свои показания, выбрать стрелочный прибор и расставить их. " +
-                "Или начните с готового шаблона", 12.sp, C.Sub, modifier = Modifier.weight(1f))
+            FitText("Это ваш экран: удерживайте карточку, чтобы настроить его. Или начните с шаблона", LocalCar.current.secondary, Modifier.weight(1f), C.Sub, maxLines = 2)
             Spacer(Modifier.width(8.dp))
-            Chip("Шаблоны", false, { presets = true }, Lucide.LayoutTemplate)
+            Parked { Chip("Шаблоны", false, { presets = true }, Lucide.LayoutTemplate) }
         }
         BoardScreen(MyEdit, names, ::myRowWeight, leading = { Chip("Шаблоны", false, { presets = true }, Lucide.LayoutTemplate) }) { t, m ->
             if (t.id.startsWith("outw_")) { OutputWidget(t.id, m); return@BoardScreen }
             val info = "home.${t.id}"
             val ind = Metrics.of(t.id, avail)
             if (ind == null) {
-                if (!ExtraCard(t.id, info, m, t.style)) Panel(m) { T(names[t.id]?.first ?: "Датчик не настроен", 13.sp, C.Sub) }
+                if (!ExtraCard(t.id, info, m, t.style)) Panel(m) { FitText(names[t.id]?.first ?: "Датчик не настроен", LocalCar.current.secondary, color = C.Sub, maxLines = 3) }
                 return@BoardScreen
             }
-            val v = ind.read(ctx)
-            ValueCard(CardValue(ind.icon, ind.title, v, ind.min, ind.max, ind.unit, ind.format, info, ind.warnAbove), t.style, m) {
-                MiniGauge(ind.icon, ind.title, v, ind.min, ind.max, ind.unit, ind.format, m, info = info)
+            // this card's own value: a reading recomposes the cards whose number changed
+            val v = metricSlot(ctx, t.id to avail) { ind.read(it) }
+            ValueCard(CardValue(ind.icon, ind.title, null, ind.min, ind.max, ind.unit, ind.format, info, ind.warnAbove, live = v, warnRule = ind.warnRule), t.style, m) {
+                MiniGauge(ind.icon, ind.title, v.value, ind.min, ind.max, ind.unit, ind.format, m, info = info, warnRule = ind.warnRule)
             }
         }
     }

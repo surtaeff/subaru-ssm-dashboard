@@ -973,7 +973,7 @@
       "sourceId": "E158",
       "t": 1,
       "n": "Volumetric Efficiency",
-      "ru": "",
+      "ru": "Наполнение VE (из ЭБУ)",
       "d": "E158 - Current Volumetric Efficiency Compensation applied to Base Engine Load, as determined by Speed Density Base Load Compensation (MAP vs. RPM).",
       "a": [
         137106,

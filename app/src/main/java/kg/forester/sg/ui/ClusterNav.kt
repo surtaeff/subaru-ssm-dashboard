@@ -32,6 +32,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,7 +66,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.ArrowUp
@@ -83,7 +84,6 @@ import com.composables.icons.lucide.Construction
 import com.composables.icons.lucide.TriangleAlert
 import com.composables.icons.lucide.Fuel
 import com.composables.icons.lucide.Thermometer
-import androidx.compose.material3.Icon
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.wrapContentHeight
@@ -197,6 +197,10 @@ private object Trail {
     }
 }
 
+/** How much of the route ahead is on the map, and how often it is laid anew. */
+private const val ROUTE_DRAWN_M = 10_000.0
+private const val ROUTE_EVERY_MS = 3000L
+
 /** [interactive] false: a preview (the settings window), a tap does nothing there. */
 @Composable
 fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: Boolean = true) {
@@ -242,10 +246,22 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
     val dgis by kg.forester.sg.service.DgisDashboard.info.collectAsState()
     val dgisFrame by kg.forester.sg.service.DgisDashboard.frame.collectAsState()
     val guiding = dgis?.guiding == true
-    var heading by remember { mutableStateOf(0f) }
+    // one fix, one camera update: no state of its own for the course, whose change would set the map a second time
+    // the settings preview has no frames of its own: it is set to each fix and stands
+    val rig = remember { CameraRig(map, live = interactive) }
+    DisposableEffect(rig) { onDispose { SmoothDriver.drop(rig) } }
+    // 2GIS's own frame lies over the map: nothing to move or draw for what cannot be seen
+    val covered = guiding && dgisFrame != null
+    LaunchedEffect(covered) {
+        if (covered) rig.pause() else {
+            rig.resume()
+            trail.setPoints(Trail.points)
+            map.invalidate()
+        }
+    }
     LaunchedEffect(gps) {
         val g = gps ?: return@LaunchedEffect
-        g.bearing?.let { if (g.speedKmh > 3f) heading = it } // a standing car keeps its last course
+        rig.onFix(g)
         if (g.lat == null || g.lon == null) return@LaunchedEffect
         Routing.init(ctx)
         Routing.onFix(g.lat, g.lon)
@@ -253,18 +269,25 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
         if (Routing.route.value == null && Routing.status.value.isEmpty()) {
             kg.forester.sg.service.Place.parse(Repo.settings.navDest)?.let { Routing.build(g.lat, g.lon, it) }
         }
-        if (g.accuracyM < 40f && Trail.add(g.lat, g.lon)) { trail.setPoints(Trail.points); map.invalidate() }
+        if (g.accuracyM < 40f && Trail.add(g.lat, g.lon) && !covered) { trail.setPoints(Trail.points); map.invalidate() }
     }
-    LaunchedEffect(route, progress) {
-        val r = route
-        val pts = if (r == null) emptyList() else {
-            val from = (progress?.ahead ?: 0).coerceIn(0, r.lat.size - 1)
-            val g = Repo.gps.value
-            (if (g?.lat != null && g.lon != null && progress != null) listOf(GeoPoint(g.lat, g.lon)) else emptyList()) +
-                (from until r.lat.size).map { GeoPoint(r.lat[it], r.lon[it]) }
+    // the progress changes with every fix: the line is laid anew only every few seconds, and only as far as the map can
+    // show (a route across the country is thousands of points to walk for each drawing)
+    LaunchedEffect(route, covered) {
+        while (!covered) {
+            val r = route
+            val p = Routing.progress.value
+            val pts = if (r == null) emptyList() else {
+                val from = (p?.ahead ?: 0).coerceIn(0, r.lat.size - 1)
+                val g = Repo.gps.value
+                (if (g?.lat != null && g.lon != null && p != null) listOf(GeoPoint(g.lat, g.lon)) else emptyList()) +
+                    (from..lastRouteIndex(r.lat, r.lon, from, ROUTE_DRAWN_M)).map { GeoPoint(r.lat[it], r.lon[it]) }
+            }
+            glow.setPoints(pts); line.setPoints(pts)
+            map.invalidate()
+            if (r == null) break
+            kotlinx.coroutines.delay(ROUTE_EVERY_MS)
         }
-        glow.setPoints(pts); line.setPoints(pts)
-        map.invalidate()
     }
     var choosing by remember { mutableStateOf(false) }
     if (choosing) DestinationDialog { choosing = false }
@@ -301,25 +324,16 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
             map.invalidate()
             onDispose {}
         }
-        DisposableEffect(cfg.zoom, carY, hPx) {
+        // the map view is larger than the card and moved by a layer between its real moves (see CameraRig)
+        val fit = remember(wPx, hPx, carY) { CameraAnchor(wPx.toInt(), hPx.toInt(), wPx / 2, carY) }
+        DisposableEffect(cfg.zoom, fit) {
             if (map.zoomLevelDouble != cfg.zoom) map.controller.setZoom(cfg.zoom)
-            map.setMapCenterOffset(0, (carY - hPx / 2).toInt())
+            map.setMapCenterOffset(fit.centerOffsetX, fit.centerOffsetY)
+            rig.use(fit)
             onDispose {}
         }
-        // from fix to fix in one glide as long as the time between them (1–2 a second): the map drives on instead of jumping
-        val g0 = gps
-        val lastFix = remember { LongArray(1) }
-        DisposableEffect(g0?.lat, g0?.lon, heading) {
-            if (g0?.lat != null && g0.lon != null) {
-                val now = android.os.SystemClock.uptimeMillis()
-                val dt = now - lastFix[0]
-                lastFix[0] = now
-                if (dt > 3000) { map.controller.setCenter(GeoPoint(g0.lat, g0.lon)); map.mapOrientation = -heading }
-                else map.controller.animateTo(GeoPoint(g0.lat, g0.lon), null, dt.coerceIn(250, 1500), -heading)
-            } else map.mapOrientation = -heading
-            onDispose {}
-        }
-        AndroidView({ map }, Modifier.fillMaxSize())
+        val moved = remember(rig, fit) { Modifier.cameraMap(rig, fit) }
+        AndroidView({ map }, moved)
         if (ownMap != null) {
             val img = remember(ownMap) { ownMap.asImageBitmap() }
             val tilt = cfg.tilt
@@ -361,7 +375,7 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
                 val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     color = C.Sub.toArgb(); textSize = size.height * 0.05f; textAlign = android.graphics.Paint.Align.CENTER
                 }
-                drawContext.canvas.nativeCanvas.drawText("ждём GPS", size.width / 2, carY + size.height * 0.12f, p)
+                drawContext.canvas.nativeCanvas.drawText(kg.forester.sg.data.tr("ждём GPS"), size.width / 2, carY + size.height * 0.12f, p)
             }
         }
         val dia: Dp = minOf(maxHeight * 0.94f, maxWidth * 0.31f)
@@ -379,7 +393,7 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
                 // an icon name it has not told us before: the words, and the notification's arrow if there is one
                 Shown(dg.maneuverDistance, dg.maneuverDescription.ifEmpty { turnWords(k) }, if (k == null) n?.icon else null, k)
             }
-            n != null -> Shown(n.title, n.text, n.icon, null)
+            n != null -> Shown(kg.forester.sg.data.DistanceUnits.navText(n.title), n.text, n.icon, null)
             p?.next != null -> Shown(Routing.distanceText(p.toNextM), Routing.say(p.next) + p.next.road.takeIf { it.isNotEmpty() }?.let { ", $it" }.orEmpty(),
                 null, Routing.kind(p.next))
             else -> null
@@ -388,7 +402,7 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
         // at the bottom: what is left of the route, or how to get one
         val status by Routing.status.collectAsState()
         val dgBottom = dgis?.takeIf { guiding }?.let { i ->
-            listOf(i.total, i.remaining, i.arrival.takeIf { it.isNotEmpty() }?.let { "прибытие $it" }).filter { !it.isNullOrEmpty() }.joinToString(" · ")
+            listOf(kg.forester.sg.data.DistanceUnits.navText(i.total), kg.forester.sg.data.DistanceUnits.navText(i.remaining), i.arrival.takeIf { it.isNotEmpty() }?.let { "прибытие $it" }).filter { !it.isNullOrEmpty() }.joinToString(" · ")
         }?.ifEmpty { null }
         val bottom = when {
             dgBottom != null -> dgBottom
@@ -422,31 +436,38 @@ private fun DrawScope.drawCar(c: Offset, s: Float, accent: Color) {
 /** One round gauge of the cluster: the ring with a big number, or a needle dial in one of the gauge designs. */
 @Composable
 private fun NavGauge(
-    cfg: NavCfg, id: String, left: Boolean, ctx: MetricCtx, avail: List<kg.forester.sg.ssm.RrParam>, accent: Color, m: Modifier,
+    cfg: NavCfg, id: String, left: Boolean, ctx: State<MetricCtx>, avail: List<kg.forester.sg.ssm.RrParam>, accent: Color, m: Modifier,
 ) {
     val ind = Metrics.of(id, avail)
-    val v = ind?.read(ctx)
-    val extra = if (!cfg.extras) null else if (left) fuelShare(ctx) else ctx.e.coolantC?.let { ((it - 40f) / 80f).coerceIn(0f, 1f) }
+    val value = metricSlot(ctx, id to avail) { ind?.read(it) }
+    val extra by metricSlot(ctx, cfg.extras to left) { c ->
+        if (!cfg.extras) null else if (left) fuelShare(c) else c.e.coolantC?.let { ((it - 40f) / 80f).coerceIn(0f, 1f) }
+    }
     if (cfg.gauge != "ring" && ind != null) {
         val (lo, hi, step) = niceScale(ind.min, ind.max)
         val div = if (hi >= 1000f) 1000f else 1f
+        val st = dialStyle(cfg.gauge)
+        val gear = if (st.lens && ind.id == "speed") rememberLensGear() else null
         Box(m.clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xE6070A12))) {
-            Dial(v, hi, step, div, ind.unit, if (div > 1f) "x1000" else null, ind.warnAbove, Modifier.fillMaxSize(), dialStyle(cfg.gauge),
-                min = lo, format = ind.format)
+            Dial(value, hi, step, div, ind.unit, if (div > 1f) "x1000" else null, ind.warnAbove, Modifier.fillMaxSize(), st,
+                min = lo, format = ind.format, name = ind.short, warn = WarnRule(ind.warnAbove, ind.warnBelow, ind.warnAbs), gear = gear)
         }
         return
     }
-    val shown by androidx.compose.animation.core.animateFloatAsState(
-        if (ind == null || v == null) 0f else ((v - ind.min) / (ind.max - ind.min)).coerceIn(0f, 1f),
-        androidx.compose.animation.core.tween(240), label = "ring",
-    )
+    val reading = remember(value, ind?.min, ind?.max) {
+        derivedStateOf { val v = value.value; if (ind == null || v == null) 0f else ((v - ind.min) / (ind.max - ind.min)).coerceIn(0f, 1f) }
+    }
+    val ring = rememberSmooth(reading, 1f) { value.value != null }
     // where the red zone starts on the scale (the rpm limit), null without one
     val red = ind?.warnAbove?.let { ((it - ind.min) / (ind.max - ind.min)).coerceIn(0f, 1f) }
-    val warn = ind?.warn(v) == true
+    // from the reading itself, it does not wait for the ring
+    val warn by remember(value, ind?.warnAbove, ind?.warnBelow) { derivedStateOf { ind?.warn(value.value) == true } }
     val lit = if (warn) C.Orange else accent
+    val text by rememberDigits { ind?.text(value.value) ?: "—" }
     BoxWithConstraints(m, contentAlignment = Alignment.Center) {
         val r = maxWidth
         Canvas(Modifier.fillMaxSize()) {
+            val shown = ring.value.floatValue.coerceIn(0f, 1f)
             val d = size.minDimension
             val sw = d * 0.04f
             val radius = d / 2 - sw * 1.4f
@@ -486,7 +507,7 @@ private fun NavGauge(
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            T(ind?.text(v) ?: "—", (r.value * 0.26f).coerceIn(14f, 96f).sp, if (warn) C.Orange else Color.White, FontWeight.SemiBold, maxLines = 1)
+            T(text, (r.value * 0.26f).coerceIn(14f, 96f).sp, if (warn) C.Orange else Color.White, FontWeight.SemiBold, maxLines = 1)
             T(ind?.unit?.ifEmpty { ind.short } ?: "", (r.value * 0.075f).coerceIn(9f, 22f).sp, Color(0xFFB4BCCB), maxLines = 1)
             if (ind != null && ind.unit.isNotEmpty()) T(ind.short, (r.value * 0.055f).coerceIn(8f, 16f).sp, Color(0xFF8E95AB), maxLines = 1)
         }
@@ -524,7 +545,7 @@ private fun DgisAlerts(i: kg.forester.sg.service.DgisDashboard.Info, accent: Col
             Modifier.size(38.dp).clip(androidx.compose.foundation.shape.CircleShape).background(Color.White)
                 .border(4.5.dp, Color(0xFFE53935), androidx.compose.foundation.shape.CircleShape),
             contentAlignment = Alignment.Center,
-        ) { T("%.0f".format(i.speedLimit), 14.sp, if (i.overLimit) Color(0xFFE53935) else Color.Black, FontWeight.Bold, maxLines = 1) }
+        ) { T("%.0f".format(kg.forester.sg.data.DistanceUnits.speed(i.speedLimit)), 14.sp, if (i.overLimit) Color(0xFFE53935) else Color.Black, FontWeight.Bold, maxLines = 1) }
         if (barrier.isNotEmpty()) AlertChip(Lucide.Construction, barrier, C.Orange)
         camera?.let { AlertChip(Lucide.Cctv, it, C.Orange) }
         light?.let { c ->
@@ -648,11 +669,11 @@ fun NavClusterEditor(style: String, onChange: (String) -> Unit, onClose: () -> U
             set(if (left) cfg.copy(left = it) else cfg.copy(right = it)); picking = null
         }, onClose = { picking = null })
     }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        val screen = LocalConfiguration.current
+    CarDialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val screen = canvasScreen()
         Column(
             Modifier.widthIn(max = (screen.screenWidthDp * 0.96f).dp).heightIn(max = (screen.screenHeightDp * 0.94f).dp)
-                .clip(RoundedCornerShape(16.dp)).background(C.Card).border(1.dp, C.Purple, RoundedCornerShape(16.dp)).padding(14.dp),
+                .clip(kg.forester.sg.ui.RoundedCornerShape(16.dp)).background(C.Sheet).border(1.dp, C.Purple, kg.forester.sg.ui.RoundedCornerShape(16.dp)).padding(14.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T("Приборка с картой", 17.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -665,7 +686,7 @@ fun NavClusterEditor(style: String, onChange: (String) -> Unit, onClose: () -> U
             val previewH = minOf((screen.screenWidthDp * 0.96f - 28f) / 2.8f, screen.screenHeightDp * 0.34f).dp
             NavClusterCard("preview.navcluster", Modifier.align(Alignment.CenterHorizontally).height(previewH).aspectRatio(2.8f), cfg.format(), interactive = false)
             Spacer(Modifier.height(10.dp))
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.cueScroll(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     T("Приборы:", 13.sp, C.Sub, modifier = Modifier.padding(top = 10.dp))
                     Chip("Слева: ${Metrics.of(cfg.left, avail)?.title ?: cfg.left}", false, { picking = true })
@@ -760,11 +781,11 @@ fun DestinationDialog(onClose: () -> Unit) {
         }
     }
     // only on «Найти»: the OpenStreetMap search's rules forbid searching as the driver types
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        val screen = LocalConfiguration.current
+    CarDialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val screen = canvasScreen()
         Column(
             Modifier.widthIn(max = minOf(820f, screen.screenWidthDp * 0.96f).dp).heightIn(max = (screen.screenHeightDp * 0.94f).dp)
-                .clip(RoundedCornerShape(16.dp)).background(C.Card).border(1.dp, C.Purple, RoundedCornerShape(16.dp)).padding(14.dp),
+                .clip(kg.forester.sg.ui.RoundedCornerShape(16.dp)).background(C.Sheet).border(1.dp, C.Purple, kg.forester.sg.ui.RoundedCornerShape(16.dp)).padding(14.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T("Куда едем", 17.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -795,7 +816,7 @@ fun DestinationDialog(onClose: () -> Unit) {
                 T("тот же адрес откроется в навигаторе, и он поведёт по похожему маршруту", 12.sp, C.Sub, modifier = Modifier.weight(1f))
             }
             if (note.isNotEmpty()) T(note, 13.sp, C.Sub, modifier = Modifier.padding(top = 8.dp))
-            Column(Modifier.padding(top = 6.dp).verticalScroll(rememberScrollState())) {
+            Column(Modifier.padding(top = 6.dp).cueScroll()) {
                 val list = found.ifEmpty { recent }
                 if (found.isEmpty() && recent.isNotEmpty()) T("Недавние", 12.sp, C.Sub, FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
                 list.forEach { p ->

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- adb only: writes what the big USB panels would show (ScreenDump.kt) -->
+        <receiver android:name="kg.forester.sg.ScreenDumpReceiver" android:exported="true" />
+    </application>
+</manifest>

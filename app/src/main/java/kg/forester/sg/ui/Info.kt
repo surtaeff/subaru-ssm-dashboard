@@ -11,9 +11,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -45,20 +42,28 @@ fun InfoButton(title: String, key: String = title, modifier: Modifier = Modifier
         Icon(Lucide.Info, "Что это", tint = C.Sub.copy(alpha = 0.6f), modifier = Modifier.size(15.dp))
         Box(Modifier.requiredSize(48.dp).clip(CircleShape).clickable { open = true })
     }
-    if (open) InfoDialog(title, info, key) { open = false }
+    if (open) {
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val shown = remember(info) {
+            // another make goes by no Subaru's numbers, not even the last connected one's
+            val e = if (kg.forester.sg.data.CarKind.other.value) kg.forester.sg.ssm.EngineInfo("EJ", false, "EJ", "нет") else kg.forester.sg.ssm.EngineId.detect(ctx)
+            InfoTexts.forEngine(info, e)
+        }
+        InfoDialog(title, shown, key) { open = false }
+    }
 }
 
 @Composable
 fun InfoDialog(title: String, info: InfoText, key: String = "", onClose: () -> Unit) {
-    AlertDialog(
+    CarAlertDialog(
         onDismissRequest = onClose,
-        containerColor = C.CardHi,
+        containerColor = C.CardHi, textScrolls = false,
         title = { T(title, 18.sp, weight = FontWeight.SemiBold) },
         text = {
-            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
-                Section("Что показывает", info.what)
-                Section("Как считается", info.how)
-                info.norm?.let { Section("Норма и подсказки", it) }
+            Column(Modifier.heightIn(max = 420.dp).cueScroll(C.DialogHi)) {
+                Section("Что показывает", kg.forester.sg.data.DistanceUnits.shownProse(info.what))
+                Section("Как считается", kg.forester.sg.data.DistanceUnits.shownProse(info.how))
+                info.norm?.let { Section("Норма и подсказки", kg.forester.sg.data.DistanceUnits.shownProse(it)) }
                 // the cards of the home and «Динамика» screens show the trip's min and max
                 if ((key.startsWith("home.") || key.startsWith("drive.")) && kg.forester.sg.data.Repo.settings.feature("minmax")) {
                     T("Мин и макс за поездку", 13.sp, C.Violet, FontWeight.SemiBold)

@@ -66,4 +66,20 @@ class FuelRangeTest {
         assertEquals(2.0, FuelCalc.sampleDt(1_000, 31_000), 0.0)
         assertEquals(0.0, FuelCalc.sampleDt(0, 31_000), 0.0)
     }
+
+    @Test fun missingLambdaEnrichesOnBoost() {
+        // MAF 120 g/s at full throttle and 80 kPa of boost, no wideband: the real AFR is ~11.5 (50.4 L/h), not 14.7 (39.4)
+        val s = EcuSnapshot(rpm = 5500, mafGs = 120f, throttlePct = 100f, boostKpa = 80f, mapKpa = 180f, atmKpa = 100f)
+        val lh = FuelCalc.litersPerHour(s, 1.0)
+        assertTrue("was $lh", lh > 39.4 * 1.15)
+        assertEquals(50.4, lh, 50.4 * 0.15)
+    }
+
+    @Test fun missingLambdaCruiseStaysStoich() {
+        val cruise = EcuSnapshot(rpm = 2500, mafGs = 20f, throttlePct = 25f, boostKpa = 5f, mapKpa = 90f, atmKpa = 100f)
+        assertEquals(20.0 / 14.7 * 3600 / 745, FuelCalc.litersPerHour(cruise, 1.0), 1e-6)
+        // full throttle with no boost (a naturally aspirated car, or a light foot on a turbo) stays stoichiometric too
+        val na = EcuSnapshot(rpm = 5500, mafGs = 60f, throttlePct = 100f, boostKpa = -5f, mapKpa = 95f, atmKpa = 100f)
+        assertEquals(60.0 / 14.7 * 3600 / 745, FuelCalc.litersPerHour(na, 1.0), 1e-6)
+    }
 }

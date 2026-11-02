@@ -30,6 +30,73 @@ object SpeechText {
         return tidy(t)
     }
 
+    /**
+     * The same for English, which the head unit's engine says by itself: only what it would read as a symbol or an
+     * abbreviation it doesn't know, and what a Russian text left behind (a decimal comma). Numbers stay digits, the
+     * engine reads those; a unit after one agrees with it: 1 degree, 2 degrees, 1.5 liters.
+     */
+    fun prepareEnglish(text: String): String {
+        var t = text
+        // a trouble code digit by digit, an engine's letters apart from its number: P0420, EJ20
+        t = Regex("(?<![\\p{L}\\d])([PCBU])(\\d{4})(?!\\d)").replace(t) { it.groupValues[1] + " " + it.groupValues[2].toList().joinToString(" ") }
+        t = Regex("(?<![\\p{L}\\d])([A-Z]{2})(\\d{2,})(?!\\d)").replace(t, "$1 $2")
+        t = Regex("(\\d)[ \\u00A0\\u202F](?=\\d{3}(?!\\d))").replace(t, "$1")
+        t = Regex("(?<=\\d),(?=\\d{1,2}(?!\\d))").replace(t, ".")
+        t = Regex("(?<![\\p{L}\\d.,])(\\d+(?:\\.\\d+)?)\\s?[–-]\\s?(?=\\d)").replace(t) { it.groupValues[1] + " to " }
+        t = Regex("(^|[\\s(:;,])[-−](?=\\d)").replace(t) { it.groupValues[1] + "minus " }
+        t = Regex("(^|[\\s(:;,])\\+(?=\\d)").replace(t) { it.groupValues[1] + "plus " }
+        for ((rx, one, many) in EN_AFTER_NUMBER) t = rx.replace(t) { it.groupValues[1] + " " + if (it.groupValues[1] == "1") one else many }
+        for ((a, b) in EN_UNITS) t = a.replace(t, b)
+        for ((rx, spelled) in EN_SPELLED) t = rx.replace(t, spelled)
+        val b = StringBuilder(t.length)
+        var i = 0
+        while (i < t.length) {
+            val cp = t.codePointAt(i)
+            i += Character.charCount(cp)
+            when {
+                cp == 0x00A0 || cp == 0x202F || cp == 0x2009 -> b.append(' ')
+                cp == '→'.code || cp == '·'.code || cp == '•'.code || cp == '|'.code || cp == '—'.code || cp == '–'.code -> b.append(", ")
+                cp == '…'.code -> b.append('.')
+                cp == '≈'.code || cp == '~'.code -> b.append(" about ")
+                cp == '“'.code || cp == '”'.code || cp == '"'.code || cp == '«'.code || cp == '»'.code -> {}
+                Character.getType(cp) == Character.OTHER_SYMBOL.toInt() || Character.getType(cp) == Character.SURROGATE.toInt() -> {}
+                else -> b.appendCodePoint(cp)
+            }
+        }
+        return b.toString().replace(Regex("\\s+"), " ").replace(Regex("\\s+,"), ",").trim()
+    }
+
+    /** A unit right after a number, longest first: what it is called for exactly 1, and for anything else. */
+    private val EN_AFTER_NUMBER = listOf(
+        "km/h" to ("kilometer per hour" to "kilometers per hour"), "kph" to ("kilometer per hour" to "kilometers per hour"),
+        "mph" to ("mile per hour" to "miles per hour"), "mpg" to ("mile per gallon" to "miles per gallon"),
+        "l/100 km" to ("liter per 100 kilometers" to "liters per 100 kilometers"), "L/100 km" to ("liter per 100 kilometers" to "liters per 100 kilometers"),
+        "l/100km" to ("liter per 100 kilometers" to "liters per 100 kilometers"), "l/100" to ("liter per 100 kilometers" to "liters per 100 kilometers"),
+        "g/s" to ("gram per second" to "grams per second"), "kPa" to ("kilopascal" to "kilopascals"),
+        "°C" to ("degree" to "degrees"), "°" to ("degree" to "degrees"), "%" to ("percent" to "percent"), "rpm" to ("r p m" to "r p m"),
+        "km" to ("kilometer" to "kilometers"), "kilometers" to ("kilometer" to "kilometers"), "kilometres" to ("kilometer" to "kilometers"),
+        "mi" to ("mile" to "miles"), "miles" to ("mile" to "miles"), "degrees" to ("degree" to "degrees"), "volts" to ("volt" to "volts"),
+        "liters" to ("liter" to "liters"), "litres" to ("liter" to "liters"),
+        "mm" to ("millimeter" to "millimeters"), "ms" to ("millisecond" to "milliseconds"), "min" to ("minute" to "minutes"), "sec" to ("second" to "seconds"),
+        "s" to ("second" to "seconds"), "h" to ("hour" to "hours"), "V" to ("volt" to "volts"), "l" to ("liter" to "liters"), "L" to ("liter" to "liters"),
+        "m" to ("meter" to "meters"), "ft" to ("foot" to "feet"),
+    ).map { (sym, names) ->
+        val edge = if (sym.last().isLetter()) "(?![\\p{L}\\d/])" else ""
+        Triple(Regex("(?<![\\p{L}\\d.])(\\d+(?:\\.\\d+)?)\\s?${Regex.escape(sym)}$edge"), names.first, names.second)
+    }
+
+    /** The same symbols where no number stands before them. */
+    private val EN_UNITS = listOf(
+        "km/h" to " kilometers per hour", "l/100 km" to " liters per 100 kilometers", "°C" to " degrees", "°" to " degrees",
+        "%" to " percent", "(?<=\\s)km(?![\\p{L}\\d])" to "kilometers", "(?<=\\s)mph(?![\\p{L}\\d])" to "miles per hour", "(?<=\\s)mpg(?![\\p{L}\\d])" to "miles per gallon",
+        "(?<=\\s)rpm(?![\\p{L}\\d])" to "r p m",
+    ).map { (a, b) -> Regex(if (a.startsWith("(?")) a else Regex.escape(a)) to b }
+
+    /** Letters an engine would read as a word ("I am"), or stumble over. */
+    private val EN_SPELLED = listOf("IAM", "FBKC", "FLKC", "AVCS", "AFR", "ATF", "ECU", "EGT", "MAF", "DTC", "CVT", "TPMS", "VDC", "OBD", "DAM").map { w ->
+        Regex("(?<![\\p{L}\\d])$w(?![\\p{L}\\d])") to w.toList().joinToString(" ")
+    }
+
     // ---- symbols ----
 
     private fun clean(s: String): String {
@@ -217,6 +284,9 @@ object SpeechText {
     private val PCT = Unit(G.M, "процент", "процента", "процентов", "проценте", "процентах")
     private val KM = Unit(G.M, "километр", "километра", "километров", "километре", "километрах")
     private val KMH = Unit(G.M, "километр", "километра", "километров", "километре", "километрах", tail = " в час")
+    private val MILE = Unit(G.F, "миля", "мили", "миль", "миле", "милях", "милю")
+    private val MPH = Unit(G.F, "миля", "мили", "миль", "миле", "милях", "милю", tail = " в час")
+    private val MPG = Unit(G.F, "миля", "мили", "миль", "миле", "милях", "милю", tail = " на галлон")
     private val LITRE = Unit(G.M, "литр", "литра", "литров", "литре", "литрах")
     private val L100 = Unit(G.M, "литр", "литра", "литров", "литре", "литрах", tail = " на сотню")
     private val REV = Unit(G.M, "оборот", "оборота", "оборотов", "обороте", "оборотах")
@@ -234,7 +304,7 @@ object SpeechText {
 
     /** Unit symbols right after a number, longest first; the ones that are letters must not run into a word. */
     private val SYMBOLS = listOf(
-        "°C" to DEG, "°С" to DEG, "°" to DEG, "км/ч" to KMH, "л/100 км" to L100, "л/100км" to L100, "л/100" to L100,
+        "°C" to DEG, "°С" to DEG, "°" to DEG, "км/ч" to KMH, "миль/ч" to MPH, "миль/гал" to MPG, "миль" to MILE, "л/100 км" to L100, "л/100км" to L100, "л/100" to L100,
         "об/мин" to RPM, "г/с" to GS, "кПа" to KPA, "%" to PCT, "км" to KM, "мин" to MIN, "сек" to SEC, "мс" to MS,
         "мм" to MM, "дн" to DAY, "ч" to HOUR, "с" to SEC, "В" to VOLT, "л" to LITRE,
     )

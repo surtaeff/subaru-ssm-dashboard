@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -88,8 +87,11 @@ internal fun LearningTab() {
             r.onSuccess {
                 result = it
                 Repo.settings.learnedLast = it.toJson().toString()
-                status = if (it.flkc == null) "Таблицу FLKC не прочитать: в определениях нет её сетки для этой прошивки" else ""
-            }.onFailure { status = it.message ?: "Не прочиталось" }
+                status = listOfNotNull(
+                    if (it.flkc == null) it.flkcError ?: "Таблицу FLKC не прочитать: в определениях нет её сетки для этой прошивки" else null,
+                    if (it.missed > 0) "ЭБУ не ответил на часть значений (${it.missed}), они остались пустыми" else null,
+                ).joinToString(". ")
+            }.onFailure { kg.forester.sg.ssm.SsmTrace.log("learning: $it"); status = kg.forester.sg.data.Failure.text(it, "Не прочиталось") }
         }
     }
     val fmt = remember { SimpleDateFormat("dd.MM.yy HH:mm", Locale.getDefault()) }
@@ -107,7 +109,7 @@ internal fun LearningTab() {
                 Row(verticalAlignment = Alignment.Bottom) {
                     val iam = r.iam
                     T(iam?.let { "%.3f".format(it) } ?: "—", 40.sp,
-                        if (iam == null) C.Gray else if (iam >= 0.95) C.Green else if (iam >= 0.75) C.Orange else C.Red, FontWeight.Bold)
+                        if (iam == null) C.Sub else if (iam >= 0.95) C.Green else if (iam >= 0.75) C.Orange else C.Red, FontWeight.Bold)
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.padding(bottom = 7.dp)) {
                         T("IAM", 13.sp, C.Sub)
@@ -194,7 +196,7 @@ private fun Grid(
                             .background(if (v != null && color(v) != C.Sub && color(v) != C.Text) color(v).copy(alpha = 0.16f) else C.CardHi)
                             .padding(vertical = 6.dp),
                         contentAlignment = Alignment.Center,
-                    ) { T(v?.let(text) ?: "—", 13.sp, v?.let(color) ?: C.Gray, FontWeight.SemiBold) }
+                    ) { T(v?.let(text) ?: "—", 13.sp, v?.let(color) ?: C.Sub, FontWeight.SemiBold) }
                 }
             }
         }

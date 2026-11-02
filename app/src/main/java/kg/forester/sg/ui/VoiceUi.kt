@@ -25,9 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
@@ -63,7 +61,7 @@ fun VoiceToast(modifier: Modifier = Modifier) {
     }
     AnimatedVisibility(visible, modifier, enter = fadeIn() + slideInVertically(), exit = fadeOut() + slideOutVertically()) {
         Row(
-            Modifier.clip(RoundedCornerShape(24.dp)).background(C.CardHi).border(1.dp, C.Purple, RoundedCornerShape(24.dp))
+            Modifier.clip(RoundedCornerShape(24.dp)).background(C.DialogHi).border(1.dp, C.Purple, RoundedCornerShape(24.dp))
                 .padding(horizontal = 18.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -81,10 +79,18 @@ fun VoiceSettings() {
     val heard by Voice.lastHeard.collectAsState()
     var on by remember { mutableStateOf(Voice.enabled(ctx)) }
     var wake by remember { mutableStateOf(Voice.wakeWord(ctx)) }
+    // the language may have been changed a moment ago in another tab of Settings
+    LaunchedEffect(Unit) { Voice.ensure(ctx) }
     Row(Modifier.fillMaxSize()) {
         Panel(Modifier.width(470.dp).fillMaxHeight().verticalScroll(rememberScrollState())) {
+            SoundSettings()
+            Spacer(Modifier.height(16.dp))
             PanelTitle(Lucide.Mic, "Голосовое управление")
             Spacer(Modifier.height(10.dp))
+            if (kg.forester.sg.data.I18n.english) {
+                T("Spoken answers and alerts use the head unit's Android voice if it has English, otherwise a beep.", 13.sp, C.Sub)
+                Spacer(Modifier.height(10.dp))
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     T("Голосовой ассистент", 15.sp)
@@ -103,6 +109,7 @@ fun VoiceSettings() {
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions.Default,
             )
+            if (kg.forester.sg.data.I18n.english && wake.any { it in 'Ѐ'..'ӿ' }) T("The English recognizer can't hear this name: give the assistant an English one", 12.sp, C.Orange)
             Spacer(Modifier.height(8.dp))
             ActionButton("Сохранить имя", wake.isNotBlank()) {
                 Voice.setWakeWord(ctx, wake)
@@ -124,8 +131,16 @@ fun VoiceSettings() {
                 Switch(sens, { sens = it; Voice.setSensitive(ctx, it); if (on) Voice.restart(ctx) },
                     colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
             }
+            var gate by remember { mutableStateOf(Voice.gateOn(ctx)) }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                T("Экономить процессор при прослушивании", 13.sp, modifier = Modifier.weight(1f))
+                Switch(gate, { gate = it; Voice.setGate(ctx, it); if (on) Voice.restart(ctx) },
+                    colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
+            }
+            SettingHint("Тишина не идёт в распознавание. Если ассистент перестал слышать имя, выключите.")
             Spacer(Modifier.height(10.dp))
-            T("Статус: $status", 13.sp, if (status.startsWith("слушаю")) C.Green else C.Sub)
+            T("Статус: $status", 13.sp, if (status.startsWith("слушаю")) C.Green else if (kg.forester.sg.data.Failure.looksFailed(status)) C.Orange else C.Sub)
             T("Услышано: ${heard.ifBlank { "—" }}", 13.sp, C.Sub)
             Spacer(Modifier.height(12.dp))
             // a command typed instead of said: to try the assistant where one can't speak up
@@ -135,7 +150,7 @@ fun VoiceSettings() {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = typed, onValueChange = { typed = it }, singleLine = true,
-                    placeholder = { T("какая температура масла", 13.sp, C.Sub) },
+                    placeholder = { T(Voice.grammar.SAMPLE_ASK, 13.sp, C.Sub) },
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = C.Text, unfocusedTextColor = C.Text,
                         focusedBorderColor = C.Purple, unfocusedBorderColor = C.Border,
@@ -144,9 +159,9 @@ fun VoiceSettings() {
                 )
                 Spacer(Modifier.width(8.dp))
                 // the grey example looks typed in, so with the field empty the button says the example instead of greying out
-                Box(Modifier.width(120.dp)) { ActionButton("Сказать", true) { Voice.rehearse(ctx, typed.trim().ifEmpty { "какая температура масла" }) } }
+                Box(Modifier.width(120.dp)) { ActionButton("Сказать", true) { Voice.rehearse(ctx, typed.trim().ifEmpty { Voice.grammar.SAMPLE_ASK }) } }
             }
-            T("Как будто сказали «${Voice.wakeWord(ctx)}, …»: шар покажет фразу, ассистент ответит и выполнит", 11.sp, C.Sub)
+            SettingHint("Как будто сказали «${Voice.wakeWord(ctx)}, …»: шар покажет фразу, ассистент ответит и выполнит")
             Spacer(Modifier.height(12.dp))
             MediaAccessRow()
         }
@@ -157,7 +172,7 @@ fun VoiceSettings() {
                 OwnCommands(w)
                 Spacer(Modifier.height(6.dp))
                 T("Команды", 16.sp, weight = FontWeight.SemiBold)
-                (kg.forester.sg.service.Commands.EXAMPLES.map { (cmd, what) -> "«$w, $cmd»" to what } +
+                (Voice.grammar.EXAMPLES.map { (cmd, what) -> said("$w, $cmd") to what } +
                     ("«$w» … пауза … «навигатор»" to "можно и раздельно: после имени есть 6 секунд")).forEach { (cmd, what) ->
                     Column {
                         T(cmd, 14.sp)
@@ -166,10 +181,13 @@ fun VoiceSettings() {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            T("«Алиса» в Яндекс Навигаторе отвечает на «Слушай, Алиса», когда навигатор на экране (в т.ч. в разделённом режиме).", 12.sp, C.Sub)
+            SettingHint("«Алиса» в Яндекс Навигаторе отвечает на «Слушай, Алиса», когда навигатор на экране (в т.ч. в разделённом режиме).")
         }
     }
 }
+
+/** A phrase in the quotes of the language it is in. */
+private fun said(phrase: String) = if (kg.forester.sg.data.I18n.english) "“$phrase”" else "«$phrase»"
 
 /**
  * The driver's own phrases: «когда скажу» → what to do, written as ordinary commands (several with ";"). A step the
@@ -178,6 +196,8 @@ fun VoiceSettings() {
 @Composable
 private fun OwnCommands(wake: String) {
     val ctx = LocalContext.current
+    // the list of this language, should it have been changed
+    remember { Voice.own(ctx) }
     val list by Voice.ownList.collectAsState()
     val own = list ?: remember { Voice.own(ctx) }
     var phrase by remember { mutableStateOf("") }
@@ -186,20 +206,25 @@ private fun OwnCommands(wake: String) {
         focusedTextColor = C.Text, unfocusedTextColor = C.Text,
         focusedBorderColor = C.Purple, unfocusedBorderColor = C.Border,
     )
-    val cmds = kg.forester.sg.service.Commands
+    val cmds = Voice.grammar
     T("Свои команды", 16.sp, weight = FontWeight.SemiBold)
-    T("Своя фраза и что сделать: любые команды из списка ниже, несколько через точку с запятой. " +
+    SettingHint("Своя фраза и что сделать: любые команды из списка ниже, несколько через точку с запятой. " +
         "Приложение называйте в самой команде: на ютубе, в яндекс музыке, в спотифай, в вк, в 2гис. " +
-        "Звёздочка ловит любые слова: покажи клип * → включи на ютубе * клип", 11.sp, C.Sub)
+        "Звёздочка ловит любые слова: покажи клип * → включи на ютубе * клип")
     own.forEachIndexed { i, o ->
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                T("«$wake, ${o.phrase}»", 14.sp)
+                T(said("$wake, ${o.phrase}"), 14.sp)
                 T(o.action, 11.sp, C.Sub)
             }
             Chip("Проверить", false, { Voice.rehearse(ctx, o.phrase) })
             Spacer(Modifier.width(6.dp))
-            Chip("Удалить", false, { Voice.setOwn(ctx, own.filterIndexed { k, _ -> k != i }) })
+            var ask by remember(o.phrase) { mutableStateOf(false) }
+            Chip("Удалить", false, { ask = true })
+            if (ask) ConfirmDialog(
+                "Удалить команду?", "Команда «$wake, ${o.phrase}» перестанет работать.",
+                "Удалить", { Voice.setOwn(ctx, own.filterIndexed { k, _ -> k != i }) }, { ask = false },
+            )
         }
     }
     T("Шаблоны", 13.sp, C.Sub)
@@ -209,13 +234,13 @@ private fun OwnCommands(wake: String) {
     }
     OutlinedTextField(
         value = phrase, onValueChange = { phrase = it }, singleLine = true,
-        label = { FieldLabel("Когда скажу") }, placeholder = { T("едем в гараж", 13.sp, C.Sub) },
+        label = { FieldLabel("Когда скажу") }, placeholder = { T(cmds.SAMPLE_PHRASE, 13.sp, C.Sub) },
         colors = fieldColors, modifier = Modifier.fillMaxWidth(),
     )
-    T("Обычные русские слова: редкие названия распознаватель может не знать, проверьте по строке Услышано слева", 11.sp, C.Sub)
+    SettingHint("Обычные русские слова: редкие названия распознаватель может не знать, проверьте по строке Услышано слева")
     OutlinedTextField(
         value = action, onValueChange = { action = it }, singleLine = true,
-        label = { FieldLabel("Сделать") }, placeholder = { T("поехали на Ленина 10; включи музыку", 13.sp, C.Sub) },
+        label = { FieldLabel("Сделать") }, placeholder = { T(cmds.SAMPLE_ACTION, 13.sp, C.Sub) },
         colors = fieldColors, modifier = Modifier.fillMaxWidth(),
     )
     fun add(piece: String) { action = if (action.isBlank()) piece else action.trimEnd().removeSuffix(";") + "; " + piece }
@@ -230,7 +255,7 @@ private fun OwnCommands(wake: String) {
     // each step as the assistant takes it; a "*" stands for what will be said there, checked with a sample word
     val steps = cmds.steps(action)
     steps.forEach { step ->
-        val what = Voice.describe(step.replace("*", "кино"))?.replace("кино", "*")
+        val what = Voice.describe(step.replace("*", cmds.STAR_WORD))?.replace(cmds.STAR_WORD, "*")
         if (what != null) T("✓ $step → $what", 12.sp, C.Green) else T("✗ $step → не понимаю, переформулируйте как в списке команд", 12.sp, C.Orange)
     }
     if (steps.any { "*" in it } && "*" !in phrase) T("В «Сделать» есть *, а во фразе нет: подставить будет нечего", 12.sp, C.Orange)
@@ -249,13 +274,13 @@ private fun OwnCommands(wake: String) {
 private fun AllCommandsDialog(onClose: () -> Unit, onPick: (String) -> Unit) {
     var q by remember { mutableStateOf("") }
     val needle = q.trim().lowercase()
-    val groups = kg.forester.sg.service.Commands.OWN_GROUPS.map { (g, ps) ->
+    val groups = Voice.grammar.OWN_GROUPS.map { (g, ps) ->
         g to ps.filter { (n, t) -> needle.isEmpty() || needle in n.lowercase() || needle in t.lowercase() || needle in g.lowercase() }
     }.filter { it.second.isNotEmpty() }
-    androidx.compose.ui.window.Dialog(onClose, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+    CarDialog(onClose, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
-            Modifier.width(900.dp).heightIn(max = 600.dp).clip(RoundedCornerShape(20.dp))
-                .background(C.Card).border(1.dp, C.Border, RoundedCornerShape(20.dp)).padding(20.dp),
+            Modifier.width(900.dp).heightIn(max = minOf(600f, canvasScreen().screenHeightDp * 0.94f).dp).clip(RoundedCornerShape(20.dp))
+                .background(C.Sheet).border(1.dp, C.Border, RoundedCornerShape(20.dp)).padding(20.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T("Все команды", 20.sp, weight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -273,7 +298,7 @@ private fun AllCommandsDialog(onClose: () -> Unit, onPick: (String) -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(10.dp))
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.cueScroll(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (groups.isEmpty()) T("Ничего не нашлось", 13.sp, C.Sub)
                 groups.forEach { (g, ps) ->
                     T(g, 14.sp, C.Violet, FontWeight.SemiBold)
@@ -313,8 +338,8 @@ private fun MediaAccessRow() {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             T("Управление плеерами: " + if (on) "есть" else "нет доступа", 13.sp, if (on) C.Green else C.Orange)
-            T("Для «перемешай», «повтор», «что играет» в Яндекс Музыке, VK, Spotify нужен доступ к уведомлениям " +
-                "(приложение их не читает, только видит, какой плеер играет).", 11.sp, C.Sub)
+            SettingHint("Для «перемешай», «повтор», «что играет» в Яндекс Музыке, VK, Spotify нужен доступ к уведомлениям " +
+                "(приложение их не читает, только видит, какой плеер играет).")
         }
         if (!on) {
             Spacer(Modifier.width(8.dp))
@@ -348,18 +373,19 @@ fun SpeechVoicePicker() {
         Chip("Supertonic", v.engine == Speech.Engine.SUPERTONIC, { if (v.engine != Speech.Engine.SUPERTONIC) pick("st-f1") })
         Chip("Голос Android", v.engine == Speech.Engine.SYSTEM, { pick("system") })
         Chip("Прослушать", false, {
-            if (!Speech.say("Голосовые предупреждения включены. Турбина горячая, подождите 30 секунд до выключения")) Speech.prepare(ctx)
+            if (!Speech.say("Голосовые предупреждения включены. Турбина горячая, подождите 30 секунд до выключения", preview = true)) Speech.prepare(ctx)
         })
     }
     when (v.engine) {
         Speech.Engine.PIPER -> {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                T("Качество:", 13.sp, C.Sub)
+            @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                T("Качество:", 13.sp, C.Sub, modifier = Modifier.align(Alignment.CenterVertically))
                 val base = picked.removeSuffix("-hq")
                 Chip("Обычное · 20 МБ", !hq, { pick(base) })
                 Chip("Высокое · 64 МБ", hq, { pick("$base-hq") })
             }
-            T("Высокое: чище звук, без шипения сжатой модели, на ARM обычно и быстрее; скачивается дольше.", 11.sp, C.Sub)
+            SettingHint("Высокое: чище звук, без шипения сжатой модели, на ARM обычно и быстрее; скачивается дольше.")
         }
         Speech.Engine.SUPERTONIC -> {
             listOf("Женский" to "st-f", "Мужской" to "st-m").forEach { (label, prefix) ->
@@ -368,8 +394,8 @@ fun SpeechVoicePicker() {
                     (1..5).forEach { n -> Chip("$n", picked == "$prefix$n", { pick("$prefix$n") }) }
                 }
             }
-            T("Новая модель, звучит естественнее. ~123 МБ один раз на все десять голосов, процессор нагружает как обычная Ирина.", 11.sp, C.Sub)
+            SettingHint("Новая модель, звучит естественнее. ~123 МБ один раз на все десять голосов, процессор нагружает как обычная Ирина.")
         }
-        Speech.Engine.SYSTEM -> T("Синтез речи самой магнитолы (Google, RHVoice и т. п.), если в нём есть русский голос. Ничего не скачивается.", 11.sp, C.Sub)
+        Speech.Engine.SYSTEM -> SettingHint("Синтез речи самой магнитолы (Google, RHVoice и т. п.), если в нём есть русский голос. Ничего не скачивается.")
     }
 }

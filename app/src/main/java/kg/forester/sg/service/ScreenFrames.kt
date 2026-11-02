@@ -17,7 +17,7 @@ object ScreenFrames {
      * along a row and then down while they keep the same span and stay under [MAX_PX]. Edges stay even: AMOLED panels
      * write pixel pairs.
      */
-    fun dirty(prev: IntArray?, cur: IntArray, w: Int, h: Int, tile: Int = 16): List<Rect> {
+    fun dirty(prev: IntArray?, cur: IntArray, w: Int, h: Int, tile: Int = 16, maxPx: Int = MAX_PX): List<Rect> {
         val tw = (w + tile - 1) / tile
         val th = (h + tile - 1) / tile
         fun changed(tx: Int, ty: Int): Boolean {
@@ -47,18 +47,62 @@ object ScreenFrames {
         val out = ArrayList<Rect>()
         for (r in spans) {
             val last = out.lastOrNull()
-            if (last != null && last.x == r.x && last.w == r.w && last.y + last.h == r.y && last.w * (last.h + r.h) <= MAX_PX) {
+            if (last != null && last.x == r.x && last.w == r.w && last.y + last.h == r.y && last.w * (last.h + r.h) <= maxPx) {
                 out[out.size - 1] = last.copy(h = last.h + r.h)
             } else out += r
         }
         // still too big (a very wide panel): cut into strips
         return out.flatMap { r ->
-            if (r.w * r.h <= MAX_PX) listOf(r) else {
-                val rows = maxOf(2, (MAX_PX / r.w) and 1.inv())
+            if (r.w * r.h <= maxPx) listOf(r) else {
+                val rows = maxOf(2, (maxPx / r.w) and 1.inv())
                 (0 until r.h step rows).map { dy -> Rect(r.x, r.y + dy, r.w, minOf(rows, r.h - dy)) }
             }
         }.map(::even)
     }
+
+    /**
+     * [rects] joined until at most [limit] are left, always the pair that adds the least empty area, never past [maxPx]:
+     * each rectangle costs the board a line and an answer, so many small ones lose to one a little bigger.
+     */
+    fun coalesce(rects: List<Rect>, maxPx: Int, limit: Int): List<Rect> {
+        if (rects.size <= limit) return rects
+        val out = rects.toMutableList()
+        fun join(a: Rect, b: Rect): Rect {
+            val x = minOf(a.x, b.x)
+            val y = minOf(a.y, b.y)
+            return Rect(x, y, maxOf(a.x + a.w, b.x + b.w) - x, maxOf(a.y + a.h, b.y + b.h) - y)
+        }
+        while (out.size > limit) {
+            var bestI = -1
+            var bestJ = -1
+            var least = Long.MAX_VALUE
+            for (i in out.indices) for (j in i + 1 until out.size) {
+                val u = join(out[i], out[j])
+                val area = u.w.toLong() * u.h
+                if (area > maxPx) continue
+                val waste = area - out[i].w * out[i].h - out[j].w * out[j].h
+                if (waste < least) { least = waste; bestI = i; bestJ = j }
+            }
+            if (bestI < 0) break
+            out[bestI] = join(out[bestI], out[bestJ])
+            out.removeAt(bestJ)
+        }
+        return out
+    }
+
+    /** Below these a rectangle stays lossless: the board's decoder would take longer than the saved bytes on the wire. */
+    private const val JPEG_MIN_PX = 20_000
+    private const val JPEG_MIN_BYTES = 20_000
+
+    /** Is [r], [packedBytes] long when packed, worth encoding as JPEG? */
+    fun jpegPays(r: Rect, packedBytes: Int): Boolean = r.w * r.h >= JPEG_MIN_PX && packedBytes >= JPEG_MIN_BYTES
+
+    /** The frames a second asked of the head unit: a big panel costs it a whole bitmap a frame, so a weak unit draws fewer. */
+    fun fpsFor(chosen: Int, tier: kg.forester.sg.data.Tier, big: Boolean): Int = if (!big) chosen else minOf(chosen, when (tier) {
+        kg.forester.sg.data.Tier.LOW -> 8
+        kg.forester.sg.data.Tier.MID -> 12
+        kg.forester.sg.data.Tier.HIGH -> 30
+    })
 
     private fun even(r: Rect) = Rect(r.x and 1.inv(), r.y and 1.inv(), (r.w + (r.x and 1) + 1) and 1.inv(), (r.h + (r.y and 1) + 1) and 1.inv())
 
@@ -117,5 +161,53 @@ object ScreenFrames {
             }
         }
         return if (o == count && i == b.size) out else null
+    }
+}
+
+/**
+ * A frame for a big panel (hardware/usbscreen/bigscreen): the changed rectangles, each packed, or as JPEG where that pays.
+ * A JPEG isn't the exact picture, so what went that way is sent again lossless afterwards, one rectangle a frame, while
+ * no JPEG is going out. [put] sends a line (no newline) with its bytes and returns whether the board took it.
+ */
+class BigSender(
+    private val w: Int, private val h: Int, private val maxPx: Int, private val jpegOn: () -> Boolean,
+    private val jpeg: (ScreenFrames.Rect) -> ByteArray?, private val put: (String, ByteArray) -> Boolean,
+) {
+    private val lossy = ArrayDeque<ScreenFrames.Rect>()
+
+    /** Rectangles still showing a JPEG's approximation. */
+    fun pendingRepair() = lossy.size
+
+    fun frame(prev: IntArray?, cur: IntArray): Boolean {
+        if (prev == null) lossy.clear()
+        var usedJpeg = false
+        val rects = ScreenFrames.coalesce(ScreenFrames.dirty(prev, cur, w, h, maxPx = maxPx), maxPx, MAX_RECTS)
+        for (r in rects) {
+            val packed = ScreenFrames.pack(cur, w, r)
+            val small = if (jpegOn() && ScreenFrames.jpegPays(r, packed.size)) jpeg(r)?.takeIf { it.size * 5 / 4 < packed.size } else null
+            val ok = if (small != null) {
+                usedJpeg = true
+                lossy.removeAll { inside(it, r) }
+                lossy.addLast(r)
+                put("J ${r.x} ${r.y} ${r.w} ${r.h} ${small.size}", small)
+            } else {
+                lossy.removeAll { inside(it, r) }
+                put("P ${r.x} ${r.y} ${r.w} ${r.h} ${packed.size}", packed)
+            }
+            if (!ok) return false
+        }
+        if (!usedJpeg && lossy.isNotEmpty()) {
+            val r = lossy.removeFirst()
+            val packed = ScreenFrames.pack(cur, w, r)
+            if (!put("P ${r.x} ${r.y} ${r.w} ${r.h} ${packed.size}", packed)) return false
+        }
+        return true
+    }
+
+    private fun inside(a: ScreenFrames.Rect, b: ScreenFrames.Rect) = a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h
+
+    private companion object {
+        /** Each rectangle costs a round trip of about 2 ms plus the board's work. */
+        const val MAX_RECTS = 16
     }
 }

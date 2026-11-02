@@ -113,7 +113,7 @@ object FirmwareFlasher {
             progress(0.99f, "Жду, что ответит плата с новой прошивкой")
         } catch (e: Exception) {
             SsmTrace.log("flash failed: $e")
-            state.value = FlashState.Failed((e.message ?: e.toString()) +
+            state.value = FlashState.Failed(kg.forester.sg.data.Failure.link(e, "Прошить не вышло") +
                 ". Если плата не отвечает: зажмите на ней BOOT, нажмите и отпустите RST (или вставьте USB с зажатой BOOT), отпустите BOOT и прошейте ещё раз")
         } finally {
             held.forEach { kg.forester.sg.service.ScreenLink.pauseForFlash(it, false) }
@@ -162,7 +162,7 @@ object FirmwareFlasher {
             progress(0.99f, "Жду, что ответит плата с новой прошивкой")
         } catch (e: Exception) {
             SsmTrace.log("flash failed: $e")
-            state.value = FlashState.Failed(e.message ?: e.toString())
+            state.value = FlashState.Failed(kg.forester.sg.data.Failure.link(e, "Прошить не вышло"))
         } finally {
             SensorBoxLink.flashDevice = null
             SensorBoxLink.pauseForFlash(false)
@@ -201,7 +201,7 @@ object FirmwareFlasher {
             ?: cands.singleOrNull()
             ?: throw IllegalStateException(
                 if (cands.isEmpty()) "Плата не найдена на USB. Подключите её к магнитоле"
-                else "На USB несколько похожих устройств, и непонятно, какое из них плата. Включите «Доп датчики», чтобы приложение " +
+                else "На USB несколько похожих устройств, и непонятно, какое из них плата. Откройте «Датчики и экраны», чтобы приложение " +
                     "узнало плату, или на время прошивки отключите кабель ЭБУ",
             )
     }

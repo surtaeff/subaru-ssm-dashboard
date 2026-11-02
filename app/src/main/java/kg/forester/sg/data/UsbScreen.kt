@@ -9,8 +9,15 @@ import org.json.JSONObject
  * whole pages (its gauges and tiles, any value it has) and sends the changed parts; the board only shows them.
  */
 
-/** A board the firmware is built for (boards.h): its panel, [w] x [h] pixels as the panel stands (rotation 0). */
-enum class ScreenModel(val id: String, val title: String, val sub: String, val w: Int, val h: Int, val round: Boolean, val amoled: Boolean = true) {
+/**
+ * A board the firmware is built for (boards.h, or bigscreen/big_boards.h when [big]): its panel, [w] x [h] pixels as the
+ * panel stands (rotation 0). [selfFlash]: the app can write its firmware itself; else it comes from a computer. [twoRevs]:
+ * the chip has two silicon generations that need separate images ([assetPre3]).
+ */
+enum class ScreenModel(val id: String, val title: String, val sub: String, val w: Int, val h: Int, val round: Boolean, val amoled: Boolean = true,
+                       val big: Boolean = false, val selfFlash: Boolean = true, val twoRevs: Boolean = false,
+                       /** What the driver has to know about connecting it. */
+                       val note: String = "") {
     LILYGO_AMOLED_191("lilygo_amoled_191", "LilyGO T-Display-S3 AMOLED 1,91\"", "536×240, RM67162. Самая распространённая, вытянутая", 240, 536, false),
     LILYGO_AMOLED_164("lilygo_amoled_164", "LilyGO T-Display-S3 AMOLED 1,64\"", "280×456, CO5300", 280, 456, false),
     LILYGO_TDISPLAY_S3("lilygo_tdisplay_s3", "LilyGO T-Display-S3 1,9\" (IPS)", "320×170, ST7789. Не AMOLED, но дешёвая и яркая", 170, 320, false, amoled = false),
@@ -21,10 +28,23 @@ enum class ScreenModel(val id: String, val title: String, val sub: String, val w
     WS_AMOLED_18("ws_amoled_18", "Waveshare ESP32-S3 AMOLED 1,8\"", "368×448, SH8601", 368, 448, false),
     WS_AMOLED_241("ws_amoled_241", "Waveshare ESP32-S3 AMOLED 2,41\"", "600×450, RM690B0. Большая", 450, 600, false),
     WS_LCD_128("ws_lcd_128", "Waveshare ESP32-S3 LCD 1,28\" круглая (IPS)", "240×240, GC9A01. Не AMOLED, самая дешёвая круглая", 240, 240, true, amoled = false),
+    WS_S3_LCD_43("ws_s3_lcd_43", "Waveshare ESP32-S3 LCD 4.3\"", "800×480, RGB. Около 10 кадров/с", 800, 480, false, amoled = false, big = true,
+        note = "Плата ESP32-S3-Touch-LCD-4.3. Кабель в порт USB, не в USB TO UART. Кнопки страниц на плате нет: страницы по времени"),
+    WS_S3_LCD_5("ws_s3_lcd_5", "Waveshare ESP32-S3 LCD 5\" 800×480", "Питание 7-36 В. Около 10 кадров/с", 800, 480, false, amoled = false, big = true,
+        note = "Плата ESP32-S3-Touch-LCD-5, с экраном 800×480. Версия 5B (1024×600) не подойдёт. Кнопки страниц на плате нет: страницы по времени"),
+    WS_S3_LCD_7("ws_s3_lcd_7", "Waveshare ESP32-S3 LCD 7\"", "800×480, RGB. Около 10 кадров/с", 800, 480, false, amoled = false, big = true,
+        note = "Плата ESP32-S3-Touch-LCD-7. Кабель в порт USB, не в USB TO UART. Кнопки страниц на плате нет: страницы по времени"),
+    WS_P4_7B("ws_p4_7b", "Waveshare ESP32-P4 LCD 7B", "1024×600, MIPI-DSI. Около 15 кадров/с", 1024, 600, false, amoled = false, big = true, selfFlash = false, twoRevs = true,
+        note = "Плата ESP32-P4-WIFI6-Touch-LCD-7B. Кабель в порт USB 1.1 FS. Кнопки страниц на плате нет: страницы по времени"),
+    WS_P4_101("ws_p4_101", "Waveshare ESP32-P4 LCD 10.1\"", "800×1280, MIPI-DSI, лежит на боку. Около 20 кадров/с", 800, 1280, false, amoled = false, big = true, selfFlash = false, twoRevs = true,
+        note = "Плата ESP32-P4-WIFI6-Touch-LCD-10.1. Кабель в порт USB OTG. Кнопки страниц на плате нет: страницы по времени"),
     ;
 
     /** The firmware image for this board in the assets. */
     val asset: String get() = "usbscreen/bin/usbscreen-$id.bin"
+
+    /** The image for the same board with a chip before revision 3.00. */
+    val assetPre3: String? get() = if (twoRevs) "usbscreen/bin/usbscreen-$id-pre3.bin" else null
 
     companion object {
         fun of(id: String?) = entries.firstOrNull { it.id == id }
@@ -32,7 +52,7 @@ enum class ScreenModel(val id: String, val title: String, val sub: String, val w
 }
 
 /** How a page lays its values out. [slots]: how many values it shows. */
-enum class ScreenLayout(val title: String, val slots: Int) {
+enum class ScreenLayout(val title: String, val slots: Int, val own: Boolean = false) {
     GAUGE("Стрелка", 1),
     GAUGE2("Две стрелки", 2),
     GAUGE_TILES("Стрелка и две плитки", 3),
@@ -40,6 +60,18 @@ enum class ScreenLayout(val title: String, val slots: Int) {
     TILES6("Шесть плиток", 6),
     BIG("Крупная цифра", 1),
     LIST("Список", 8),
+    // the driver's own screens, as laid out in the app (big panels only)
+    HOME("Моя Главная", 0, own = true),
+    DRIVE("Моя Динамика", 0, own = true),
+    MY("Мой экран", 0, own = true),
+    SPORT("Спорт-дисплей: тахометр", 0, own = true),
+    SPORT_TABLE("Спорт-дисплей: таблица", 0, own = true),
+    ;
+
+    companion object {
+        /** The layouts a board is offered: its own screens need room. */
+        fun forBoard(big: Boolean) = entries.filter { big || !it.own }
+    }
 }
 
 /** One page: its layout, the values by Metrics id ("coolant", "box_A0", "rr:…"), the gauge design (a DialStyle id). */
@@ -68,9 +100,14 @@ data class ScreenCfg(
     val switchS: Int = 0,
     val alert: Boolean = true,
     val fps: Int = 10,
+    /** The look on a big panel: "" as in the app, or one chosen for this screen ([kg.forester.sg.ui.ScreenLook]). */
+    val theme: String = "",
+    /** A big panel may get large changes as JPEG; off: lossless only, slower. */
+    val jpeg: Boolean = true,
 ) {
     fun toJson(): JSONObject = JSONObject().put("model", model).put("name", name).put("rotation", rotation).put("brightness", brightness)
         .put("pages", JSONArray().also { a -> pages.forEach { a.put(it.toJson()) } }).put("switchS", switchS).put("alert", alert).put("fps", fps)
+        .put("theme", theme).put("jpeg", jpeg)
 
     companion object {
         fun fromJson(o: JSONObject) = ScreenCfg(
@@ -78,18 +115,30 @@ data class ScreenCfg(
             o.optJSONArray("pages")?.let { a -> List(a.length()) { ScreenPage.fromJson(a.getJSONObject(it)) } }?.takeIf { it.isNotEmpty() }
                 ?: listOf(ScreenPage(1, ScreenLayout.GAUGE, listOf("rpm"))),
             o.optInt("switchS"), o.optBoolean("alert", true), o.optInt("fps", 10).coerceIn(2, 30),
+            o.optString("theme"), o.optBoolean("jpeg", true),
         )
     }
 }
 
 /** What the board said about itself: "I USBSCREEN 1 board=ws_amoled_143 w=466 h=466 round=1 fw=1 id=A1B2C3D4E5F6". */
-data class ScreenInfo(val board: String, val w: Int, val h: Int, val round: Boolean, val fw: Int, val id: String = "") {
+data class ScreenInfo(val board: String, val w: Int, val h: Int, val round: Boolean, val fw: Int, val id: String = "",
+                      /** The largest rectangle it takes; a board that doesn't say takes [OLD_MAX_PX]. */
+                      val maxPx: Int = OLD_MAX_PX,
+                      /** It decodes JPEG rectangles (J). */
+                      val jpeg: Boolean = false) {
+    /** A big panel's firmware (bigscreen.ino). */
+    val isBig get() = maxPx > OLD_MAX_PX
+
     companion object {
+        /** usbscreen.ino's MAX_PX. */
+        const val OLD_MAX_PX = 16384
+
         fun parse(line: String): ScreenInfo? {
             if (!line.startsWith("I USBSCREEN")) return null
             val kv = line.split(' ').mapNotNull { w -> w.indexOf('=').takeIf { it > 0 }?.let { w.substring(0, it) to w.substring(it + 1) } }.toMap()
             return ScreenInfo(kv["board"] ?: "?", kv["w"]?.toIntOrNull() ?: 0, kv["h"]?.toIntOrNull() ?: 0, kv["round"] == "1",
-                kv["fw"]?.toIntOrNull() ?: 0, kv["id"] ?: "")
+                kv["fw"]?.toIntOrNull() ?: 0, kv["id"] ?: "",
+                kv["maxpx"]?.toIntOrNull()?.takeIf { it >= OLD_MAX_PX } ?: OLD_MAX_PX, kv["jpeg"] == "1")
         }
     }
 }

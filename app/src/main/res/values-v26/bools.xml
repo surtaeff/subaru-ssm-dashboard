@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- From Android 8 bitmaps are native memory: the Java heap stays under 25 MB on the AVD. -->
+    <bool name="large_heap">false</bool>
+</resources>

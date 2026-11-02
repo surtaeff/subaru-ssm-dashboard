@@ -169,14 +169,16 @@ class ScreenTest {
         assertEquals("usbscreen.ino or boards.h changed: run hardware/usbscreen/build-bin.sh", manifest.getString("src_sha256"), src)
         val fw = Regex("#define FW_VERSION (\\d+)").find(File(dir, "usbscreen.ino").readText())!!.groupValues[1].toInt()
         assertEquals("SCREEN_FIRMWARE in UsbScreen.kt", fw, SCREEN_FIRMWARE)
-        for (m in ScreenModel.entries) {
+        // the big panels' firmware is another sketch with its own manifest (BigScreenTest)
+        val small = ScreenModel.entries.filter { !it.big }
+        for (m in small) {
             val f = File("../hardware/" + m.asset.removePrefix("usbscreen/").let { "usbscreen/$it" })
             assertTrue("no firmware for ${m.id}", f.exists())
             assertNull(m.id, EspFlasher.checkImage(f.readBytes()))
             // every board in the app is one boards.h knows, and the other way round
             assertTrue(m.id, File(dir, "boards.h").readText().contains("\"${m.id}\""))
         }
-        assertEquals(ScreenModel.entries.size, manifest.getJSONObject("files").length())
+        assertEquals(small.size, manifest.getJSONObject("files").length())
         assertTrue(EspFlasher.checkImage(ByteArray(0x20000)) != null)
     }
 
@@ -217,5 +219,10 @@ class ScreenTest {
         val i = ScreenInfo.parse("I USBSCREEN 1 board=ws_amoled_143 w=466 h=466 round=1 fw=1 id=A1B2C3D4E5F6")!!
         assertEquals(ScreenInfo("ws_amoled_143", 466, 466, true, 1, "A1B2C3D4E5F6"), i)
         assertNull(ScreenInfo.parse("I SENSORBOX 2 board=nano"))
+    }
+
+    @Test fun screenSurvivesSaveRestore() {
+        for (s in Screen.values()) assertEquals(s, screenRestored(screenSaved(s)))
+        assertNull(screenRestored("NoSuchScreen"))
     }
 }

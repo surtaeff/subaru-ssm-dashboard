@@ -1,23 +1,40 @@
 package kg.forester.sg.service
 
+import kg.forester.sg.data.DistanceUnits
 import kotlin.math.abs
 import kotlin.math.sqrt
 
 /** An interval of an acceleration run in km/h; [from] = 0 is from a standstill, anything else on the move. */
-data class Interval(val from: Int, val to: Int) {
-    val key get() = "$from-$to"
+data class Interval(val from: Int, val to: Int, val mi: Boolean = false) {
+    val key get() = "$from-$to" + if (mi) MI else ""
+
+    /** What the speed is compared with: runs are always timed on km/h. A mile interval ([mi]) is its bounds in mph. */
+    val fromKmh: Double get() = if (mi) from * DistanceUnits.KM_IN_MILE else from.toDouble()
+    val toKmh: Double get() = if (mi) to * DistanceUnits.KM_IN_MILE else to.toDouble()
 
     companion object {
+        const val MI = "mi"
+
+        /** Timed on every standing run: they're there, from the same samples, when the driver chooses miles. */
+        val MILES_STANDARD = listOf(Interval(0, 60, true), Interval(0, 100, true))
+
+        /** Of the intervals kept, those for the unit chosen now; the others stay for when it changes back. */
+        fun shownNow(all: List<Interval>): List<Interval> =
+            if (DistanceUnits.miles) (MILES_STANDARD + all.filter { it.mi }).distinct().sortedWith(ORDER) else all.filter { !it.mi }
+
+        private val ORDER = compareBy<Interval>({ it.from != 0 }, { it.from }, { it.to })
+
         fun parse(key: String): Interval? {
-            val p = key.split('-')
+            val mi = key.trim().endsWith(MI)
+            val p = key.trim().removeSuffix(MI).split('-')
             if (p.size != 2) return null
             val a = p[0].trim().toIntOrNull() ?: return null
             val b = p[1].trim().toIntOrNull() ?: return null
-            return if (a >= 0 && b > a && b <= 350) Interval(a, b) else null
+            return if (a >= 0 && b > a && b <= 350) Interval(a, b, mi) else null
         }
 
         /** "0-100,100-150" → the intervals, standing ones first, each set once. */
-        fun list(s: String): List<Interval> = s.split(',').mapNotNull { parse(it) }.distinct().sortedWith(compareBy({ it.from != 0 }, { it.from }, { it.to }))
+        fun list(s: String): List<Interval> = s.split(',').mapNotNull { parse(it) }.distinct().sortedWith(ORDER)
     }
 }
 
@@ -108,8 +125,15 @@ object PerfCalc {
     /**
      * The version of the counting kept with each run: kept runs counted by an older one are counted again from their
      * samples. 2: distances timed as on a drag strip (roll-out, 66 ft trap), the line crossed at a steady acceleration.
+     * 3: also the mile intervals ([Interval.MILES_STANDARD]), so a kept run has them when miles are chosen.
      */
-    const val ALGO = 2
+    const val ALGO = 3
+
+    /** The run a card and a message name first: 0–100 km/h, or 0–60 mph in miles (a real target of its own, not relabelled). */
+    val headline: String get() = if (DistanceUnits.miles) "0-60" + Interval.MI else "0-100"
+
+    /** The speed a braking test starts from, in mph: it is detected at [BRAKE_FROM] km/h, so that's what it says. */
+    fun brakeFromMiles(): Int = Math.round(BRAKE_FROM / DistanceUnits.KM_IN_MILE).toInt()
 
     /** Distances from a standstill: 60 ft, 1/8 and 1/4 mile. */
     val DISTANCES = listOf(18.288 to "18m", 201.168 to "201m", 402.336 to "402m")
@@ -130,6 +154,19 @@ object PerfCalc {
      * Braking from 100 km/h to a stop (Dragy and Multitronics time it too): the time and the distance ("100-0d"). A
      * stop counts as a test with 0.5 g or more on average (under 5.7 s); an ordinary stop takes twice as long.
      */
+    /** Whether a measured run is told by banner and voice: the driver asked for it; the run is kept in any case. */
+    fun tellRun(shown: Boolean, demo: Boolean) = shown && !demo
+
+    /** The banner of a braking; «41 метр», «42 метра», «45 метров». */
+    fun brakeText(sec: Double, metres: Double): String {
+        val m = Math.round(metres)
+        return (if (DistanceUnits.miles) "Торможение с ${brakeFromMiles()} миль/ч: " else "Торможение со ста: ") + "%.2f секунды, ".format(java.util.Locale.US, sec) + when (SpeechText.plural(m)) {
+            0 -> "$m метр"
+            1 -> "$m метра"
+            else -> "$m метров"
+        }
+    }
+
     const val BRAKE_FROM = 100
     const val BRAKE = "100-0"
     const val DIST = "d"
@@ -245,10 +282,10 @@ object PerfCalc {
     fun rolling(s: SpeedSeries, iv: Interval): Hit? {
         var from: Double? = null
         for (k in 1 until s.size) {
-            if (s.v[k - 1] < iv.from && s.v[k] >= iv.from) from = cross(s, k, iv.from.toDouble())
+            if (s.v[k - 1] < iv.fromKmh && s.v[k] >= iv.fromKmh) from = cross(s, k, iv.fromKmh)
             val f = from
-            if (f != null && s.v[k - 1] < iv.to && s.v[k] >= iv.to) {
-                val to = cross(s, k, iv.to.toDouble())
+            if (f != null && s.v[k - 1] < iv.toKmh && s.v[k] >= iv.toKmh) {
+                val to = cross(s, k, iv.toKmh)
                 return Hit(iv.key, to - f, f, to)
             }
         }
@@ -298,9 +335,9 @@ object PerfCalc {
         val launch = launch(s)
         val rollout = launch?.let { distance(s, it, ROLLOUT_M)?.first }
         val hits = ArrayList<Hit>()
-        for (iv in intervals) {
+        for (iv in (intervals + Interval.MILES_STANDARD).distinct()) {
             if (iv.from == 0) {
-                if (launch != null) upCross(s, iv.to.toDouble(), launch)?.let { t ->
+                if (launch != null) upCross(s, iv.toKmh, launch)?.let { t ->
                     hits += Hit(iv.key, t - launch, launch, t)
                     if (rollout != null && rollout < t) hits += Hit(iv.key + ROLLOUT, t - rollout, rollout, t)
                 }
@@ -575,6 +612,23 @@ object PerfCalc {
     fun corrected(sec: Double, iatC: Double?, baroKpa: Double?): Double? {
         if (iatC == null || baroKpa == null || iatC !in -35.0..60.0 || baroKpa !in 60.0..110.0) return null
         return sec / sae(iatC, baroKpa)
+    }
+
+    /** The trap speed in standard air: speed over a distance goes as P^(1/3), so the factor is the cube root of [sae], upward. */
+    fun correctedSpeed(kmh: Double, iatC: Double?, baroKpa: Double?): Double? {
+        if (iatC == null || baroKpa == null || iatC !in -35.0..60.0 || baroKpa !in 60.0..110.0) return null
+        return kmh * Math.cbrt(sae(iatC, baroKpa))
+    }
+
+    /**
+     * The same for a time over a distance (18 / 201 / 402 m): the car covers a distance in a time that goes as
+     * P^(-1/3), not 1 / P as the time to a speed does, so the factor is the cube root of [sae]. On a turbo car the
+     * barometric part is approximate: the wastegate holds the boost, so the altitude costs less power than on a
+     * naturally aspirated engine and this over-corrects a little.
+     */
+    fun correctedDistance(sec: Double, iatC: Double?, baroKpa: Double?): Double? {
+        if (iatC == null || baroKpa == null || iatC !in -35.0..60.0 || baroKpa !in 60.0..110.0) return null
+        return sec / Math.cbrt(sae(iatC, baroKpa))
     }
 
     // ---- spool

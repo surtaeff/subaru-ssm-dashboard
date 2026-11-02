@@ -19,3 +19,6 @@ render/*
 
 # Kotlin compiler caches
 .kotlin/
+
+# agent plans and notes, not for the public repo
+docs/superpowers/

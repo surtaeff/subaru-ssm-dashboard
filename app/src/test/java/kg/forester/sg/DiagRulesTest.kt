@@ -5,6 +5,7 @@ import kg.forester.sg.service.Alerts
 import kg.forester.sg.service.Analyzer
 import kg.forester.sg.service.BoxInput
 import kg.forester.sg.service.DiagState
+import kg.forester.sg.service.EngineGuard
 import kg.forester.sg.service.GearSense
 import kg.forester.sg.service.MemoryRuleStore
 import kg.forester.sg.service.RuleInput
@@ -194,6 +195,87 @@ class DiagRulesTest {
         assertTrue(r.ids().contains("springBoost"))
     }
 
+    /** A1 of the tester's report: a borrowed address reads raw 0, so the "target" is about -100 kPa and any pressure is over it. */
+    @Test fun junkTargetNeverCallsOverboost() {
+        val idle = Run()
+        warmUp(idle, turbo = true)
+        idle.feed(30) { RuleInput(cruise(it).copy(rpm = 800, speedKmh = 0, throttlePct = 0f, mapKpa = 35f, mafGs = 3f), turbo = true, targetBoostKpa = -95f) }
+        assertFalse(idle.ids().contains("overboost"))
+        // the same junk on a real pull
+        val pull = Run()
+        warmUp(pull, turbo = true)
+        pull.feed(5) { RuleInput(wot(it, 4500, 80f), turbo = true, targetBoostKpa = -95f) }
+        assertFalse(pull.ids().contains("overboost"))
+    }
+
+    @Test fun overboostNeedsRevsAndRealBoost() {
+        // a sane target, but off boost: cruising, or low revs
+        val cruising = Run()
+        warmUp(cruising, turbo = true)
+        cruising.feed(5) { RuleInput(wot(it, 4500, 14f), turbo = true, targetBoostKpa = -10f) }
+        cruising.feed(5) { RuleInput(wot(it, 2400, 80f), turbo = true, targetBoostKpa = 40f) }
+        assertFalse(cruising.ids().contains("overboost"))
+        // just over each limit
+        val edge = Run()
+        warmUp(edge, turbo = true)
+        edge.feed(3) { RuleInput(wot(it, 2500, 55f), turbo = true, targetBoostKpa = 30f) }
+        assertTrue(edge.ids().contains("overboost"))
+    }
+
+    @Test fun overboostWithoutADutyDoesNotBlameTheWastegate() {
+        val r = Run()
+        warmUp(r, turbo = true)
+        r.feed(3) { RuleInput(wot(it, 4500, 135f), turbo = true, targetBoostKpa = 100f) }
+        assertEquals(Alerts.Level.WARN, r.level("overboost"))
+        assertFalse(r.text("overboost"), r.text("overboost").contains("вестгейт", ignoreCase = true))
+        // a duty that says the solenoid is working: the actuator's hoses are a fair guess
+        val d = Run()
+        warmUp(d, turbo = true)
+        d.feed(3) { RuleInput(wot(it, 4500, 135f, wgdc = 50f), turbo = true, targetBoostKpa = 100f) }
+        assertTrue(d.text("overboost").contains("вестгейт"))
+    }
+
+    @Test fun lateSpoolWithoutADutyDoesNotBlameTheWastegate() {
+        fun late(wgdc: Float?): String {
+            val r = Run(MemoryRuleStore().apply { boostBase = 100f })
+            warmUp(r, turbo = true)
+            fun pull(spool: Int) {
+                var rpm = 2000
+                r.feed(6) {
+                    rpm += 250
+                    RuleInput(wot(it, rpm, ((rpm - spool) * 0.08f + 80f).coerceIn(-30f, 110f), wgdc), turbo = true, ecuGear = 3)
+                }
+                r.feed(10) { RuleInput(cruise(it), turbo = true, ecuGear = 3) }
+            }
+            repeat(3) { pull(3000) }
+            repeat(2) { pull(3400) }
+            return r.text("spoolLate")
+        }
+        assertTrue(late(60f).contains("вестгейт"))
+        assertFalse(late(null).contains("вестгейт"))
+    }
+
+    @Test fun oilCorrectionOnlyMovesTheEstimate() {
+        assertEquals(93f, EngineGuard.oilEstimate(100f, -7), 0f)
+        assertEquals(100f, EngineGuard.oilEstimate(100f, 0), 0f)
+        // clamped: a stored value out of the setting's range
+        assertEquals(85f, EngineGuard.oilEstimate(100f, -40), 0f)
+        assertEquals(115f, EngineGuard.oilEstimate(100f, 40), 0f)
+    }
+
+    @Test fun targetFromASiblingOrOutOfRangeIsNoTarget() {
+        // raw 0 in the ROM's absolute units
+        assertNull(EngineGuard.targetKpa(0f, "kpa", 95f, false))
+        assertNull(EngineGuard.targetKpa(0f, "psi", 95f, false))
+        // an 0xFFFF that scaled to a huge pressure
+        assertNull(EngineGuard.targetKpa(65535f, "kpa", 95f, false))
+        // a real target by each unit
+        assertEquals(100f, EngineGuard.targetKpa(195f, "kpa", 95f, false)!!, 0.01f)
+        assertEquals(100f, EngineGuard.targetKpa(1f, "bar relative", 95f, false)!!, 0.01f)
+        // the same number from a neighbour's address counts for nothing
+        assertNull(EngineGuard.targetKpa(195f, "kpa", 95f, true))
+    }
+
     @Test fun boostFloatingAtTheTopButNotATaper() {
         val r = Run()
         warmUp(r, turbo = true)
@@ -205,6 +287,21 @@ class DiagRulesTest {
         var g = 130f
         t.feed(6) { g -= 3f; RuleInput(wot(it, 5000, g, 70f), turbo = true) }
         assertFalse(t.ids().contains("boostFloat"))
+    }
+
+    /** Two weak pulls at IAM 0.78: the ECU's own boost limit only when the ROM's Boost Cut IAM is above that. */
+    @Test fun boostCutIamFromTheRomDecidesWhoLimitsBoost() {
+        fun weakPulls(cut: Float?): String {
+            val r = Run(MemoryRuleStore().apply { boostBase = 100f })
+            warmUp(r, turbo = true)
+            repeat(2) {
+                r.feed(4) { RuleInput(wot(it, 4500, 50f, 40f), turbo = true, iam = 0.78f, iamBoostCut = cut) }
+                r.feed(4) { RuleInput(cruise(it), turbo = true, iam = 0.78f, iamBoostCut = cut) }
+            }
+            return r.text("underboost")
+        }
+        assertFalse(weakPulls(null).contains("ЭБУ сам ограничивает"))
+        assertTrue(weakPulls(0.80f).contains("ЭБУ сам ограничивает"))
     }
 
     @Test fun spoolPointMovingUpByGear() {

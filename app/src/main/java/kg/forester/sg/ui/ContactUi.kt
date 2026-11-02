@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -40,6 +39,7 @@ const val TG_GROUP = "carpulse_app"
  * «Связь»: the Telegram group as a QR code to scan with the phone (typing a link on a head unit is no fun) and a
  * button that opens it on the unit, plus what to send with a bug report so it can be fixed without questions.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun ContactSettings() {
     val ctx = LocalContext.current
@@ -50,12 +50,12 @@ fun ContactSettings() {
         Panel(Modifier.width(470.dp).fillMaxHeight().verticalScroll(rememberScrollState())) {
             PanelTitle(Lucide.MessageCircle, "Группа в Telegram")
             Spacer(Modifier.height(6.dp))
-            T("Вопросы, ошибки, идеи и помощь с подключением: всё в одной группе, там же новости о версиях.", 13.sp, C.Sub)
+            SettingHint("Вопросы, ошибки, идеи и помощь с подключением: всё в одной группе, там же новости о версиях.")
             Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // white quiet zone around the code: scanners need it, a dark theme would eat it
                 Box(Modifier.size(210.dp).clip(RoundedCornerShape(16.dp)).background(Color.White).padding(12.dp)) {
-                    qr?.let { Image(it.asImageBitmap(), "QR-код группы", Modifier.fillMaxSize(), filterQuality = FilterQuality.None) }
+                    qr?.let { Image(it.asImageBitmap(), kg.forester.sg.data.tr("QR-код группы"), Modifier.fillMaxSize(), filterQuality = FilterQuality.None) }
                 }
                 Spacer(Modifier.width(16.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -70,20 +70,23 @@ fun ContactSettings() {
         Panel(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())) {
             T("Если что-то не работает", 16.sp, weight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
+            // the number to give the developer to find the logs of this unit; a tap copies it
+            DeviceIdLine()
+            Spacer(Modifier.height(4.dp))
             listOf(
-                "1. Сразу после проблемы: Настройки, Авто и адаптер, внизу Отправить журнал, и выберите группу или личку.",
+                "1. Сразу после проблемы: Настройки, Система, Отправить журнал, и выберите группу или личку.",
                 "2. Фото экрана, где видно, что не так.",
-                "3. Модель магнитолы и машины, версия приложения (Настройки, Основные).",
+                "3. Модель магнитолы и машины, версия приложения (Настройки, Система).",
             ).forEach { T(it, 14.sp, modifier = Modifier.padding(vertical = 4.dp)) }
             Spacer(Modifier.height(16.dp))
             T("Ещё", 16.sp, weight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip("GitHub: версии и исходники", false, { open("https://github.com/surtaeff/subaru-ssm-dashboard") }, Lucide.Github)
                 Chip("drive2", false, { open("https://www.drive2.ru/l/745439472769827788/") }, Lucide.Car)
             }
             Spacer(Modifier.height(10.dp))
-            T("Приложение бесплатное и открытое, лучшая помощь проекту: отзывы, что работает и что нет.", 12.sp, C.Sub)
+            SettingHint("Приложение бесплатное и открытое, лучшая помощь проекту: отзывы, что работает и что нет.")
         }
     }
 }

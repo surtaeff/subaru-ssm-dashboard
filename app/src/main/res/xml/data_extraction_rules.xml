@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+: the same, for the cloud backup and for a transfer between units -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="device_id.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="device_id.xml" />
+    </device-transfer>
+</data-extraction-rules>

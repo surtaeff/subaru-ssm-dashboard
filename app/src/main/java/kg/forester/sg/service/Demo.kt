@@ -154,4 +154,33 @@ object Demo {
     /** Instant consumption for the demo, same formula as the real one. */
     fun litersPerHour(e: EcuSnapshot) = FuelCalc.litersPerHour(e, 1.0)
 
+    /**
+     * A made-up pull for the dyno: a torque curve with its plateau moved by [shiftRpm] driven through the same sum the
+     * dyno counts backwards, 30 samples a second, the speed in whole km/h as the ECU gives it.
+     */
+    fun dynoPull(startMs: Long, shiftRpm: Int, ratio: Double = 35.0): List<DynoSample> {
+        fun nm(rpm: Double): Double {
+            val from = 3000.0 + shiftRpm
+            val to = 4500.0 + shiftRpm
+            return when {
+                rpm < from -> 300 - (from - rpm) * 0.12
+                rpm <= to -> 300.0
+                else -> 300 * (1 - 0.5 * ((rpm - to) / 2000) * ((rpm - to) / 2000))
+            }
+        }
+        val out = ArrayList<DynoSample>()
+        val m = 1550.0
+        var kmh = 2500 / ratio
+        var t = startMs
+        // in a tall gear the air stops it short of the top: 40 seconds at most
+        while (kmh * ratio < 6400 && out.size < 1200) {
+            val rpm = kmh * ratio
+            out += DynoSample(t, rpm.toInt(), kmh.toInt().toFloat(), 100f, ((rpm - 2500) / 15).coerceAtMost(85.0).toFloat())
+            val v = kmh / 3.6
+            val force = nm(rpm) * (rpm * 2 * Math.PI / 60) / v - 0.5 * 1.2 * 0.85 * v * v - 0.015 * m * 9.81
+            kmh += force / (m * PerfCalc.rotatingMass(rpm.toInt(), v)) * 3.6 / 30
+            t += 33
+        }
+        return out
+    }
 }

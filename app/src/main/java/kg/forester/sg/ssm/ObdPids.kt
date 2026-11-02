@@ -16,7 +16,11 @@ class ObdValue(
         deps = emptyList(), conversions = emptyMap(),
     )
 
-    fun text(d: ByteArray): String? = f(d)?.let { v -> param().text(v) + if (units.isEmpty()) "" else " $units" }
+    fun text(d: ByteArray): String? = f(d)?.let { v ->
+        val k = kg.forester.sg.data.DistanceUnits.kindOf(units)
+        param().text(k?.let { kg.forester.sg.data.DistanceUnits.shown(it, v.toFloat()).toDouble() } ?: v) +
+            (k?.let { " " + kg.forester.sg.data.DistanceUnits.unit(it) } ?: if (units.isEmpty()) "" else " $units")
+    }
 }
 
 /** Standard OBD-II parameters (SAE J1979 mode 01) beyond what the gauges take, and the tables of modes 01 PID 01 and 06. */

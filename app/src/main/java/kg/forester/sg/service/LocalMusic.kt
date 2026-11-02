@@ -89,7 +89,7 @@ object LocalMusic {
                     desc.contains("sd", true) -> Kind.SD
                     else -> Kind.USB
                 }
-                val name = when (kind) { Kind.MEMORY -> "Память"; Kind.SD -> "Карта"; Kind.USB -> "Флешка" }
+                val name = when (kind) { Kind.MEMORY -> "Память"; Kind.SD -> kg.forester.sg.data.I18n.pick("Карта", "Card"); Kind.USB -> "Флешка" }
                 out += Root(dir, name, kind)
             }
         }

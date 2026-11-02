@@ -13,14 +13,13 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -38,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.composables.icons.lucide.Fan
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Snowflake
+import com.composables.icons.lucide.Info
 import com.composables.icons.lucide.TriangleAlert
 import kg.forester.sg.data.Repo
 import kg.forester.sg.service.Alerts
@@ -70,7 +70,8 @@ private fun ShiftLight() {
     val on by Repo.shift.collectAsState()
     if (!on) return
     val t = rememberInfiniteTransition(label = "shift")
-    val a = t.animateFloat(0.25f, 0.9f, infiniteRepeatable(tween(120), RepeatMode.Reverse), label = "shiftA")
+    // 2.5 flashes a second: more than 3 is not advised
+    val a = t.animateFloat(0.25f, 0.9f, infiniteRepeatable(tween(200), RepeatMode.Reverse), label = "shiftA")
     // the flash fades the frame in its layer (alpha on the draw itself, no full-screen offscreen buffer):
     // no recomposition of the border on every frame
     Box(
@@ -94,32 +95,38 @@ private fun AlertBanner(m: Modifier) {
     }
     val col = when (alert.level) { Alerts.Level.DANGER -> C.Red; Alerts.Level.WARN -> C.Orange; else -> C.Violet }
     Row(
-        m.widthIn(max = 760.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xF0101422))
+        m.widthIn(max = 760.dp).clip(RoundedCornerShape(14.dp)).background(C.Overlay)
             .border(2.dp, col, RoundedCornerShape(14.dp)).clickable { Alerts.dismiss() }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Lucide.TriangleAlert, null, tint = col, modifier = Modifier.size(22.dp))
+        Icon(alertIcon(alert.level), null, tint = col, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(10.dp))
-        T(alert.text, 15.sp, C.Text, FontWeight.Medium, maxLines = 3)
+        T(alert.text, LocalCar.current.label, C.Text, FontWeight.Medium, maxLines = 3)
     }
 }
 
 @Composable
 private fun TurboChip(m: Modifier) {
-    val g by Repo.guard.collectAsState()
+    val guard = Repo.guard.collectAsState()
+    val g by androidx.compose.runtime.remember {
+        androidx.compose.runtime.derivedStateOf(androidx.compose.runtime.structuralEqualityPolicy()) {
+            val s = guard.value
+            PillState(s.cooldownSec, s.cold, if (s.cooldownSec > 0) s.heat.toInt() else 0)
+        }
+    }
     if (g.cooldownSec <= 0) return
     val col = if (g.cooldownSec > 45) C.Orange else C.Green
     Row(
-        m.clip(RoundedCornerShape(18.dp)).background(Color(0xF0101422)).border(2.dp, col, RoundedCornerShape(18.dp))
+        m.clip(RoundedCornerShape(18.dp)).background(C.Overlay).border(2.dp, col, RoundedCornerShape(18.dp))
             .padding(horizontal = 22.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Lucide.Fan, null, tint = col, modifier = Modifier.size(34.dp))
         Spacer(Modifier.width(14.dp))
         androidx.compose.foundation.layout.Column {
-            T("Турбина остывает", 15.sp, C.Sub)
-            T("не глушите ещё ${g.cooldownSec} с", 24.sp, C.Text, FontWeight.Bold)
+            T("Турбина остывает", LocalCar.current.secondary, C.Sub)
+            T("не глушите ещё ${g.cooldownSec} с", LocalCar.current.label, C.Text, FontWeight.Bold)
             Spacer(Modifier.size(4.dp))
             Box(Modifier.width(220.dp).height(6.dp).clip(RoundedCornerShape(3.dp)).background(C.CardHi)) {
                 Box(Modifier.fillMaxSize().padding(end = (220 * (1f - (g.heat / 100f).coerceIn(0f, 1f))).dp).background(col))
@@ -139,26 +146,39 @@ fun AlertInBottomBar(alert: Alerts.Alert) {
     }
     val col = when (alert.level) { Alerts.Level.DANGER -> C.Red; Alerts.Level.WARN -> C.Orange; else -> C.Violet }
     Row(
-        Modifier.fillMaxWidth().height(58.dp).clip(RoundedCornerShape(14.dp)).background(col.copy(alpha = 0.16f))
+        Modifier.fillMaxWidth().height(bottomBarHeight()).clip(RoundedCornerShape(14.dp)).background(col.copy(alpha = 0.16f))
             .border(2.dp, col, RoundedCornerShape(14.dp)).clickable { Alerts.dismiss() }.padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Lucide.TriangleAlert, null, tint = col, modifier = Modifier.size(24.dp))
+        Icon(alertIcon(alert.level), null, tint = col, modifier = Modifier.size(24.dp))
         Spacer(Modifier.width(12.dp))
-        T(alert.text, 15.sp, C.Text, FontWeight.Medium, maxLines = 2, modifier = Modifier.weight(1f))
+        // as large as the two lines the bar's height holds let it be
+        FitText(alert.text, LocalCar.current.label, Modifier.weight(1f), C.Text, FontWeight.Medium, maxLines = 2)
         Spacer(Modifier.width(12.dp))
-        T(if (alert.level == Alerts.Level.DANGER) "нажмите, чтобы скрыть" else "скрыть", 12.sp, C.Sub)
+        T(if (alert.level == Alerts.Level.DANGER) "скрыть: нажмите" else "скрыть", LocalCar.current.secondary, C.Sub, maxLines = 1)
     }
 }
+
+internal data class PillState(val cooldownSec: Int, val cold: Boolean, val heat: Int)
 
 /**
  * States that last (turbo cool-down, cold engine) as a pill in the header next to the clock: always in the same
  * place, never over the content. Two short lines say what it is and what to do; a tap explains why.
  */
+/** What the plate shows now: [turbo] the cool-down (with [cooled] once it is done), else the cold engine. */
+class StatusPillUi internal constructor(internal val g: PillState, internal val turbo: Boolean, internal val cooled: Boolean)
+
+/** The plate's state, null while there is nothing to say: the header gives it room only then. */
 @Composable
-fun StatusPill() {
-    val g by Repo.guard.collectAsState()
-    var info by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+fun rememberStatusPill(): StatusPillUi? {
+    // only what this pill shows, not every new state of the guard (one per reading)
+    val guard = Repo.guard.collectAsState()
+    val g by androidx.compose.runtime.remember {
+        androidx.compose.runtime.derivedStateOf(androidx.compose.runtime.structuralEqualityPolicy()) {
+            val s = guard.value
+            PillState(s.cooldownSec, s.cold, if (s.cooldownSec > 0) s.heat.toInt() else 0)
+        }
+    }
     // the countdown never hides early: orange while it runs, then green «можно глушить» for a while
     var cooledAt by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0L) }
     var wasCounting by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
@@ -173,26 +193,37 @@ fun StatusPill() {
     }
     val cooled = cooledAt > 0L && g.cooldownSec <= 0
     val turbo = g.cooldownSec > 0 || cooled
-    if (!turbo && !g.cold) return
+    return if (!turbo && !g.cold) null else StatusPillUi(g, turbo, cooled)
+}
+
+/** The plate, in a slot of the width the caller gives it: its text shrinks inside, it never pushes the buttons. */
+@Composable
+fun StatusPill(ui: StatusPillUi, modifier: Modifier = Modifier) {
+    val g = ui.g; val turbo = ui.turbo; val cooled = ui.cooled
+    var info by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val car = LocalCar.current
     val col = if (cooled) C.Green else if (turbo) C.Orange else C.Blue
     Row(
-        Modifier.padding(end = 22.dp).clip(RoundedCornerShape(18.dp)).background(col.copy(alpha = 0.14f))
+        modifier.padding(end = 14.dp).clip(RoundedCornerShape(18.dp)).background(col.copy(alpha = 0.14f))
             .border(1.5.dp, col, RoundedCornerShape(18.dp)).clickable { info = true }
-            .padding(horizontal = 14.dp, vertical = 5.dp),
+            .padding(horizontal = 12.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(if (turbo) Lucide.Fan else Lucide.Snowflake, null, tint = col, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(10.dp))
-        androidx.compose.foundation.layout.Column {
-            T(if (cooled) "Турбина остыла" else if (turbo) "Турбина остывает" else "Мотор холодный", 11.sp, C.Sub, maxLines = 1)
+        androidx.compose.foundation.layout.Column(Modifier.weight(1f, fill = false)) {
+            // a pill in the header: smaller rather than cut, on the parked screens too
+            val small = (car.secondary.value * 0.7f).sp
+            // on a small screen what to do is enough: the fan says what it is about, the header needs the room
+            if (!car.small) FitText(if (cooled) "Турбина остыла" else if (turbo) "Турбина остывает" else "Мотор холодный", car.secondary, color = C.Sub, min = small)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                T(if (cooled) "можно глушить" else if (turbo) "не глушите ещё ${g.cooldownSec} с" else "не выше 3000 об/мин",
-                    15.sp, C.Text, FontWeight.SemiBold, maxLines = 1)
-                if (turbo && !cooled) {
-                    Spacer(Modifier.width(10.dp))
-                    Box(Modifier.width(60.dp).height(5.dp).clip(RoundedCornerShape(3.dp)).background(C.CardHi)) {
-                        Box(Modifier.fillMaxSize().padding(end = (60 * (1f - (g.heat / 100f).coerceIn(0f, 1f))).dp).background(col))
-                    }
+                FitText(if (cooled) "можно глушить" else if (turbo) (if (car.small) "ждите ${g.cooldownSec} с" else "не глушите ещё ${g.cooldownSec} с") else if (car.small) "до 3000 об/мин" else "не выше 3000 об/мин",
+                    car.secondary, Modifier.weight(1f, fill = false), C.Text, FontWeight.SemiBold, min = small)
+            }
+            // under the words: beside them it took half the width and cut them
+            if (turbo && !cooled && !car.small) {
+                Box(Modifier.padding(top = 2.dp).fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(C.CardHi)) {
+                    Box(Modifier.fillMaxHeight().fillMaxWidth((g.heat / 100f).coerceIn(0f, 1f)).background(col))
                 }
             }
         }
@@ -214,3 +245,6 @@ fun StatusPill() {
         ),
     ) { info = false }
 }
+
+/** The triangle is for what needs attention; a mere piece of news gets the plain mark. */
+private fun alertIcon(level: Alerts.Level) = if (level == Alerts.Level.INFO) Lucide.Info else Lucide.TriangleAlert

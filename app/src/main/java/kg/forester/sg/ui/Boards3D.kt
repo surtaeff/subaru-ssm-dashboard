@@ -47,21 +47,33 @@ fun load3d(l: LoadKind) = when (l) {
 
 private class Turntable(val dir: String, val count: Int, val w: Int, val h: Int) {
     private val cache = android.util.LruCache<Int, android.graphics.Bitmap>(40)
+    /** How many models on screen show this one: the frames (23 MB a board) stay only while one does. */
+    private var users = 0
     fun bitmap(ctx: android.content.Context, i: Int): android.graphics.Bitmap? = cache.get(i) ?: runCatching {
         ctx.assets.open("$dir/board_%03d.webp".format(i)).use { android.graphics.BitmapFactory.decodeStream(it) }
-    }.getOrNull()?.also { cache.put(i, it) }
+    }.getOrNull()?.also { b -> synchronized(this) { if (users > 0) cache.put(i, b) } }
+
+    @Synchronized fun enter() { users++ }
+    @Synchronized fun leave() { if (--users == 0) cache.evictAll() }
+    fun clear() = cache.evictAll()
 
     companion object {
         private val loaded = HashMap<String, Turntable?>()
-        fun of(ctx: android.content.Context, id: String): Turntable? = loaded.getOrPut(id) {
-            runCatching {
-                val m = org.json.JSONObject(ctx.assets.open("boards3d/$id/meta.json").bufferedReader().readText())
-                val s = m.getJSONArray("size")
-                Turntable("boards3d/$id", m.getInt("frames"), s.getInt(0), s.getInt(1))
-            }.getOrNull()
+        fun clearAll() { synchronized(loaded) { loaded.values.toList() }.forEach { it?.clear() } }
+        fun of(ctx: android.content.Context, id: String): Turntable? = synchronized(loaded) {
+            loaded.getOrPut(id) {
+                runCatching {
+                    val m = org.json.JSONObject(ctx.assets.open("boards3d/$id/meta.json").bufferedReader().readText())
+                    val s = m.getJSONArray("size")
+                    Turntable("boards3d/$id", m.getInt("frames"), s.getInt(0), s.getInt(1))
+                }.getOrNull()
+            }
         }
     }
 }
+
+/** A memory warning: the frames of the boards on screen are decoded again as they come round. */
+fun trimBoardFrames() = Turntable.clearAll()
 
 /**
  * The model turning slowly by itself; a finger turns it either way and it carries on by itself a few seconds later.
@@ -70,10 +82,23 @@ private class Turntable(val dir: String, val count: Int, val w: Int, val h: Int)
 @Composable
 fun Model3D(id: String, modifier: Modifier) {
     val ctx = LocalContext.current
-    val t = remember(id) { Turntable.of(ctx, id) } ?: return
+    // the model's JSON off the main thread; its room stands empty until then
+    val read by androidx.compose.runtime.produceState<Pair<String, Turntable?>?>(null, id) {
+        value = id to withContext(Dispatchers.IO) { Turntable.of(ctx, id) }
+    }
+    val loaded = read
+    if (loaded == null || loaded.first != id) {
+        Box(modifier)
+        return
+    }
+    val t = loaded.second ?: return
     var frame by remember(id) { mutableFloatStateOf(0f) }
     var touched by remember { mutableLongStateOf(0L) }
     var bmp by remember(id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    androidx.compose.runtime.DisposableEffect(t) {
+        t.enter()
+        onDispose { t.leave() }
+    }
     LaunchedEffect(id) {
         while (true) {
             if (System.currentTimeMillis() - touched > 3000) frame = (frame + 1f) % t.count

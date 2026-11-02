@@ -10,18 +10,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.ui.graphics.graphicsLayer
-import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -51,9 +47,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.runtime.Composable
@@ -64,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -90,12 +85,19 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.media3.common.Player
 import com.composables.icons.lucide.*
 import kg.forester.sg.data.Repo
-import android.view.KeyEvent
 import kg.forester.sg.service.AudioFx
-import kg.forester.sg.service.BtAudio
 import kg.forester.sg.service.Fyt
 import kg.forester.sg.service.LocalMusic
 import kg.forester.sg.service.MediaSessions
+import kg.forester.sg.service.PlayerState
+import kg.forester.sg.service.audio.AudioPlatform
+import kg.forester.sg.service.audio.AudioPlatforms
+import kg.forester.sg.service.audio.BtBackend
+import kg.forester.sg.service.audio.Transport
+import kg.forester.sg.service.audio.ownSources
+import kg.forester.sg.service.playerState
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -112,7 +114,8 @@ import kotlin.math.sin
 @Composable
 fun MediaScreen() {
     val ctx = LocalContext.current
-    val fyt = remember { Fyt.present(ctx) }
+    val audio by remember { AudioPlatforms.state(ctx) }.collectAsState()
+    val scope = rememberCoroutineScope()
     val modes = listOf(
         Triple("files", "USB", Lucide.Usb), Triple("bt", "Bluetooth", Lucide.Bluetooth),
         Triple("radio", "Радио", Lucide.Radio), Triple("apps", "Приложения", Lucide.LayoutGrid),
@@ -121,17 +124,25 @@ fun MediaScreen() {
     var panel by remember { mutableStateOf(true) }
     var appsKey by remember { mutableStateOf(0) }
     val appsVer by appsRefresh.collectAsState()
-    val radio = rememberRadioUi(fyt)
+    val radio = rememberRadioUi(audio.radio)
     fun pick(s: String) {
         if (s == mode) return
+        // leaving the radio gives the tuner back (an opened one is closed; the FYT's is left as it is)
+        if (mode == "radio" && !radio.internet) scope.launch { audio.radio.off() }
         mode = s; Repo.settings.mediaSource = s
         // one source at a time, like the head unit's own: the files pause when another one takes over
         if (s != "files" && !(s == "radio" && radio.internet)) LocalMusic.pause()
-        if (s == "bt") BtAudio.enter(ctx) else BtAudio.leave(ctx)
-        if (fyt && s == "radio" && !radio.internet) Fyt.ensureRadio()
+        if (s == "bt") scope.launch(start = CoroutineStart.UNDISPATCHED) { audio.bt.enter(byUser = true) } else audio.bt.leave()
+        if (radio.tuner && s == "radio" && !radio.internet) scope.launch(start = CoroutineStart.UNDISPATCHED) { audio.radio.on() }
     }
-    // opened on Bluetooth: the sound goes to the phone as when it is picked (FYT keeps its source as it is)
-    LaunchedEffect(Unit) { if (mode == "bt" && !fyt) BtAudio.enter(ctx) }
+    // opened on Bluetooth: the sound is routed to the phone, nothing plays until the driver asks (a unit with its own sources keeps it as it is).
+    // The probes changed the answer: the old backend gives back what it took (Microntek's channel), the new one takes over
+    var routed by remember { mutableStateOf<AudioPlatform?>(null) }
+    LaunchedEffect(audio) {
+        routed?.bt?.leave()
+        routed = audio
+        if (mode == "bt" && !audio.ownSources) audio.bt.enter(byUser = false)
+    }
     // another app started playing (Yandex Music from its own screen, a voice command): offer to show it
     var other by remember { mutableStateOf<Pair<String, String>?>(null) }
     LaunchedEffect(Unit) {
@@ -147,7 +158,7 @@ fun MediaScreen() {
         else -> null
     }
     val shape = RoundedCornerShape(20.dp)
-    Box(Modifier.fillMaxSize().clip(shape).background(C.Card).border(1.dp, C.Border, shape)) {
+    Box(Modifier.fillMaxSize().clip(shape).panelFill().border(1.dp, C.Border, shape)) {
         Backdrop(art)
         Column(Modifier.fillMaxSize().padding(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -179,9 +190,9 @@ fun MediaScreen() {
                 Box(Modifier.weight(1f).fillMaxHeight()) {
                     Crossfade(mode, label = "mode") { m ->
                         when (m) {
-                            "bt" -> BluetoothHero(fyt)
+                            "bt" -> BluetoothHero(audio.bt)
                             "radio" -> RadioHero(radio)
-                            "apps" -> androidx.compose.runtime.key(appsKey, appsVer) { AppsHero(fyt) }
+                            "apps" -> androidx.compose.runtime.key(appsKey, appsVer) { AppsHero() }
                             else -> FilesHero()
                         }
                     }
@@ -195,13 +206,13 @@ fun MediaScreen() {
                 ) {
                     Row {
                         Spacer(Modifier.width(16.dp))
-                        Box(Modifier.fillMaxHeight().width(1.dp).background(Color.White.copy(alpha = 0.08f)))
+                        Box(Modifier.fillMaxHeight().width(1.dp).background(C.Hair.copy(alpha = 0.08f)))
                         Spacer(Modifier.width(16.dp))
                         Box(Modifier.width(420.dp).fillMaxHeight()) {
                             when (mode) {
-                                "bt" -> BluetoothPanel(fyt)
+                                "bt" -> BluetoothPanel()
                                 "radio" -> RadioPanel(radio)
-                                "apps" -> androidx.compose.runtime.key(appsKey) { AppsPanel(fyt) }
+                                "apps" -> androidx.compose.runtime.key(appsKey) { AppsPanel(audio.ownSources) }
                                 else -> FilesPanel()
                             }
                         }
@@ -219,15 +230,15 @@ private fun Backdrop(art: Bitmap?) {
     val a by animateFloatAsState(if (blur != null) 0.75f else 0f, tween(600), label = "backdrop")
     Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(C.Violet.copy(alpha = 0.20f), C.Card, C.Purple.copy(alpha = 0.12f)))))
     if (blur != null) Image(blur, null, Modifier.fillMaxSize().alpha(a), contentScale = ContentScale.Crop, filterQuality = FilterQuality.High)
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.50f), C.Card.copy(alpha = 0.84f), C.Card.copy(alpha = 0.95f)))))
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(C.shade(0.50f), C.Card.copy(alpha = 0.84f), C.Card.copy(alpha = 0.95f)))))
 }
 
 /** The mode switch: a segmented pill, the chosen part filled with the interface colour. */
 @Composable
 private fun ModeSwitch(modes: List<Triple<String, String, ImageVector>>, mode: String, onPick: (String) -> Unit) {
     Row(
-        Modifier.height(52.dp).clip(RoundedCornerShape(26.dp)).background(Color.Black.copy(alpha = 0.28f))
-            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(26.dp)).padding(4.dp),
+        Modifier.height(52.dp).clip(RoundedCornerShape(26.dp)).background(C.shade(0.28f))
+            .border(1.dp, C.Hair.copy(alpha = 0.08f), RoundedCornerShape(26.dp)).padding(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         modes.forEach { (id, title, icon) ->
@@ -238,9 +249,9 @@ private fun ModeSwitch(modes: List<Triple<String, String, ImageVector>>, mode: S
                     .clickable { onPick(id) }.padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(icon, null, tint = if (sel) Color.White else C.Sub, modifier = Modifier.size(20.dp))
+                Icon(icon, null, tint = if (sel) C.OnAccent else C.Sub, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
-                T(title, 15.sp, if (sel) Color.White else C.Sub, if (sel) FontWeight.SemiBold else FontWeight.Medium, maxLines = 1)
+                T(title, 15.sp, if (sel) C.OnAccent else C.Sub, if (sel) FontWeight.SemiBold else FontWeight.Medium, maxLines = 1)
             }
         }
     }
@@ -250,14 +261,14 @@ private fun ModeSwitch(modes: List<Triple<String, String, ImageVector>>, mode: S
 internal fun RoundIcon(icon: ImageVector, label: String, selected: Boolean = false, onClick: () -> Unit) {
     Row(
         Modifier.height(44.dp).clip(RoundedCornerShape(22.dp))
-            .background(if (selected) C.Violet.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.25f))
-            .border(1.dp, if (selected) C.Violet.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
+            .background(if (selected) C.selectFill(C.Violet.copy(alpha = 0.20f)) else C.shade(0.25f))
+            .border(1.dp, if (selected) C.Violet.copy(alpha = 0.6f) else C.Hair.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
             .clickable(onClick = onClick).padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = if (selected) C.Violet else C.Text, modifier = Modifier.size(18.dp))
+        Icon(icon, null, tint = if (!selected) C.Text else if (C.palette.solidSmall) C.selectText(C.Violet) else C.Violet, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        T(label, 14.sp, C.Text, FontWeight.Medium, maxLines = 1)
+        T(label, 14.sp, if (selected) C.selectText(C.Text) else C.Text, FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -299,16 +310,16 @@ internal fun Hero(
 }
 
 /**
- * The music's levels, [AudioFx.BARS] bands, bass first: from the player's own output when the unit lets the app
+ * The music's levels, as many bands as this head unit draws ([AudioFx.barCount]), bass first: from the player's own output when the unit lets the app
  * listen to it, else a calm made-up movement while it plays (Bluetooth, other apps), still when paused. A State, to
  * be read only while drawing: the pictures move with the music without recomposing anything on every frame.
  */
 @Composable
 internal fun rememberLevels(playing: Boolean): androidx.compose.runtime.State<FloatArray> {
     val live by AudioFx.live.collectAsState()
-    val n = AudioFx.BARS
+    val n by AudioFx.barCount.collectAsState()
     return when {
-        !playing -> remember { mutableStateOf(FloatArray(n) { 0.04f }) }
+        !playing -> remember(n) { mutableStateOf(FloatArray(n) { 0.04f }) }
         live -> AudioFx.spectrum.collectAsState()
         else -> madeUpLevels(n)
     }
@@ -317,11 +328,10 @@ internal fun rememberLevels(playing: Boolean): androidx.compose.runtime.State<Fl
 /** The calm made-up movement; its clock runs only while it is shown, not under a paused or a live picture. */
 @Composable
 private fun madeUpLevels(n: Int): androidx.compose.runtime.State<FloatArray> {
-    val t = rememberInfiniteTransition(label = "wave")
-    val phase = t.animateFloat(0f, (2 * Math.PI).toFloat(), infiniteRepeatable(tween(2600, easing = LinearEasing)), label = "phase")
-    return remember {
+    val clock = rememberSmoothClock(true)
+    return remember(n) {
         androidx.compose.runtime.derivedStateOf {
-            val p = phase.value
+            val p = clock.value / 2.6f * (2 * Math.PI).toFloat()
             FloatArray(n) { i ->
                 ((0.38f + 0.22f * sin(p + i * 0.45f) + 0.14f * sin(p * 2 - i * 0.8f) + 0.08f * sin(p * 3 + i * 1.3f))
                     * (1f - i / (n * 1.5f))).coerceIn(0.04f, 1f)
@@ -331,60 +341,89 @@ private fun madeUpLevels(n: Int): androidx.compose.runtime.State<FloatArray> {
 }
 
 /**
- * The cover with a glow that breathes with the bass and, when chosen in «Звук», rays round it that move with
- * the music (like a CircleLine visualizer).
+ * The cover in a circle, with a glow and, when chosen in «Звук», a ring of rays coming out of its edge. The ring moves
+ * only while it plays: with the music where the player's own output can be read, else a plain even wave round it, which
+ * can't be taken for a level. [onTap] takes the circle only, a clip on the box round it would cut the ring.
  */
 @Composable
-internal fun GlowCover(art: Bitmap?, placeholder: ImageVector, playing: Boolean, modifier: Modifier, whiteBack: Boolean = false) {
+internal fun GlowCover(art: Bitmap?, placeholder: ImageVector, playing: Boolean, modifier: Modifier, whiteBack: Boolean = false, onTap: (() -> Unit)? = null) {
     val cfg by AudioFx.cfg.collectAsState()
-    val lv = rememberLevels(playing)
-    // the glow follows the bass, eased over 140 ms as before; the levels and the glow are read only in the drawing
-    // and in the cover's layer, so a playing track redraws the glow and the rays and scales the cover, while the cover
-    // with its picture is not recomposed on every frame
-    val glowAnim = remember { androidx.compose.animation.core.Animatable(0f) }
-    androidx.compose.runtime.LaunchedEffect(lv, playing) {
-        androidx.compose.runtime.snapshotFlow { if (playing) lv.value.let { a -> (a[0] + a[1] + a[2] + a[3] + a[4]) / 5f } else 0f }
-            .collectLatest { glowAnim.animateTo(it, tween(140)) }
+    val live by AudioFx.live.collectAsState()
+    val tier by kg.forester.sg.data.DeviceTier.current.collectAsState()
+    val low = tier == kg.forester.sg.data.Tier.LOW
+    val drive = RoundCover.drive(playing, live)
+    // real levels only when they are real: rememberLevels would make some up otherwise
+    val lv = rememberLevels(drive == RoundCover.Drive.LEVELS)
+    val clock = rememberSmoothClock(drive == RoundCover.Drive.WAVE)
+    // read only in the drawing: a frame of the ring recomposes nothing and only moves the cover's layer
+    val waveClock = remember(low) { androidx.compose.runtime.derivedStateOf { RoundCover.cappedClock(clock.value, low) } }
+    val bass = remember(lv, drive, low) {
+        androidx.compose.runtime.derivedStateOf {
+            when {
+                // the Low tier keeps the glow still, the rest of what moves is the ring
+                low -> 0f
+                drive == RoundCover.Drive.LEVELS -> lv.value.let { a -> (a[0] + a[1] + a[2] + a[3] + a[4]) / 5f }
+                drive == RoundCover.Drive.WAVE -> 0.3f + 0.1f * sin(clock.value / RoundCover.WAVE_PERIOD * (2 * Math.PI).toFloat())
+                else -> 0f
+            }
+        }
     }
+    val glowAnim = rememberSmooth(bass, tau = 0.06f).value
     val main = C.Violet
     val second = C.theme.second
     val ring = cfg.ring
+    val rays = RoundCover.rays(low)
+    val ways = remember(rays) {
+        FloatArray(rays * 2) { i ->
+            val a = ((i / 2).toFloat() / rays) * 2 * Math.PI.toFloat() - Math.PI.toFloat() / 2
+            if (i % 2 == 0) kotlin.math.cos(a) else sin(a)
+        }
+    }
     Box(modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
+            if (playing) kg.forester.sg.data.DeviceTier.drawing()
             val c = center
             val s = size.minDimension
-            val glow = glowAnim.value
+            val glow = glowAnim.floatValue
             drawCircle(Brush.radialGradient(listOf(main.copy(alpha = 0.20f + glow * 0.40f), Color.Transparent), c, s * (0.55f + glow * 0.08f)), s * (0.55f + glow * 0.08f), c)
             if (ring) {
-                val lv = lv.value
-                val rays = 96
-                val r0 = s * 0.44f
+                val r0 = s * RoundCover.RAY_FROM
+                val t = if (drive == RoundCover.Drive.WAVE) waveClock.value else 0f
+                val levels = if (drive == RoundCover.Drive.LEVELS) lv.value else null
                 for (k in 0 until rays) {
-                    val a = (k.toFloat() / rays) * 2 * Math.PI.toFloat() - Math.PI.toFloat() / 2
                     // mirrored left and right, bass at the bottom
                     val half = abs(((k.toFloat() / rays) * 2f) - 1f)
-                    val band = ((1f - half) * (lv.size - 1)).toInt().coerceIn(0, lv.size - 1)
-                    val v = lv[band]
-                    val len = s * (0.025f + v * 0.11f)
-                    val dx = kotlin.math.cos(a); val dy = kotlin.math.sin(a)
-                    val col = androidx.compose.ui.graphics.lerp(second, main, half)
+                    val v = when (drive) {
+                        RoundCover.Drive.LEVELS -> levels!![((1f - half) * (levels.size - 1)).toInt().coerceIn(0, levels.size - 1)]
+                        RoundCover.Drive.WAVE -> RoundCover.wave(k, rays, t)
+                        RoundCover.Drive.STILL -> RoundCover.REST_LEVEL
+                    }
+                    val len = s * RoundCover.rayLength(v)
+                    val dx = ways[k * 2]; val dy = ways[k * 2 + 1]
+                    val col = if (low) main else androidx.compose.ui.graphics.lerp(second, main, half)
                     drawLine(col.copy(alpha = 0.35f + v * 0.6f), Offset(c.x + dx * r0, c.y + dy * r0), Offset(c.x + dx * (r0 + len), c.y + dy * (r0 + len)),
-                        strokeWidth = s * 0.012f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                        strokeWidth = s * RoundCover.RAY_WIDTH, cap = androidx.compose.ui.graphics.StrokeCap.Round)
                 }
             }
         }
-        val shape = RoundedCornerShape(20.dp)
+        // one layer holds the scale and the circle: a frame of the music changes its numbers, the picture isn't drawn again
         Box(
-            Modifier.fillMaxSize(if (ring) 0.80f else 0.92f)
-                .graphicsLayer { val k = 1f + glowAnim.value * 0.02f; scaleX = k; scaleY = k }.clip(shape)
+            Modifier.fillMaxSize(if (ring) RoundCover.COVER_WITH_RING else RoundCover.COVER_ALONE)
+                .graphicsLayer {
+                    val k = 1f + glowAnim.floatValue * RoundCover.GROW
+                    scaleX = k; scaleY = k
+                    shape = CircleShape; clip = true
+                }
                 .background(if (whiteBack && art != null) Brush.verticalGradient(listOf(Color.White, Color.White))
                     else Brush.linearGradient(listOf(C.Violet.copy(alpha = 0.6f), C.Purple.copy(alpha = 0.4f), C.CardHi)))
-                .border(1.dp, Color.White.copy(alpha = 0.12f), shape),
+                .border(1.dp, C.Hair.copy(alpha = 0.12f), CircleShape)
+                .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
-            if (art != null) Image(art.asImageBitmap(), null, Modifier.fillMaxSize().padding(if (whiteBack) 12.dp else 0.dp),
+            // a logo stays whole inside the circle, a picture fills it, cropped round its centre
+            if (art != null) Image(art.asImageBitmap(), null, if (whiteBack) Modifier.fillMaxSize(RoundCover.LOGO_FIT) else Modifier.fillMaxSize(),
                 contentScale = if (whiteBack) ContentScale.Fit else ContentScale.Crop)
-            else Icon(placeholder, null, tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.fillMaxSize(0.38f))
+            else Icon(placeholder, null, tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.fillMaxSize(RoundCover.ICON_FIT))
         }
     }
 }
@@ -394,13 +433,15 @@ internal fun GlowCover(art: Bitmap?, placeholder: ImageVector, playing: Boolean,
 internal fun ColumnScope.TrackInfo(kicker: String, title: String, artist: String, album: String = "", next: String = "") {
     T(kicker.uppercase(), 12.sp, C.Violet, FontWeight.SemiBold, maxLines = 1)
     Spacer(Modifier.height(8.dp))
-    T(title, 30.sp, weight = FontWeight.Bold, maxLines = 2)
+    // a theme's own wider type shrinks a long title to fit; the system's cuts it as it always did
+    if (C.palette.font != null) FitText(title, 30.sp, Modifier.fillMaxWidth(), weight = FontWeight.Bold, min = 18.sp, maxLines = 2)
+    else T(title, 30.sp, weight = FontWeight.Bold, maxLines = 2)
     if (artist.isNotBlank()) { Spacer(Modifier.height(6.dp)); T(artist, 19.sp, C.Text.copy(alpha = 0.75f), maxLines = 1) }
     if (album.isNotBlank()) { Spacer(Modifier.height(2.dp)); T(album, 14.sp, C.Sub, maxLines = 1) }
     if (next.isNotBlank()) {
         Spacer(Modifier.height(14.dp))
         Row(
-            Modifier.clip(RoundedCornerShape(12.dp)).background(Color.Black.copy(alpha = 0.22f)).padding(horizontal = 10.dp, vertical = 6.dp),
+            Modifier.clip(RoundedCornerShape(12.dp)).background(C.shade(0.22f)).padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(Lucide.ListMusic, null, tint = C.Sub, modifier = Modifier.size(14.dp))
@@ -429,6 +470,7 @@ private fun BarsVis(levels: androidx.compose.runtime.State<FloatArray>, modifier
     val main = C.Violet
     val second = C.theme.second
     Canvas(modifier) {
+        kg.forester.sg.data.DeviceTier.drawing()
         val lv = levels.value
         val n = lv.size
         val base = size.height * 0.78f
@@ -456,6 +498,7 @@ private fun WaveVis(levels: androidx.compose.runtime.State<FloatArray>, modifier
     val main = C.Violet
     val second = C.theme.second
     Canvas(modifier) {
+        kg.forester.sg.data.DeviceTier.drawing()
         val lv = levels.value
         val n = lv.size
         val mid = size.height / 2
@@ -490,7 +533,7 @@ internal fun SeekBar(posMs: Long, durMs: Long, onSeek: ((Long) -> Unit)?) {
             value = frac, onValueChange = { dragging = it },
             onValueChangeFinished = { dragging?.let { onSeek((it * durMs).toLong()) }; dragging = null },
             modifier = Modifier.fillMaxWidth().height(26.dp),
-            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = C.Violet, inactiveTrackColor = Color.White.copy(alpha = 0.12f)),
+            colors = SliderDefaults.colors(thumbColor = C.Ink, activeTrackColor = C.Violet, inactiveTrackColor = C.Hair.copy(alpha = 0.12f)),
         )
     } else {
         Box(Modifier.fillMaxWidth().height(26.dp), contentAlignment = Alignment.Center) { ProgressBar(frac, C.Accent, Modifier.fillMaxWidth(), 6.dp) }
@@ -508,12 +551,12 @@ internal fun SeekBar(posMs: Long, durMs: Long, onSeek: ((Long) -> Unit)?) {
 internal fun Control(icon: ImageVector, size: Dp, primary: Boolean = false, active: Boolean = false, onLong: (() -> Unit)? = null, onClick: () -> Unit) {
     Box(
         Modifier.size(size).clip(CircleShape)
-            .background(if (primary) C.Accent else Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.07f), Color.White.copy(alpha = 0.04f))))
+            .background(if (primary) C.Accent else Brush.verticalGradient(listOf(C.Hair.copy(alpha = 0.07f), C.Hair.copy(alpha = 0.04f))))
             .then(if (active) Modifier.border(1.5.dp, C.Violet, CircleShape) else Modifier)
             .combinedClickable(onLongClick = onLong, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, null, tint = if (primary) Color.White else if (active) C.Violet else C.Text, modifier = Modifier.size(size * 0.40f))
+        Icon(icon, null, tint = if (primary) C.OnAccent else if (active) C.Violet else C.Text, modifier = Modifier.size(size * 0.40f))
     }
 }
 
@@ -532,35 +575,24 @@ internal fun PanelBox(icon: ImageVector, title: String, trailing: @Composable ()
     }
 }
 
-@Composable
-internal fun Pill(text: String, icon: ImageVector? = null, selected: Boolean = false, height: Dp = 44.dp, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(height / 2)
-    Row(
-        Modifier.height(height).clip(shape).background(if (selected) C.Violet.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f))
-            .border(1.dp, if (selected) C.Violet else Color.Transparent, shape)
-            .clickable(onClick = onClick).padding(horizontal = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) { Icon(icon, null, tint = if (selected) C.Violet else C.Sub, modifier = Modifier.size(18.dp)); if (text.isNotEmpty()) Spacer(Modifier.width(8.dp)) }
-        if (text.isNotEmpty()) T(text, 14.sp, if (selected) C.Text else C.Sub, FontWeight.Medium, maxLines = 1)
-    }
+/** One bar's height at [seconds]: up and down between 0.25 and 1, each bar at a pace of its own. */
+private fun barHeight(seconds: Float, i: Int): Float {
+    val period = 0.84f + i * 0.32f
+    val p = (seconds + i * 0.16f) % period / period
+    val up = if (p < 0.5f) p * 2f else 2f - p * 2f
+    return 0.25f + 0.75f * FastOutSlowInEasing.transform(up)
 }
 
 /** Three bars dancing beside what plays (still while paused). */
 @Composable
 internal fun Bars(playing: Boolean) {
     // paused: still bars and no clock ticking under them
-    val hs = if (playing) {
-        val t = rememberInfiniteTransition(label = "eq")
-        listOf(0, 160, 320).map { d ->
-            t.animateFloat(0.25f, 1f, infiniteRepeatable(tween(420, delayMillis = d), androidx.compose.animation.core.RepeatMode.Reverse), label = "eq$d")
-        }
-    } else null
+    val clock = rememberSmoothClock(playing)
     val violet = C.Violet
     Canvas(Modifier.size(20.dp)) {
         val w = size.width / 5
         for (i in 0 until 3) {
-            val f = hs?.get(i)?.value ?: listOf(0.4f, 0.7f, 0.5f)[i]
+            val f = if (playing) barHeight(clock.value, i) else listOf(0.4f, 0.7f, 0.5f)[i]
             drawRoundRect(violet, Offset(w * (i * 2), size.height * (1 - f)), Size(w, size.height * f), CornerRadius(w / 2, w / 2))
         }
     }
@@ -586,8 +618,8 @@ internal fun ListRow(title: String, sub: String = "", current: Boolean = false, 
 }
 
 @Composable
-internal fun IconTile(icon: ImageVector) {
-    Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(C.Violet.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+internal fun IconTile(icon: ImageVector, side: Dp = 40.dp) {
+    Box(Modifier.size(side).clip(RoundedCornerShape(12.dp)).background(C.Violet.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
         Icon(icon, null, tint = C.Violet, modifier = Modifier.size(19.dp))
     }
 }
@@ -638,7 +670,7 @@ private fun FilesHero() {
             if (!files || st.current == null) TrackInfo("USB · свой плеер", if (granted) "Выберите музыку в списке" else "Нужен доступ к музыке",
                 "Флешка, карта или память магнитолы")
             else {
-                TrackInfo(st.current?.let { File(it).parentFile?.name }.orEmpty(), st.title, st.artist, st.album,
+                TrackInfo(kg.forester.sg.data.I18n.raw(st.current?.let { File(it).parentFile?.name }.orEmpty()), kg.forester.sg.data.I18n.raw(st.title), kg.forester.sg.data.I18n.raw(st.artist), kg.forester.sg.data.I18n.raw(st.album),
                     if (st.repeat == Player.REPEAT_MODE_ONE) "" else st.nextTitle)
                 if (st.error.isNotEmpty()) { Spacer(Modifier.height(8.dp)); T(st.error, 14.sp, C.Orange) }
                 Spacer(Modifier.height(12.dp))
@@ -688,11 +720,15 @@ private fun FilesPanel() {
         return
     }
     val st by LocalMusic.state.collectAsState()
-    var roots by remember { mutableStateOf(LocalMusic.roots(ctx)) }
-    // a stick put in while the screen is open shows up within a few seconds
-    LaunchedEffect(Unit) { while (true) { delay(4000); roots = LocalMusic.roots(ctx) } }
-    var dir by remember {
-        mutableStateOf(st.folder.takeIf { it.isNotEmpty() && File(it).isDirectory }?.let(::File) ?: roots.firstOrNull()?.dir)
+    var roots by remember { mutableStateOf(emptyList<LocalMusic.Root>()) }
+    var dir by remember { mutableStateOf(st.folder.takeIf { it.isNotEmpty() }?.let(::File)) }
+    // a stick put in while the screen is open shows up within a few seconds; a stick can be slow, so off the main thread
+    LaunchedEffect(Unit) {
+        val last = dir
+        val gone = last != null && withContext(Dispatchers.IO) { !last.isDirectory }
+        roots = withContext(Dispatchers.IO) { LocalMusic.roots(ctx) }
+        if (dir === last && (last == null || gone)) dir = roots.firstOrNull()?.dir
+        while (true) { delay(4000); roots = withContext(Dispatchers.IO) { LocalMusic.roots(ctx) } }
     }
     var favVersion by remember { mutableStateOf(0) }
     val root = roots.filter { r -> dir?.path?.startsWith(r.dir.path) == true }.maxByOrNull { it.dir.path.length }
@@ -747,6 +783,10 @@ private fun FilesPanel() {
             }
             return@PanelBox
         }
+        val atRoot = special || root == null || dir?.path == root.dir.path
+        // Back goes up a folder before it leaves the screen
+        androidx.activity.compose.BackHandler(enabled = !atRoot) { dir = dir?.parentFile }
+        val head: @Composable ColumnScope.() -> Unit = {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             roots.forEach { r ->
                 Pill(r.name, when (r.kind) { LocalMusic.Kind.USB -> Lucide.Usb; LocalMusic.Kind.SD -> Lucide.MemoryStick; else -> Lucide.HardDrive },
@@ -756,9 +796,8 @@ private fun FilesPanel() {
             Pill("Недавние", Lucide.History, dir == RECENT_ROOT, 40.dp) { dir = RECENT_ROOT }
         }
         Spacer(Modifier.height(8.dp))
-        val atRoot = special || root == null || dir?.path == root.dir.path
         Row(
-            Modifier.fillMaxWidth().height(46.dp).clip(RoundedCornerShape(14.dp)).background(Color.Black.copy(alpha = 0.22f))
+            Modifier.fillMaxWidth().height(46.dp).clip(RoundedCornerShape(14.dp)).background(C.shade(0.22f))
                 .clickable(enabled = !atRoot) { dir = dir?.parentFile }.padding(start = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -780,7 +819,9 @@ private fun FilesPanel() {
             }
         }
         Spacer(Modifier.height(6.dp))
+        }
         if (listing.folders.isEmpty() && listing.tracks.isEmpty()) {
+            head()
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                 T(when {
                     dir == FAV_ROOT -> "Отметьте папку звёздочкой, и она будет здесь"
@@ -789,7 +830,7 @@ private fun FilesPanel() {
                     else -> "Здесь нет музыки и папок"
                 }, 14.sp, C.Sub, textAlign = TextAlign.Center)
             }
-        } else LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+        } else ListWithHead(head) {
             items(listing.folders, key = { "d" + it.path }) { f ->
                 ListRow(f.name, if (special) f.parent.orEmpty() else "", lead = { IconTile(if (special) Lucide.FolderHeart else Lucide.Folder) },
                     trail = { Icon(Lucide.ChevronRight, null, tint = C.Sub, modifier = Modifier.size(18.dp)) }) { dir = f }
@@ -810,41 +851,20 @@ private fun FilesPanel() {
 // --- Bluetooth ----------------------------------------------------------------------------------------
 
 @Composable
-private fun BluetoothHero(fyt: Boolean) {
-    val ctx = LocalContext.current
-    // FYT: the BT module's own reports, which the stock player's now-playing pushes don't cover up
-    val m by Fyt.btMusic.collectAsState()
-    // other head units: the phone's music arrives as the Bluetooth app's media session; on FYT the session (when
-    // the unit has one) fills in what the module leaves out: the track, the cover
-    var ext by remember { mutableStateOf(PlayerState()) }
-    // Microntek: no session at all, the track only if the unit announces it; the music itself plays all the same
-    val mtc = remember { !fyt && BtAudio.microntek(ctx) }
-    LaunchedEffect(fyt) {
-        while (true) {
-            val s = BtAudio.controller(ctx)?.let { playerState(it) } ?: PlayerState()
-            val a = BtAudio.announced.value
-            ext = if (mtc && !s.session && a.title.isNotBlank()) s.copy(title = a.title, artist = a.artist, playing = a.playing ?: true) else s
-            // the phone plays, nothing sounds: Android's Bluetooth lost the audio focus (CarPlay, another player)
-            BtAudio.kick(ctx)
-            delay(1000)
-        }
-    }
-    val known = if (fyt) m.title.isNotBlank() else ext.title.isNotBlank()
+private fun BluetoothHero(bt: BtBackend) {
+    val t by bt.track.collectAsState()
     val title = when {
-        fyt -> m.title.ifBlank { ext.title.ifBlank { "Включите музыку на телефоне" } }
-        mtc && !ext.session -> ext.title.ifBlank { "Музыка с телефона" }
-        else -> ext.title.ifBlank { if (ext.session) "Нет трека" else "Включите музыку на телефоне" }
+        t.silentUnit && !t.session -> t.title.ifBlank { "Музыка с телефона" }
+        else -> t.title.ifBlank { if (t.session) "Нет трека" else "Включите музыку" }
     }
-    val artist = if (fyt) (if (known) m.artist else ext.artist) else ext.artist.ifBlank { if (mtc && !known) "магнитола не передаёт название трека, кнопки работают" else "" }
-    // the module's play state once it has said anything, the session's before that
-    val playing = if (fyt && m.updatedMs > 0) m.playing else ext.playing
-    val pos = if (fyt && m.posMs > 0) m.posMs else ext.posMs
-    val dur = if (fyt && m.totalMs > 0) m.totalMs else ext.totalMs
-    val track = if (fyt) m.title.ifBlank { ext.title } else ext.title
-    val cover = rememberCover((if (fyt) m.art else null) ?: ext.art, artist, track)
-    // straight to the BT module: Fyt.next() / prev() go by the source, which is still the old one right after the switch
-    fun prev() { if (fyt) Fyt.btPrev() else BtAudio.control(ctx, KeyEvent.KEYCODE_MEDIA_PREVIOUS) { it.skipToPrevious() } }
-    fun next() { if (fyt) Fyt.btNext() else BtAudio.control(ctx, KeyEvent.KEYCODE_MEDIA_NEXT) { it.skipToNext() } }
+    val artist = t.artist.ifBlank { if (t.silentUnit && t.title.isBlank()) "магнитола не передаёт название трека, кнопки работают" else "" }
+    val playing = t.playing
+    val pos = t.posMs
+    val dur = t.totalMs
+    val track = t.title
+    val cover = rememberCover(t.art, artist, track)
+    fun prev() = bt.send(Transport.PREV)
+    fun next() = bt.send(Transport.NEXT)
     Hero(
         // a track without a cover gets a note, nothing at all the Bluetooth sign
         cover = { GlowCover(cover, if (track.isNotBlank()) Lucide.Music else Lucide.Bluetooth, playing, it) },
@@ -854,8 +874,7 @@ private fun BluetoothHero(fyt: Boolean) {
         controls = {
             Control(Lucide.SkipBack, 68.dp) { prev() }
             Control(if (playing) Lucide.Pause else Lucide.Play, 96.dp, primary = true) {
-                if (fyt) Fyt.btPlay(!playing)
-                else BtAudio.control(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) { if (ext.playing) it.pause() else it.play() }
+                bt.press(playing)
             }
             Control(Lucide.SkipForward, 68.dp) { next() }
         },
@@ -863,7 +882,7 @@ private fun BluetoothHero(fyt: Boolean) {
 }
 
 @Composable
-private fun BluetoothPanel(fyt: Boolean) {
+private fun BluetoothPanel() {
     val ctx = LocalContext.current
     PanelBox(Lucide.Smartphone, "Телефон") {
         T("Музыка с телефона идёт через Bluetooth магнитолы: трек и кнопки появятся здесь, как только телефон начнёт играть.", 14.sp, C.Sub)
@@ -873,7 +892,7 @@ private fun BluetoothPanel(fyt: Boolean) {
         Step(Lucide.CircleDot, "Кнопки на руле работают", "следующий, предыдущий, пауза")
         Spacer(Modifier.weight(1f))
         Pill("Настройки Bluetooth", Lucide.Settings) {
-            val i = if (fyt) ctx.packageManager.getLaunchIntentForPackage("com.syu.bt") else null
+            val i = kg.forester.sg.service.BtAudio.stockBtApp(ctx)
             runCatching { ctx.startActivity((i ?: Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         }
     }
@@ -906,34 +925,8 @@ private fun rememberCover(art: Bitmap?, artist: String, title: String): Bitmap? 
 
 // --- other player apps --------------------------------------------------------------------------------
 
-/** What another player's media session shows: track, cover, position, play state. */
-internal data class PlayerState(
-    val title: String = "", val artist: String = "", val album: String = "", val art: Bitmap? = null,
-    val posMs: Long = 0, val totalMs: Long = 0, val playing: Boolean = false, val session: Boolean = false,
-)
-
 internal fun playerState(ctx: Context, pkg: String): PlayerState =
     MediaSessions.controllerOf(ctx, pkg)?.let { playerState(it) } ?: PlayerState()
-
-internal fun playerState(c: android.media.session.MediaController): PlayerState {
-    val md = c.metadata
-    val st = c.playbackState
-    val playing = st?.state == android.media.session.PlaybackState.STATE_PLAYING
-    // the session reports the position at its last update: run it on while playing
-    val pos = st?.let {
-        if (playing && it.lastPositionUpdateTime > 0)
-            it.position + ((android.os.SystemClock.elapsedRealtime() - it.lastPositionUpdateTime) * it.playbackSpeed).toLong()
-        else it.position
-    } ?: 0L
-    return PlayerState(
-        title = md?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE).orEmpty(),
-        artist = md?.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
-        album = md?.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM).orEmpty(),
-        art = md?.getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART) ?: md?.getBitmap(android.media.MediaMetadata.METADATA_KEY_ART),
-        posMs = pos.coerceAtLeast(0), totalMs = md?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION) ?: 0,
-        playing = playing, session = true,
-    )
-}
 
 private fun appLabel(ctx: Context, pkg: String): String = when (pkg) {
     "" -> ""
@@ -941,8 +934,14 @@ private fun appLabel(ctx: Context, pkg: String): String = when (pkg) {
     else -> runCatching { ctx.packageManager.getApplicationLabel(ctx.packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
 }
 
+/** The stock player's keys, or a player's session (not started yet: opens it). For the player and the mini player. */
+internal fun appControl(ctx: Context, pkg: String, block: (android.media.session.MediaController.TransportControls) -> Unit) {
+    val c = MediaSessions.controllerOf(ctx, pkg)
+    if (c == null) MediaSessions.open(ctx, pkg) else block(c.transportControls)
+}
+
 @Composable
-private fun AppsHero(fyt: Boolean) {
+private fun AppsHero() {
     val ctx = LocalContext.current
     val m by Fyt.music.collectAsState()
     val pkg = remember { Repo.settings.musicApp }
@@ -950,10 +949,7 @@ private fun AppsHero(fyt: Boolean) {
     LaunchedEffect(pkg) { while (true) { ext = if (pkg.isNotEmpty() && pkg != "fyt") playerState(ctx, pkg) else PlayerState(); delay(1000) } }
     val stock = pkg == "fyt"
     val label = remember(pkg) { appLabel(ctx, pkg) }
-    fun control(block: (android.media.session.MediaController.TransportControls) -> Unit) {
-        val c = MediaSessions.controllerOf(ctx, pkg)
-        if (c == null) MediaSessions.open(ctx, pkg) else block(c.transportControls)
-    }
+    fun control(block: (android.media.session.MediaController.TransportControls) -> Unit) = appControl(ctx, pkg, block)
     val playing = if (stock) m.source == "music" && m.playing else ext.playing
     fun prev() { if (stock) Fyt.prev() else if (pkg.isNotEmpty()) control { it.skipToPrevious() } }
     fun next() { if (stock) Fyt.next() else if (pkg.isNotEmpty()) control { it.skipToNext() } }
@@ -963,8 +959,8 @@ private fun AppsHero(fyt: Boolean) {
         info = {
             when {
                 pkg.isEmpty() -> TrackInfo("Приложения", "Выберите плеер в списке", "Яндекс Музыка, VK, YouTube Music…")
-                stock -> TrackInfo(label, m.title.ifBlank { "Нет трека" }, m.artist)
-                else -> TrackInfo(label, ext.title.ifBlank { if (ext.session) "Нет трека" else "Нажмите ▶, чтобы открыть $label" }, ext.artist, ext.album)
+                stock -> TrackInfo(label, if (m.title.isBlank()) "Нет трека" else kg.forester.sg.data.I18n.raw(m.title), kg.forester.sg.data.I18n.raw(m.artist))
+                else -> TrackInfo(label, if (ext.title.isBlank()) { if (ext.session) "Нет трека" else "Нажмите ▶, чтобы открыть $label" } else kg.forester.sg.data.I18n.raw(ext.title), kg.forester.sg.data.I18n.raw(ext.artist), kg.forester.sg.data.I18n.raw(ext.album))
             }
         },
         middle = {
@@ -983,7 +979,7 @@ private fun AppsHero(fyt: Boolean) {
 }
 
 @Composable
-private fun AppsPanel(fyt: Boolean) {
+private fun AppsPanel(stockPlayer: Boolean) {
     val ctx = LocalContext.current
     var pkg by remember { mutableStateOf(Repo.settings.musicApp) }
     var allowed by remember { mutableStateOf(MediaSessions.allowed(ctx)) }
@@ -1006,7 +1002,7 @@ private fun AppsPanel(fyt: Boolean) {
             }
             Spacer(Modifier.height(10.dp))
         }
-        val tiles = buildList { if (fyt) add("fyt" to "Плеер магнитолы"); addAll(players) }
+        val tiles = buildList { if (stockPlayer) add("fyt" to "Плеер магнитолы"); addAll(players) }
         if (tiles.isEmpty()) T("Плееров не нашёл: установите Яндекс Музыку, VK Музыку или другой", 14.sp, C.Sub)
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
             val cols = 3
@@ -1035,21 +1031,23 @@ internal val appsRefresh = kotlinx.coroutines.flow.MutableStateFlow(0)
 @Composable
 private fun AppTile(pkg: String, name: String, selected: Boolean, width: Dp, onClick: () -> Unit) {
     val ctx = LocalContext.current
-    val icon = remember(pkg) {
-        if (pkg == "fyt") null else runCatching { ctx.packageManager.getApplicationIcon(pkg).toBitmap(96, 96).asImageBitmap() }.getOrNull()
-    }
+    val icon = androidx.compose.runtime.produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, pkg) {
+        value = if (pkg == "fyt") null else withContext(Dispatchers.IO) {
+            runCatching { ctx.packageManager.getApplicationIcon(pkg).toBitmap(96, 96).asImageBitmap() }.getOrNull()
+        }
+    }.value
     val shape = RoundedCornerShape(18.dp)
     Column(
         Modifier.width(width).height(108.dp).clip(shape)
             .background(if (selected) Brush.verticalGradient(listOf(C.Violet.copy(alpha = 0.28f), C.Purple.copy(alpha = 0.14f)))
-                else Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.06f), Color.White.copy(alpha = 0.03f))))
+                else Brush.verticalGradient(listOf(C.Hair.copy(alpha = 0.06f), C.Hair.copy(alpha = 0.03f))))
             .border(1.dp, if (selected) C.Violet else Color.Transparent, shape)
             .clickable(onClick = onClick).padding(10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         if (icon != null) Image(icon, null, Modifier.size(46.dp).clip(RoundedCornerShape(12.dp)))
-        else IconTile(Lucide.Music)
+        else IconTile(Lucide.Music, 46.dp)
         Spacer(Modifier.height(8.dp))
         T(name, 13.sp, if (selected) C.Text else C.Sub, FontWeight.Medium, maxLines = 1, textAlign = TextAlign.Center)
     }

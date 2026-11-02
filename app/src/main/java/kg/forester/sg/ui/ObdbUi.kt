@@ -48,7 +48,7 @@ fun ObdbPanel() {
     val vin by Repo.vin.collectAsState()
     val changed by Obdb.changed.collectAsState()
     var on by remember { mutableStateOf(s.obdbOn) }
-    val vinMake = remember(vin) { DtcRepo.make(ctx)?.name }
+    val vinMake by androidx.compose.runtime.produceState<String?>(null, vin) { value = withContext(Dispatchers.IO) { DtcRepo.make(ctx)?.name } }
     var make by remember(vinMake) { mutableStateOf(vinMake ?: "") }
     var models by remember { mutableStateOf<List<String>?>(null) }
     var status by remember { mutableStateOf("") }

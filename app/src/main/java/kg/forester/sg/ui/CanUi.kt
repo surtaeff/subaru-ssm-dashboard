@@ -17,9 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -35,7 +33,6 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.Activity
 import com.composables.icons.lucide.ListPlus
@@ -51,7 +48,7 @@ import kg.forester.sg.ssm.RrExpr
 import kg.forester.sg.ssm.Slcan
 
 /**
- * The CANable part of «Авто и адаптер»: the bus speed (as set for the ECU's dash CAN), what goes on the bus, and the
+ * The CANable part of «Машина и адаптер»: the bus speed (as set for the ECU's dash CAN), what goes on the bus, and the
  * driver's own values off it.
  */
 @OptIn(ExperimentalLayoutApi::class)
@@ -67,8 +64,8 @@ fun CanablePanel() {
         Slcan.SPEEDS.forEach { k -> Chip(if (k >= 1000) "1 Мбит" else "$k кбит", kbit == k, { kbit = k; s.canKbit = k }) }
     }
     Spacer(Modifier.height(4.dp))
-    T("Та же, что у CAN-шины ЭБУ, к которой подключён адаптер (у Link в PCLink: ECU Controls, CAN Setup). Потоки Link " +
-        "Dash2Pro и Generic Dash приложение находит само; другие данные, например ЕГТ в своём потоке, добавляются в «Свои значения»", 11.sp, C.Sub)
+    SettingHint("Та же, что у CAN-шины ЭБУ, к которой подключён адаптер (у Link в PCLink: ECU Controls, CAN Setup). Потоки Link " +
+        "Dash2Pro и Generic Dash приложение находит само; другие данные, например ЕГТ в своём потоке, добавляются в «Свои значения»")
     Spacer(Modifier.height(10.dp))
     var cc by remember { mutableStateOf(s.injectorCc.takeIf { it > 0 }?.toString() ?: "") }
     var dead by remember { mutableStateOf(s.injectorDeadMs.takeIf { it > 0f }?.let { "%.2f".format(it) } ?: "") }
@@ -98,13 +95,8 @@ fun CanablePanel() {
 }
 
 @Composable
-private fun DialogBox(onClose: () -> Unit, content: @Composable () -> Unit) {
-    Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            Modifier.width(860.dp).heightIn(max = 620.dp).clip(RoundedCornerShape(16.dp)).background(C.Card)
-                .border(1.dp, C.Border, RoundedCornerShape(16.dp)).padding(16.dp),
-        ) { content() }
-    }
+private fun DialogBox(onClose: () -> Unit, head: (@Composable () -> Unit)? = null, content: @Composable () -> Unit) {
+    CarSheet(onClose, 860.dp, 620.dp, head = head?.let { h -> { h() } }) { content() }
 }
 
 /** Every id on the bus with its bytes and rate; a tap starts an own value from that id. */
@@ -113,19 +105,20 @@ fun CanMonitorDialog(onClose: () -> Unit) {
     val rows by CanMonitor.rows.collectAsState()
     var start by remember { mutableStateOf<CanChannel?>(null) }
     start?.let { c -> CanChannelsDialog(c) { start = null }; return }
-    DialogBox(onClose) {
+    DialogBox(onClose, head = {
         Row(verticalAlignment = Alignment.CenterVertically) {
             T("Что идёт по CAN", 18.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             Chip("Готово", true, onClose)
         }
         Spacer(Modifier.height(4.dp))
+    }) {
         val link = LinkDash.id
         T((if (link != null) "Поток Link ${LinkDash.format?.title} найден на ID $link (0x%03X). ".format(link) else "") +
             "Нажмите на строку, чтобы взять из неё своё значение. Где лежит нужное: меняйте его на машине (газ, прогрев) и смотрите, какие байты меняются",
             12.sp, C.Sub)
         Spacer(Modifier.height(8.dp))
         if (rows.isEmpty()) T("Кадров нет. CANable подключён, адаптер в настройках CANable (или Авто), скорость шины верная, зажигание включено?", 14.sp, C.Sub)
-        Column(Modifier.verticalScroll(rememberScrollState())) {
+        Column {
             rows.forEach { r ->
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 2.dp).clip(RoundedCornerShape(8.dp)).background(C.CardHi)
@@ -135,8 +128,8 @@ fun CanMonitorDialog(onClose: () -> Unit) {
                         }.padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    androidx.compose.material3.Text(r.idText, Modifier.width(150.dp), color = C.Violet, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
-                    androidx.compose.material3.Text(r.bytesText, Modifier.weight(1f), color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+                    Text(r.idText, Modifier.width(150.dp), color = C.Violet, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+                    Text(r.bytesText, Modifier.weight(1f), color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
                     T("%.0f Гц".format(r.hz), 12.sp, C.Sub, modifier = Modifier.width(70.dp))
                 }
             }
@@ -150,12 +143,12 @@ fun CanChannelsDialog(start: CanChannel?, onClose: () -> Unit) {
     Repo.customVersion.collectAsState().value
     val list = CanChannels.list()
     var editing by remember { mutableStateOf(start) }
-    DialogBox(onClose) {
-        val e = editing
-        if (e != null) {
-            CanChannelForm(e, onDone = { editing = null; if (start != null) onClose() })
-            return@DialogBox
-        }
+    val e = editing
+    if (e != null) {
+        DialogBox(onClose) { CanChannelForm(e, onDone = { editing = null; if (start != null) onClose() }) }
+        return
+    }
+    DialogBox(onClose, head = {
         Row(verticalAlignment = Alignment.CenterVertically) {
             T("Свои значения из CAN", 18.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             Chip("Добавить", false, {
@@ -165,13 +158,14 @@ fun CanChannelsDialog(start: CanChannel?, onClose: () -> Unit) {
             Chip("Готово", true, onClose)
         }
         Spacer(Modifier.height(6.dp))
-        T("Значение из CAN по ID и байтам, как в настройках дашборда: например ЕГТ, которую добавили в свой поток Link, или датчик " +
+    }) {
+        SettingHint("Значение из CAN по ID и байтам, как в настройках дашборда: например ЕГТ, которую добавили в свой поток Link, или датчик " +
             "с отдельной CAN-платы. Появится на «Датчиках», в логе и в выборе виджетов; с ролью (ЕГТ, давление масла или топлива, " +
-            "воздух до и после интеркулера…) работает как такой же датчик на SensorBox: предупреждения, анализ, расчётные значения", 12.sp, C.Sub)
+            "воздух до и после интеркулера…) работает как такой же датчик на SensorBox: предупреждения, анализ, расчётные значения")
         Spacer(Modifier.height(10.dp))
         if (list.isEmpty()) T("Пока ничего не добавлено.", 14.sp, C.Sub)
         val live = CanChannels.values()
-        Column(Modifier.verticalScroll(rememberScrollState())) {
+        Column {
             list.forEach { c ->
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(10.dp)).background(C.CardHi)
@@ -185,10 +179,12 @@ fun CanChannelsDialog(start: CanChannel?, onClose: () -> Unit) {
                         ).joinToString(" · "), 12.sp, C.Sub, maxLines = 1)
                     }
                     T(live[c.id]?.let { "%.${c.decimals}f %s".format(it, c.units) } ?: "—", 15.sp, modifier = Modifier.padding(horizontal = 10.dp))
-                    Box(
-                        Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(C.Card).clickable { CanChannels.remove(c.id) },
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(Lucide.Trash2, "Удалить", tint = C.Red, modifier = Modifier.size(16.dp)) }
+                    var ask by remember(c.id) { mutableStateOf(false) }
+                    IconTap(Lucide.Trash2, "Удалить", { ask = true }, tint = C.Red, iconSize = 20.dp, background = C.Card)
+                    if (ask) ConfirmDialog(
+                        "Удалить канал?", "«${c.name.ifBlank { c.id }}» уйдёт из списка, графиков и записи логов.",
+                        "Удалить", { CanChannels.remove(c.id) }, { ask = false },
+                    )
                 }
             }
         }
@@ -223,7 +219,7 @@ private fun CanChannelForm(start: CanChannel, onDone: () -> Unit) {
     val rows by CanMonitor.rows.collectAsState()
     val row = draft?.let { d -> rows.firstOrNull { it.id == d.canId && it.ext == d.ext && (d.mux < 0 || it.mux == d.mux) } }
     val preview = row?.let { r -> draft.raw(r.data)?.let { raw -> raw to draft.decode(r.data) } }
-    Column(Modifier.verticalScroll(rememberScrollState())) {
+    Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
             T(if (start.name.isEmpty()) "Новое значение из CAN" else "Значение ${start.id}", 18.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             Chip("Отмена", false, onDone)
@@ -232,6 +228,8 @@ private fun CanChannelForm(start: CanChannel, onDone: () -> Unit) {
                 if (error == null && draft != null) { CanChannels.put(draft.copy(name = name.trim(), units = units.trim(), formula = formula.trim().ifBlank { "x" })); onDone() }
             })
         }
+        // the title and its buttons stay in sight, the form scrolls
+        Column(Modifier.weight(1f, fill = false).cueScroll()) {
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             FormField("Название", name, Modifier.weight(1.4f)) { name = it }
@@ -265,7 +263,8 @@ private fun CanChannelForm(start: CanChannel, onDone: () -> Unit) {
             else -> "Сейчас: кадр ${row.bytesText} → x = ${preview.first} → " + (preview.second?.let { "%.${dec}f %s".format(it, units) } ?: "формула не считается")
         }, 13.sp, if (error != null) C.Orange else C.Text)
         Spacer(Modifier.height(4.dp))
-        T("Пример: ЕГТ в своём потоке Link на ID 1004 (3EC), байты 0–1, старший первым, формула x (если в PCLink множитель 1). " +
-            "В компаунд-потоке (как Generic Dash) у каждого кадра свой номер в байте 0: впишите его в «Кадр»", 12.sp, C.Sub)
+        SettingHint("Пример: ЕГТ в своём потоке Link на ID 1004 (3EC), байты 0–1, старший первым, формула x (если в PCLink множитель 1). " +
+            "В компаунд-потоке (как Generic Dash) у каждого кадра свой номер в байте 0: впишите его в «Кадр»")
+    }
     }
 }

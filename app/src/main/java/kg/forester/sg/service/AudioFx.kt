@@ -175,13 +175,20 @@ object AudioFx {
 
     // --- spectrum for the screen ------------------------------------------------------------------------
 
-    /** 0..1 levels of [BARS] log-spaced bands, smoothed, while the screen shows them. */
+    /** The most bands there can be. */
     const val BARS = 40
+    /** How many this head unit draws (see DeviceTier). */
+    val barCount = MutableStateFlow(BARS)
+    var bars: Int
+        get() = barCount.value
+        set(v) { barCount.value = v }
+
+    /** 0..1 levels of [bars] log-spaced bands, smoothed, while the screen shows them. */
     val spectrum = MutableStateFlow(FloatArray(BARS))
     /** True when the levels come from the music itself (Visualizer allowed), else the screen animates on its own. */
     val live = MutableStateFlow(false)
     private var vis: Visualizer? = null
-    private val smooth = FloatArray(BARS)
+    private var smooth = FloatArray(BARS)
 
     fun startSpectrum(session: Int) {
         stopSpectrum()
@@ -208,11 +215,13 @@ object AudioFx {
     private fun onFft(fft: ByteArray, rateMilliHz: Int) {
         val n = fft.size / 2
         val nyquist = rateMilliHz / 2000f
-        val out = FloatArray(BARS)
-        for (b in 0 until BARS) {
+        val count = bars
+        if (smooth.size != count) smooth = FloatArray(count)
+        val out = FloatArray(count)
+        for (b in 0 until count) {
             // 40 Hz … 16 kHz, log spaced
-            val f0 = 40f * Math.pow(400.0, b / BARS.toDouble()).toFloat()
-            val f1 = 40f * Math.pow(400.0, (b + 1) / BARS.toDouble()).toFloat()
+            val f0 = 40f * Math.pow(400.0, b / count.toDouble()).toFloat()
+            val f1 = 40f * Math.pow(400.0, (b + 1) / count.toDouble()).toFloat()
             val k0 = max(1, (f0 / nyquist * n).toInt())
             val k1 = max(k0 + 1, min(n - 1, (f1 / nyquist * n).toInt()))
             var m = 0f

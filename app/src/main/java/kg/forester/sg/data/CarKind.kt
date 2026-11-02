@@ -10,8 +10,8 @@ import kotlinx.coroutines.launch
 
 /**
  * A Subaru (the whole app, as it always was) or «другая машина»: any other make on plain OBD-II. Then the
- * Subaru-only parts step aside: the АКПП screen (the SSM transmission unit), «Обучение», the 3D Subaru car and engine,
- * the RomRaider and CarBerry blocks; the header shows the make by the VIN.
+ * Subaru-only parts step aside: the АКПП screen (the SSM transmission unit), «Обучение», the 3D engine, the RomRaider
+ * and CarBerry blocks; the header shows the make by the VIN, the 3D car is the stand-in (see ui.car3dShown).
  */
 object CarKind {
     /** True: another make, or an ECU that knows no SSM at all. */
@@ -103,16 +103,18 @@ object CarKind {
         return LogoPick.Text(name, remote)
     }
 
-    /** What the start-up screen shows: "route" (the neon road picture), "subaru" (the picture as before), a logo, "name" (the app's name). */
+    /** What the start-up screen shows: "carpulse" (the app's own picture, the default), "route" (the neon road picture), "subaru" (the picture as before), a logo, "name" (the app's name). */
     sealed class SplashPick {
+        object CarPulse : SplashPick()
         object Route : SplashPick()
         object Subaru : SplashPick()
         object Name : SplashPick()
         data class Logo(val logo: LogoPick) : SplashPick()
     }
 
-    /** [mode] "route" / "subaru" / "car" / "custom" / "name"; [carLogo] the last car's logo by [chooseLogo] in "auto". */
+    /** [mode] "carpulse" / "route" / "subaru" / "car" / "custom" / "name"; [carLogo] the last car's logo by [chooseLogo] in "auto". */
     fun chooseSplash(mode: String, custom: String?, carLogo: LogoPick): SplashPick = when (mode) {
+        "carpulse" -> SplashPick.CarPulse
         // the road picture shows no make: the same for any car
         "route" -> SplashPick.Route
         // no logo of the make at hand: its name in big letters; no make at all: the app's name
@@ -166,14 +168,38 @@ object CarKind {
                 // only what the car itself said is remembered: the demo is the Subaru's
                 if (vin.isNotEmpty() || obd || link || (ssm && !demo)) s.carKindLast = if (auto) "other" else "subaru"
                 other.value = decide(s.carKind, brand?.let { it.slug == Brands.SUBARU }, obd, ssm || demo, link, s.carKindLast == "other")
+                // known to be another make only now, a moment into the connection: nothing of the last car's stays
+                // only over OBD-II: a ROM that says turbo or not (SSM) keeps its answer, a forced «другая марка» doesn't overwrite it
+                if (other.value && obd && !ssm) {
+                    val t = s.updateOtherTurbo { it.identified(useVin) }
+                    if (s.carTurbo != t.shown) s.carTurbo = t.shown
+                }
             }
         }
-        // another car's untouched factory screen gets the cards it fills, as the atmo and the Link screens do
+        // another car's factory screen gets the cards it fills; written once per car and turbo state, and only over a layout
+        // that is still exactly what this app wrote (the driver's own is never touched)
         scope.launch {
+            var handled = false
             while (true) {
                 delay(1000)
-                if (!Repo.obdMode.value || !other.value || s.homeTiles.isNotEmpty()) continue
+                if (!Repo.obdMode.value || !other.value) { handled = false; continue }
+                if (handled) continue
+                val car = s.otherTurbo.car
+                val applied = s.otherTurbo.applied
+                val mark = OtherLayoutMark.parse(s.otherLayoutMark)
+                // a layout this app wrote before it kept a mark: a one-time step, by the applied state
+                if (mark == null && s.homeTiles.isNotBlank()) {
+                    val migrated = HomeLayout.migrateUnmarked(s.homeTiles, applied)
+                    if (migrated != null) {
+                        if (migrated != s.homeTiles) s.homeTiles = migrated
+                        s.otherLayoutMark = OtherLayoutMark(car, applied, migrated).format()
+                    }
+                    handled = true; continue
+                }
+                if (!shouldRewriteLayout(mark, car, applied, s.homeTiles)) { handled = true; continue }
                 val seen = HashSet<String>()
+                // what the layout this app wrote had stays in it: slow PIDs may not answer within the window
+                if (mark != null && mark.text == s.homeTiles) HomeLayout.parse(mark.text).filter { it.on }.forEach { seen += it.id }
                 var n = 0
                 while (n < 6 && Repo.obdMode.value) {
                     delay(1000)
@@ -186,10 +212,16 @@ object CarKind {
                     ).forEach { (k, v) -> if (v != null) seen += k }
                     n++
                 }
-                if (n < 6 || seen.isEmpty() || s.homeTiles.isNotEmpty()) continue
-                val on = obdHomeCards(seen, Repo.guard.value.turboCar)
+                if (n < 6 || seen.isEmpty()) continue
+                val now = s.otherTurbo
+                if (!shouldRewriteLayout(OtherLayoutMark.parse(s.otherLayoutMark), now.car, now.applied, s.homeTiles)) { handled = true; continue }
+                // by what this connection was built for (applied), not by what the car did a minute ago: no move mid-drive
+                val on = HomeLayout.obdTiles(obdHomeCards(seen, now.shown))
                 val board = HomeLayout.board
-                s.homeTiles = board.format(on.map { TileCfg(it, true) } + board.defaults.filter { it.id !in on }.map { it.copy(on = false) })
+                val text = board.format(on + board.defaults.filter { d -> on.none { it.id == d.id } }.map { it.copy(on = false) })
+                s.homeTiles = text
+                s.otherLayoutMark = OtherLayoutMark(now.car, now.applied, text).format()
+                handled = true
             }
         }
     }

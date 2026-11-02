@@ -1,8 +1,5 @@
 package kg.forester.sg.ui
 
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -24,7 +21,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -37,6 +33,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -118,7 +115,8 @@ data class SportCfg(
     val arc: List<String> = ARC_DEFAULT,
     val table: List<String> = TABLE_DEFAULT,
 ) {
-    fun format() = if (this == SportCfg()) "" else
+    /** An empty style is the factory look for this [redline], so only that one may be saved as empty. */
+    fun format(redline: Int? = null) = if (this == factory(redline)) "" else
         "sd:t=$theme|top=$top|red=$red|led=${if (leds) 1 else 0}|pg=${pages.joinToString("")}|a=${arc.joinToString(",")}|b=${table.joinToString(",")}"
 
     val look get() = SportThemes.firstOrNull { it.id == theme } ?: SportThemes.first()
@@ -128,9 +126,12 @@ data class SportCfg(
         val TABLE_DEFAULT = listOf("speed", "rpm", "boost", "battery", "coolant", "afr", "throttle", "intake", "gear")
         val TOPS = listOf(6000, 7000, 8000, 9000, 10000)
 
-        fun parse(s: String): SportCfg {
-            if (!s.startsWith("sd:")) return SportCfg()
-            var c = SportCfg()
+        /** The factory look: its red zone at this engine's [redline], null = not known. */
+        fun factory(redline: Int?) = redline?.let { r -> SportCfg(top = maxOf(SportCfg().top, TOPS.first { it > r }), red = r) } ?: SportCfg()
+
+        fun parse(s: String, redline: Int? = null): SportCfg {
+            if (!s.startsWith("sd:")) return factory(redline)
+            var c = factory(redline)
             s.removePrefix("sd:").split('|').forEach { p ->
                 val v = p.substringAfter('=', "")
                 when (p.substringBefore('=')) {
@@ -152,13 +153,16 @@ private val LocalSport = staticCompositionLocalOf { SportThemes.first() }
 
 @Composable
 fun SportDisplayCard(info: String, m: Modifier, style: String = "") {
-    val cfg = remember(style) { SportCfg.parse(style) }
+    val redline = Repo.engineProfile.collectAsState().value.redlineRpm
+    val cfg = remember(style, redline) { SportCfg.parse(style, redline) }
     val p = cfg.look
-    val e by Repo.live.collectAsState()
+    val live = Repo.live.collectAsState()
     var page by remember(info) { mutableIntStateOf(Repo.settings.sportPage(info)) }
     val shown = cfg.pages[page.coerceIn(0, cfg.pages.size - 1)]
-    // the needle of a real gauge does not jump between the ECU's 4–10 updates a second
-    val rpm by animateFloatAsState((e.rpm ?: 0).toFloat(), tween(220), label = "rpm")
+    // the bar of a real gauge does not jump between the ECU's updates: read only while drawing, its frames recompose nothing.
+    // The shift lights' flash goes by the reading itself, it does not wait for the bar
+    val reading = remember { androidx.compose.runtime.derivedStateOf { (live.value.rpm ?: 0).toFloat() } }
+    val rpm = rememberSmooth(reading, cfg.top.toFloat()) { live.value.rpm != null }
     CompositionLocalProvider(LocalSport provides p) {
         BoxWithConstraints(
             m.clip(RoundedCornerShape(18.dp)).background(p.bezel).padding(3.dp).clip(RoundedCornerShape(15.dp))
@@ -182,14 +186,14 @@ fun SportDisplayCard(info: String, m: Modifier, style: String = "") {
             val compact = full < 120.dp
             Column(Modifier.fillMaxSize().padding(horizontal = pad, vertical = pad * 0.7f)) {
                 if (compact) {
-                    Canvas(Modifier.fillMaxWidth().height((full * 0.18f).coerceIn(6.dp, 14.dp))) { drawRevStrip(rpm, cfg, p) }
+                    Canvas(Modifier.fillMaxWidth().height((full * 0.18f).coerceIn(6.dp, 14.dp))) { drawRevStrip(rpm.value.floatValue, cfg, p) }
                     Spacer(Modifier.height(3.dp))
                     Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         sportValues(cfg.arc).forEach { Cell(it, Modifier.weight(1f)) }
                     }
                     return@Column
                 }
-                if (leds) ShiftLights(rpm, cfg, Modifier.fillMaxWidth().height((full * 0.06f).coerceIn(8.dp, 16.dp)))
+                if (leds) ShiftLights(rpm, reading, cfg, Modifier.fillMaxWidth().height((full * 0.06f).coerceIn(8.dp, 16.dp)))
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     when (shown) {
                         0 -> ArcPage(rpm, cfg, Modifier.fillMaxSize())
@@ -211,17 +215,21 @@ fun SportDisplayCard(info: String, m: Modifier, style: String = "") {
 
 /** The bezel's LED row: green, yellow, red as the revs climb, all of them flashing red at the shift point. */
 @Composable
-private fun ShiftLights(rpm: Float, cfg: SportCfg, m: Modifier) {
+private fun ShiftLights(smooth: Smooth, reading: androidx.compose.runtime.State<Float>, cfg: SportCfg, m: Modifier) {
     val p = LocalSport.current
     val red = cfg.red.toFloat()
     val from = red - 2000f
-    // the transition only runs while over the shift point, so a calm drive costs no frames; it is read while
-    // drawing, so the flashing redraws the lights without recomposing the card
-    val flash = if (rpm < red) null else androidx.compose.animation.core.rememberInfiniteTransition(label = "shift").animateFloat(
-        0f, 1f, androidx.compose.animation.core.infiniteRepeatable(tween(240)), label = "blink",
-    )
+    // from the raw reading: over the shift point the lights flash at once, whatever the bar is doing
+    val over by remember(red) { androidx.compose.runtime.derivedStateOf { reading.value >= red } }
+    // on and off 2.5 times a second (more than 3 is not advised for flashes), only while over the shift point, so a calm
+    // drive costs no frames; it is read while drawing, so the flashing redraws the lights without recomposing the card
+    var blink by remember { androidx.compose.runtime.mutableStateOf(true) }
+    LaunchedEffect(over) {
+        blink = true
+        while (over) { kotlinx.coroutines.delay(200); blink = !blink }
+    }
     Canvas(m) {
-        val blink = flash?.let { it.value < 0.5f } ?: true
+        val rpm = smooth.value.floatValue
         val n = 9
         val r = minOf(size.height / 2f, size.width / (n * 4.5f))
         val step = size.width * 0.6f / (n - 1)
@@ -230,7 +238,7 @@ private fun ShiftLights(rpm: Float, cfg: SportCfg, m: Modifier) {
             val on = rpm >= from + (red - from) * i / n
             val base = when { i < 3 -> Color(0xFF2BD34F); i < 6 -> p.mid; else -> p.red }
             val col = when {
-                rpm >= red -> if (blink) p.red else p.red.copy(alpha = 0.15f)
+                over -> if (blink) p.red else p.red.copy(alpha = 0.15f)
                 on -> base
                 else -> p.red.copy(alpha = 0.16f)
             }
@@ -275,7 +283,7 @@ private class JPath(val x0: Float, val yBottom: Float, val top: Float, val r: Fl
 }
 
 @Composable
-private fun ArcPage(rpm: Float, cfg: SportCfg, m: Modifier) {
+private fun ArcPage(rpm: Smooth, cfg: SportCfg, m: Modifier) {
     val p = LocalSport.current
     val vals = sportValues(cfg.arc)
     BoxWithConstraints(m) {
@@ -284,7 +292,7 @@ private fun ArcPage(rpm: Float, cfg: SportCfg, m: Modifier) {
         val h = with(d) { maxHeight.toPx() }
         val path = remember(w, h) { JPath(h * 0.02f, h * 0.99f, h * 0.03f, h * 0.36f, w * 0.99f) }
         val thick = { s: Float -> h * (0.06f + 0.15f * (s / path.length).let { it * it }) }
-        Canvas(Modifier.fillMaxSize()) { drawTach(path, thick, rpm, h, cfg, p) }
+        Box(Modifier.fillMaxSize().then(remember(path, cfg, p, h) { tachDrawing(path, thick, rpm, h, cfg, p) }))
         // the numbers sit in the bend of the bar, out of the way of its thickest part
         val left = with(d) { (path.x0 + thick(path.length * 0.3f) + h * 0.17f).toDp() }
         val topPad = with(d) { (path.top + thick(path.length) + h * 0.14f).toDp() }
@@ -301,27 +309,28 @@ private fun ArcPage(rpm: Float, cfg: SportCfg, m: Modifier) {
     }
 }
 
-private fun DrawScope.drawTach(path: JPath, thick: (Float) -> Float, rpm: Float, h: Float, cfg: SportCfg, p: SportTheme) {
+/** The tachometer: its segments, rail and numbers are worked out once for a size, a frame of the bar only paints them. */
+private fun tachDrawing(path: JPath, thick: (Float) -> Float, rpm: Smooth, h: Float, cfg: SportCfg, p: SportTheme) = Modifier.drawWithCache {
     val top = cfg.top.toFloat()
     val red = cfg.red.toFloat()
     val yellow = red - 1000f
     val n = 64
     val segLen = path.length / n
     val gap = segLen * 0.3f
-    for (i in 0 until n) {
-        val v = (i + 0.5f) / n * top
-        val zone = when { v >= red -> p.red; v >= yellow -> p.mid; else -> p.lit }
-        val lit = rpm > i.toFloat() / n * top && rpm > 300f
-        val col = if (lit) zone else zone.copy(alpha = if (v >= yellow) 0.2f else 0.11f)
+    val quads = Array(n) { i ->
         val s0 = i * segLen + gap / 2
         val s1 = (i + 1) * segLen - gap / 2
         val a = path.at(s0); val b = path.at(s1)
         val ta = thick(s0); val tb = thick(s1)
-        val quad = Path().apply {
+        Path().apply {
             moveTo(a[0], a[1]); lineTo(b[0], b[1])
             lineTo(b[0] + b[2] * tb, b[1] + b[3] * tb); lineTo(a[0] + a[2] * ta, a[1] + a[3] * ta); close()
         }
-        drawPath(quad, col)
+    }
+    val zones = Array(n) { i ->
+        val v = (i + 0.5f) / n * top
+        val zone = when { v >= red -> p.red; v >= yellow -> p.mid; else -> p.lit }
+        zone to zone.copy(alpha = if (v >= yellow) 0.2f else 0.11f)
     }
     // a thin rail along the inside of the bar, as on the Defi face
     val rail = Path()
@@ -331,7 +340,6 @@ private fun DrawScope.drawTach(path: JPath, thick: (Float) -> Float, rpm: Float,
         if (s == 0f) rail.moveTo(q[0] + q[2] * t, q[1] + q[3] * t) else rail.lineTo(q[0] + q[2] * t, q[1] + q[3] * t)
         s += path.length / 120
     }
-    drawPath(rail, p.line, style = Stroke(1.5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     // 0…top (thousands of rpm), just inside the rail
     val paint = android.graphics.Paint().apply {
         isAntiAlias = true
@@ -339,12 +347,20 @@ private fun DrawScope.drawTach(path: JPath, thick: (Float) -> Float, rpm: Float,
         textSize = h * 0.085f
         textAlign = android.graphics.Paint.Align.CENTER
     }
-    for (k in 0..(top / 1000).toInt()) {
-        val sk = (k * 1000f / top * path.length).coerceIn(segLen / 2, path.length - segLen / 2)
-        val q = path.at(sk)
-        val t = thick(sk) + h * 0.08f
-        paint.color = (if (k * 1000f >= red) p.red else p.text).toArgb()
-        drawContext.canvas.nativeCanvas.drawText("$k", q[0] + q[2] * t, q[1] + q[3] * t + paint.textSize * 0.36f, paint)
+    onDrawBehind {
+        val now = rpm.value.floatValue
+        for (i in 0 until n) {
+            val lit = now > i.toFloat() / n * top && now > 300f
+            drawPath(quads[i], if (lit) zones[i].first else zones[i].second)
+        }
+        drawPath(rail, p.line, style = Stroke(1.5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        for (k in 0..(top / 1000).toInt()) {
+            val sk = (k * 1000f / top * path.length).coerceIn(segLen / 2, path.length - segLen / 2)
+            val q = path.at(sk)
+            val t = thick(sk) + h * 0.08f
+            paint.color = (if (k * 1000f >= red) p.red else p.text).toArgb()
+            drawContext.canvas.nativeCanvas.drawText("$k", q[0] + q[2] * t, q[1] + q[3] * t + paint.textSize * 0.36f, paint)
+        }
     }
 }
 
@@ -366,7 +382,7 @@ private fun TablePage(cfg: SportCfg, m: Modifier) {
 // ---- the values ----
 
 /** One value as the display prints it. */
-class SportValue(val label: String, val unit: String, val text: String, val warn: Boolean)
+data class SportValue(val label: String, val unit: String, val text: String, val warn: Boolean)
 
 /** Labels in the Defi's short capitals for the values it shows by default; the rest use the catalogue's short name. */
 private val SportLabels = mapOf(
@@ -378,27 +394,117 @@ private val SportLabels = mapOf(
 fun sportLabel(id: String, avail: List<kg.forester.sg.ssm.RrParam>): String =
     SportLabels[id] ?: Metrics.of(id, avail)?.short?.uppercase() ?: id
 
+/** The values as States, each changing on its own, read by its [Cell] alone: a reading doesn't recompose the page. */
 @Composable
-private fun sportValues(ids: List<String>): List<SportValue> {
+private fun sportValues(ids: List<String>): List<androidx.compose.runtime.State<SportValue>> {
     val ctx = rememberMetricCtx()
-    val avail by Repo.rrAvailable.collectAsState()
+    val avail = Repo.rrAvailable.collectAsState()
+    return remember(ids, ctx, avail) {
+        ids.map { id ->
+            androidx.compose.runtime.derivedStateOf(androidx.compose.runtime.structuralEqualityPolicy()) { sportValue(id, ctx.value, avail.value) }
+        }
+    }
+}
+
+private fun sportValue(id: String, ctx: MetricCtx, avail: List<kg.forester.sg.ssm.RrParam>): SportValue {
     val e = ctx.e
-    return ids.map { id ->
-        when (id) {
-            // gauge pressure in bar with its sign, vacuum included, as the Defi's IN-MF.P.
-            "boost" -> SportValue("НАДДУВ", "бар", e.gaugeKpa?.let { "%.2f".format(it / 100f) } ?: "—", false)
-            "gear" -> SportValue("ПЕРЕДАЧА", "", gearText(e, ctx.t), false)
-            "coolant" -> SportValue("ОЖ", "°C", e.coolantC?.toString() ?: "—", e.coolantC?.let { it >= 105 } == true)
-            "battery" -> SportValue("АКБ", "В", e.batteryV?.let { "%.1f".format(it) } ?: "—", e.batteryV?.let { it < 12.0f || it > 15.2f } == true)
-            else -> {
-                val ind = Metrics.of(id, avail)
-                if (ind == null) SportValue(sportLabel(id, avail), "", "—", false)
-                else {
-                    val v = ind.read(ctx)
-                    SportValue(sportLabel(id, avail), ind.unit, ind.text(v), ind.warn(v))
-                }
+    return when (id) {
+        // gauge pressure in bar with its sign, vacuum included, as the Defi's IN-MF.P.
+        "boost" -> SportValue("НАДДУВ", "бар", e.gaugeKpa?.let { "%.2f".format(it / 100f) } ?: "—", false)
+        "gear" -> SportValue("ПЕРЕДАЧА", "", gearText(e, ctx.t), false)
+        "coolant" -> SportValue("ОЖ", "°C", e.coolantC?.toString() ?: "—", e.coolantC?.let { it >= 105 } == true)
+        "battery" -> SportValue("АКБ", "В", e.batteryV?.let { "%.1f".format(it) } ?: "—", e.batteryV?.let { it < 12.0f || it > 15.2f } == true)
+        else -> {
+            val ind = Metrics.of(id, avail)
+            if (ind == null) SportValue(sportLabel(id, avail), "", "—", false)
+            else {
+                val v = ind.read(ctx)
+                SportValue(sportLabel(id, avail), ind.unit, ind.text(v), ind.warn(v))
             }
         }
+    }
+}
+
+// ---- the same faces outside any window, for a big USB panel ----
+
+/** A value drawn as the display's [Cell] prints it: its label over the number and the unit. */
+private fun DrawScope.printCell(v: SportValue, p: SportTheme, l: Float, t: Float, w: Float, h: Float, text: (String) -> String) {
+    val canvas = drawContext.canvas.nativeCanvas
+    val paint = android.graphics.Paint().apply { isAntiAlias = true }
+    paint.textSize = h * 0.2f
+    paint.color = p.label.toArgb()
+    canvas.drawText(text(v.label), l, t + h * 0.22f, paint)
+    paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD_ITALIC)
+    paint.textSize = h * 0.58f
+    paint.textAlign = android.graphics.Paint.Align.RIGHT
+    val unit = text(v.unit)
+    val up = android.graphics.Paint().apply { isAntiAlias = true; textSize = h * 0.18f; color = p.label.toArgb(); textAlign = android.graphics.Paint.Align.RIGHT }
+    val uw = if (unit.isEmpty()) 0f else up.measureText(unit) + h * 0.06f
+    while (paint.measureText(v.text) > w - uw && paint.textSize > 8f) paint.textSize *= 0.92f
+    paint.color = (if (v.warn) p.red else p.text).toArgb()
+    canvas.drawText(v.text, l + w - uw, t + h * 0.88f, paint)
+    if (unit.isNotEmpty()) canvas.drawText(unit, l + w, t + h * 0.88f, up)
+}
+
+/** The tachometer page in [r] of a panel: the J-shaped bar and four values. */
+internal fun DrawScope.drawSportArc(cfg: SportCfg, ctx: MetricCtx, avail: List<kg.forester.sg.ssm.RrParam>, r: androidx.compose.ui.geometry.Rect, text: (String) -> String) {
+    val p = cfg.look
+    val pad = r.height * 0.04f
+    drawRect(p.bg, r.topLeft, r.size)
+    val h = r.height - pad * 2
+    val w = r.width - pad * 2
+    val path = JPath(r.left + pad + h * 0.02f, r.top + pad + h * 0.99f, r.top + pad + h * 0.03f, h * 0.36f, r.left + pad + w * 0.99f)
+    val thick = { s: Float -> h * (0.06f + 0.15f * (s / path.length).let { it * it }) }
+    val now = (ctx.e.rpm ?: 0).toFloat()
+    val top = cfg.top.toFloat()
+    val n = 64
+    val segLen = path.length / n
+    val gap = segLen * 0.3f
+    val q = Path()
+    for (i in 0 until n) {
+        val s0 = i * segLen + gap / 2
+        val s1 = (i + 1) * segLen - gap / 2
+        val a = path.at(s0); val b = path.at(s1)
+        val ta = thick(s0); val tb = thick(s1)
+        q.reset()
+        q.moveTo(a[0], a[1]); q.lineTo(b[0], b[1])
+        q.lineTo(b[0] + b[2] * tb, b[1] + b[3] * tb); q.lineTo(a[0] + a[2] * ta, a[1] + a[3] * ta); q.close()
+        val v = (i + 0.5f) / n * top
+        val zone = when { v >= cfg.red -> p.red; v >= cfg.red - 1000f -> p.mid; else -> p.lit }
+        val lit = now > i.toFloat() / n * top && now > 300f
+        drawPath(q, if (lit) zone else zone.copy(alpha = if (v >= cfg.red - 1000f) 0.2f else 0.11f))
+    }
+    val paint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD_ITALIC)
+        textSize = h * 0.075f
+        textAlign = android.graphics.Paint.Align.CENTER
+    }
+    for (k in 0..(top / 1000).toInt()) {
+        val sk = (k * 1000f / top * path.length).coerceIn(segLen / 2, path.length - segLen / 2)
+        val a = path.at(sk)
+        val t = thick(sk) + h * 0.08f
+        paint.color = (if (k * 1000f >= cfg.red) p.red else p.text).toArgb()
+        drawContext.canvas.nativeCanvas.drawText("$k", a[0] + a[2] * t, a[1] + a[3] * t + paint.textSize * 0.36f, paint)
+    }
+    val left = path.x0 + thick(path.length * 0.3f) + h * 0.2f
+    val tp = path.top + thick(path.length) + h * 0.16f
+    val cw = (r.right - pad - left - h * 0.05f) / 2
+    val ch = (r.bottom - pad - tp) / 2
+    cfg.arc.forEachIndexed { i, id ->
+        printCell(sportValue(id, ctx, avail), p, left + (i % 2) * (cw + h * 0.05f), tp + (i / 2) * ch, cw, ch * 0.92f, text)
+    }
+}
+
+/** The table page in [r] of a panel: nine values. */
+internal fun DrawScope.drawSportTable(cfg: SportCfg, ctx: MetricCtx, avail: List<kg.forester.sg.ssm.RrParam>, r: androidx.compose.ui.geometry.Rect, text: (String) -> String) {
+    val p = cfg.look
+    drawRect(p.bg, r.topLeft, r.size)
+    val pad = r.height * 0.04f
+    val cw = (r.width - pad * 4) / 3
+    val ch = (r.height - pad * 2) / 3
+    cfg.table.forEachIndexed { i, id ->
+        printCell(sportValue(id, ctx, avail), p, r.left + pad + (i % 3) * (cw + pad), r.top + pad + (i / 3) * ch, cw, ch * 0.92f, text)
     }
 }
 
@@ -423,7 +529,11 @@ private object Locus {
 @Composable
 private fun GForcePage(m: Modifier) {
     val p = LocalSport.current
-    val st by Repo.motion.collectAsState()
+    val motion = Repo.motion.collectAsState()
+    // read in the drawing only: the dot's frames and the sensor's readings redraw the ring, not the page
+    val st by motion
+    val latDot = rememberSmooth(motion.slot { (it.latG ?: 0f).coerceIn(-1.2f, 1.2f) }, 2.4f)
+    val lonDot = rememberSmooth(motion.slot { (it.lonG ?: 0f).coerceIn(-1.2f, 1.2f) }, 2.4f)
     val gps by Repo.gps.collectAsState()
     var points by remember { mutableIntStateOf(Locus.lat.size) }
     LaunchedEffect(gps) {
@@ -435,7 +545,7 @@ private fun GForcePage(m: Modifier) {
             Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Header("ПЕРЕГРУЗКИ")
                 Box(Modifier.fillMaxWidth().weight(1f)) {
-                    Canvas(Modifier.fillMaxSize()) { drawGRing(st.latG, st.lonG, st.maxLat, st.maxAccel, st.maxBrake, p) }
+                    Canvas(Modifier.fillMaxSize()) { drawGRing(latDot.value.floatValue, lonDot.value.floatValue, st.maxLat, st.maxAccel, st.maxBrake, p) }
                 }
             }
             Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -518,18 +628,23 @@ private fun Header(text: String) {
 
 /** A value as the Defi prints it: italic label and unit on top, a big italic number on the right, a line under it. */
 @Composable
-private fun Cell(v: SportValue, m: Modifier) {
+private fun Cell(value: androidx.compose.runtime.State<SportValue>, m: Modifier) {
     val p = LocalSport.current
+    // the number at its own pace, the colour from the reading at once
+    val text by rememberDigits { value.value.text }
+    val head by remember(value) {
+        androidx.compose.runtime.derivedStateOf(androidx.compose.runtime.structuralEqualityPolicy()) { value.value.copy(text = "") }
+    }
     BoxWithConstraints(m.fillMaxHeight()) {
         val small = (maxHeight.value * 0.2f).coerceIn(9f, 15f).sp
         Column(Modifier.fillMaxSize()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(v.label, maxLines = 1, modifier = Modifier.weight(1f, fill = false),
+                Text(head.label, maxLines = 1, modifier = Modifier.weight(1f, fill = false),
                     style = TextStyle(fontSize = small, color = p.label, fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic))
                 Spacer(Modifier.weight(1f))
-                if (v.unit.isNotEmpty()) Text(v.unit, maxLines = 1, style = TextStyle(fontSize = small * 0.85f, color = p.label, fontStyle = FontStyle.Italic))
+                if (head.unit.isNotEmpty()) Text(head.unit, maxLines = 1, style = TextStyle(fontSize = small * 0.85f, color = p.label, fontStyle = FontStyle.Italic))
             }
-            BigNumber(v.text, if (v.warn) p.red else p.text, Modifier.fillMaxWidth().weight(1f))
+            BigNumber(text, if (head.warn) p.red else p.text, Modifier.fillMaxWidth().weight(1f))
             Box(Modifier.fillMaxWidth().height(1.dp).background(Brush.horizontalGradient(listOf(p.line, p.label.copy(alpha = 0.6f), p.line))))
         }
     }

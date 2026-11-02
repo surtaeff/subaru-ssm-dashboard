@@ -69,7 +69,7 @@ object EspFlasher {
             done = "Записано и проверено (MD5): ${img.size / 1024} КБ."
         } catch (e: Exception) {
             SsmTrace.log("esp flash failed: $e")
-            state.value = FlashState.Failed((e.message ?: e.toString()) +
+            state.value = FlashState.Failed(kg.forester.sg.data.Failure.link(e, "Прошить не вышло") +
                 ". Если плата не отвечает: зажмите на ней BOOT, нажмите и отпустите RST (или вставьте USB с зажатой BOOT), отпустите BOOT и прошейте ещё раз")
         } finally {
             held.forEach { ScreenLink.pauseForFlash(it, false) }

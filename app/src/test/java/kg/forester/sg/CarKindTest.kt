@@ -86,6 +86,7 @@ class CarKindTest {
     @Test fun splash() {
         // the neon road is the same for any car, whatever its logo
         assertEquals(SplashPick.Route, CarKind.chooseSplash("route", "/own.png", LogoPick.Asset("a")))
+        assertEquals(SplashPick.CarPulse, CarKind.chooseSplash("carpulse", "/own.png", LogoPick.Asset("a")))
         assertEquals(SplashPick.Subaru, CarKind.chooseSplash("subaru", "/own.png", LogoPick.Asset("a")))
         assertEquals(SplashPick.Logo(LogoPick.Asset("a")), CarKind.chooseSplash("car", null, LogoPick.Asset("a")))
         assertEquals(SplashPick.Logo(LogoPick.Subaru), CarKind.chooseSplash("car", null, LogoPick.Subaru))

@@ -39,6 +39,18 @@
     <queries>
         <!-- FYT head units (Teyes etc.): media service, decides whether the Media screen is shown -->
         <package android:name="com.syu.ms" />
+        <!-- where the radio's exported service may be, to wake the radio without opening its screen -->
+        <package android:name="com.syu.radio" />
+        <package android:name="com.syu.broadcast" />
+        <!-- one package of each other head-unit family, to tell it in the log (BtAudio "bt pick") -->
+        <package android:name="com.syu.bt" />
+        <package android:name="android.microntek.mtcser" />
+        <package android:name="com.microntek.bluetooth" />
+        <package android:name="com.nwd.kernel" />
+        <package android:name="com.nwd.radio.service" />
+        <package android:name="com.ts.MainUI" />
+        <package android:name="com.spd.radio" />
+        <package android:name="com.hcn.autoradio" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
@@ -67,12 +79,14 @@
     <application
         android:usesCleartextTraffic="true"
         android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:theme="@style/Theme.ForesterSG"
         android:requestLegacyExternalStorage="true"
-        android:largeHeap="true">
+        android:largeHeap="@bool/large_heap">
 
         <activity
             android:name=".MainActivity"
@@ -80,7 +94,7 @@
             android:launchMode="singleTask"
             android:resizeableActivity="true"
             android:screenOrientation="landscape"
-            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode|density|fontScale|locale|layoutDirection|navigation|keyboard|touchscreen|mcc|mnc|colorMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

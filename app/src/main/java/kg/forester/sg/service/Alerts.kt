@@ -48,7 +48,8 @@ object Alerts {
         tts = TextToSpeech(ctx.applicationContext) { status ->
             val t = tts ?: return@TextToSpeech
             ttsReady = status == TextToSpeech.SUCCESS &&
-                t.setLanguage(Locale("ru", "RU")).let { it != TextToSpeech.LANG_MISSING_DATA && it != TextToSpeech.LANG_NOT_SUPPORTED }
+                t.setLanguage(Speech.locale()).let { it != TextToSpeech.LANG_MISSING_DATA && it != TextToSpeech.LANG_NOT_SUPPORTED }
+            t.setOnUtteranceProgressListener(progress)
             // like a navigator's voice: over the music, not at the notification volume
             runCatching {
                 t.setAudioAttributes(android.media.AudioAttributes.Builder()
@@ -77,14 +78,78 @@ object Alerts {
         save()
         if (!speak || !Repo.settings.voiceAlerts || Repo.settings.demo) return
         // the app's own voice first, then the head unit's TTS, then a beep
-        if (Speech.say(text)) return
-        if (ttsReady) {
-            val loud = android.os.Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1f) }
-            runCatching { tts?.speak(SpeechText.prepare(text), TextToSpeech.QUEUE_ADD, loud, id) }
-        } else if (level != Level.INFO) {
-            runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80).startTone(ToneGenerator.TONE_PROP_BEEP2, 300) }
+        if (Speech.say(text, level = level)) return
+        val beepIfNeeded = { if (level != Level.INFO) beep() }
+        if (!systemSay(Speech.spoken(text), level == Level.DANGER, onFail = beepIfNeeded)) beepIfNeeded()
+    }
+
+    /** A short beep; the tone generator (a native audio session) is released when it has sounded. */
+    fun beep(volume: Int = 80, ms: Int = 300) {
+        runCatching {
+            val g = ToneGenerator(AudioManager.STREAM_NOTIFICATION, volume)
+            g.startTone(ToneGenerator.TONE_PROP_BEEP2, ms)
+            main.postDelayed({ runCatching { g.release() } }, ms + 100L)
         }
     }
+
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private val utterances = java.util.concurrent.ConcurrentHashMap<String, Utterance>()
+
+    private val progress = object : android.speech.tts.UtteranceProgressListener() {
+        override fun onStart(id: String) { utterances[id]?.start() }
+        override fun onDone(id: String) { utterances.remove(id)?.done() }
+        @Deprecated("Deprecated in Java")
+        override fun onError(id: String) { utterances.remove(id)?.fail() }
+        override fun onError(id: String, errorCode: Int) { utterances.remove(id)?.fail() }
+        // pushed out by a danger: said in part is said, never begun is not
+        override fun onStop(id: String, interrupted: Boolean) {
+            utterances.remove(id)?.let { if (it.startedOk) it.done() else it.fail() }
+        }
+    }
+
+    /** The engine doesn't always say what became of a phrase; this looks. */
+    private fun watch(id: String, u: Utterance, t0: Long) {
+        main.postDelayed({
+            if (utterances[id] === u) when (u.look(systemSpeaking(), android.os.SystemClock.elapsedRealtime() - t0)) {
+                UtteranceStep.WAIT -> watch(id, u, t0)
+                UtteranceStep.FAIL -> { utterances.remove(id); u.fail() }
+                UtteranceStep.END -> { utterances.remove(id); u.done() }
+            }
+        }, 500)
+    }
+
+    /** The language was changed: the head unit's voice follows, whether it can or not. */
+    fun languageChanged(ctx: Context) {
+        val t = tts
+        if (t != null) ttsReady = runCatching { t.setLanguage(Speech.locale()) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
+            .let { it != TextToSpeech.LANG_MISSING_DATA && it != TextToSpeech.LANG_NOT_SUPPORTED }
+        if (Repo.settings.voiceAlerts) Speech.prepare(ctx)
+    }
+
+    /** The head unit's own voice can say the chosen language. */
+    val systemReady get() = ttsReady
+
+    /**
+     * [spoken] (already through [SpeechText]) by the head unit's own voice; false if it can't. True only means queued:
+     * [onFail] comes if it isn't said after all, [onEnd] when it is over either way (only if true was returned).
+     * [urgent]: ahead of the ordinary speech it is saying or has queued (those not begun get their [onFail]).
+     */
+    fun systemSay(spoken: String, urgent: Boolean = false, onEnd: () -> Unit = {}, onFail: () -> Unit = {}): Boolean {
+        if (!ttsReady) return false
+        val loud = android.os.Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1f) }
+        val id = "alert${System.nanoTime()}"
+        val flush = systemFlushes(urgent, utterances.values.any { it.urgent })
+        val u = Utterance(onEnd, onFail, urgent)
+        utterances[id] = u
+        val queued = runCatching {
+            tts?.speak(spoken, if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, loud, id) == TextToSpeech.SUCCESS
+        }.getOrDefault(false)
+        if (!queued) { utterances.remove(id); return false }
+        watch(id, u, android.os.SystemClock.elapsedRealtime())
+        return true
+    }
+
+    fun systemSpeaking() = ttsReady && runCatching { tts?.isSpeaking == true }.getOrDefault(false)
 
     private fun save() {
         val p = prefs ?: return

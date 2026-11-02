@@ -9,10 +9,14 @@ import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.SystemClock
 import android.view.KeyEvent
+import kg.forester.sg.service.audio.SinkFacts
+import kg.forester.sg.service.audio.kickDue
 import kg.forester.sg.ssm.SsmTrace
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * The phone's music over Bluetooth on head units that are not FYT (FYT goes through [Fyt]: source 3).
+ * The phone's music over Bluetooth, what the backends in service/audio share (FYT goes through [Fyt]: source 3).
  *
  * Two things keep it silent while the track and the seconds run:
  *  - Android's own A2DP sink (com.android.bluetooth) plays only with audio focus, and it asks for focus by itself
@@ -28,13 +32,7 @@ import kg.forester.sg.ssm.SsmTrace
 object BtAudio {
     private const val TAG = "BtAudio"
 
-    fun microntek(ctx: Context): Boolean = mtc ?: (listOf("android.microntek.service", "com.microntek.bluetooth", "android.microntek.mtcser")
-        .any { runCatching { ctx.packageManager.getPackageInfo(it, 0); true }.getOrDefault(false) } ||
-        launchable(ctx).any { it.activityInfo.packageName.contains("microntek") })
-        .also { mtc = it }
-    private var mtc: Boolean? = null
-
-    private fun launchable(ctx: Context): List<android.content.pm.ResolveInfo> = runCatching {
+    internal fun launchable(ctx: Context): List<android.content.pm.ResolveInfo> = runCatching {
         ctx.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
     }.getOrDefault(emptyList())
 
@@ -43,7 +41,7 @@ object BtAudio {
      * page open (it unmutes the chip; the channel alone stays silent). A launcher entry of a Bluetooth package of the
      * unit, the one named like music first ("BT музыка", "Музыка BT", "BT Music").
      */
-    private fun stockBtMusic(ctx: Context): android.content.ComponentName? {
+    internal fun stockBtMusic(ctx: Context): android.content.ComponentName? {
         val pm = ctx.packageManager
         val bt = launchable(ctx).filter { r ->
             val p = r.activityInfo.packageName
@@ -56,80 +54,126 @@ object BtAudio {
         return pick?.let { android.content.ComponentName(it.activityInfo.packageName, it.activityInfo.name) }
     }
 
-    private var stockOpenedAt = 0L
-
-    /** The Bluetooth mode was picked (the player screen, a voice command): the head unit's sound goes to the phone. */
-    fun enter(ctx: Context) {
-        if (Fyt.present(ctx)) { Fyt.source(3); return }
-        if (microntek(ctx)) {
-            val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            // the stock music and radio close on this, as when the stock Bluetooth app opens; the BT app itself stays
-            runCatching { ctx.sendBroadcast(Intent("com.microntek.bootcheck").putExtra("class", "com.microntek.bluetooth")) }
-            runCatching { am.setParameters("av_channel_enter=gsm_bt") }
-            SsmTrace.log("bt: microntek channel gsm_bt; launchers: " + launchable(ctx).map { it.activityInfo.packageName + "/" + it.activityInfo.name }
-                .filter { "microntek" in it || "bt" in it.lowercase() || "blue" in it.lowercase() || "music" in it.lowercase() }.joinToString(", "), keep = true)
-            // the stock BT music screen opened for a moment, then back to us: what drivers did by hand to get sound
-            val now = SystemClock.elapsedRealtime()
-            val stock = stockBtMusic(ctx)
-            if (stock != null && now - stockOpenedAt > 60_000) {
-                stockOpenedAt = now
-                SsmTrace.log("bt: open ${stock.flattenToShortString()} for a moment", keep = true)
-                runCatching { ctx.startActivity(Intent(Intent.ACTION_MAIN).setComponent(stock).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                val back = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
-                    ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    runCatching { am.setParameters("av_channel_enter=gsm_bt") }
-                    back?.let { b -> runCatching { ctx.startActivity(b) } }
-                }, 1800)
-            }
-        }
-        connect(ctx)
-        kick(ctx, force = true)
+    /**
+     * The head unit's own Bluetooth app (pairing, phone, music) for the «Настройки Bluetooth» button: units with two
+     * modules (TS18 and others) pair the phone there, while Android's Bluetooth settings show the OBD module.
+     */
+    fun stockBtApp(ctx: Context): Intent? {
+        if (Fyt.present(ctx)) return ctx.packageManager.getLaunchIntentForPackage("com.syu.bt")
+        // only the firmware's own apps: an installed one with "bt" in its name (a BT scanner, a btc wallet) is not it
+        val own = launchable(ctx).firstOrNull { r ->
+            val p = r.activityInfo.packageName
+            r.activityInfo.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0 &&
+                p != ctx.packageName && MediaSessions.isBt(p) && !p.startsWith("com.android.") && !p.startsWith("com.google.")
+        }?.let { ComponentName(it.activityInfo.packageName, it.activityInfo.name) }
+        return (own ?: stockBtMusic(ctx))?.let { Intent(Intent.ACTION_MAIN).setComponent(it) }
     }
 
-    /** Another mode was picked: Android's own sound back on Microntek. */
-    fun leave(ctx: Context) {
-        if (Fyt.present(ctx) || !microntek(ctx)) return
-        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        runCatching { am.setParameters("av_channel_exit=gsm_bt") }
-        runCatching { am.setParameters("av_channel_enter=sys") }
-        SsmTrace.log("bt: microntek channel sys", keep = true)
+    private var launchersLogged = false
+
+    /** Once a run: the unit's Bluetooth and music launchers, so a sent log shows which app plays the phone there. */
+    internal fun logLaunchers(ctx: Context) {
+        if (launchersLogged) return
+        launchersLogged = true
+        SsmTrace.log("bt: launchers: " + launchable(ctx).map { it.activityInfo.packageName + "/" + it.activityInfo.name }
+            .filter { "microntek" in it || "bt" in it.lowercase() || "blue" in it.lowercase() || "music" in it.lowercase() }.joinToString(", "), keep = true)
+    }
+
+    /** What the unit says about its source and the phone's session when Bluetooth is picked, for a sent log. */
+    internal fun logPick(ctx: Context) {
+        val src = runCatching { android.provider.Settings.System.getString(ctx.contentResolver, "mcu_current_source") }.getOrNull()
+            ?: runCatching { android.provider.Settings.Global.getString(ctx.contentResolver, "mcu_current_source") }.getOrNull()
+        val c = controller(ctx)
+        // the head-unit families by their package prefixes: FYT, Microntek, NWD, TS, TW, SPD, HCN
+        val families = listOf("com.syu.", "android.microntek.", "com.microntek.", "com.nwd.", "com.ts.", "android.tw.", "com.spd.", "com.hcn.")
+        val pkgs = runCatching {
+            ctx.packageManager.getInstalledPackages(0).map { it.packageName }.filter { p -> families.any { p.startsWith(it) } }
+        }.getOrDefault(emptyList())
+        SsmTrace.log("bt pick: mcu_current_source=${src ?: "—"} sdk=${android.os.Build.VERSION.SDK_INT} " +
+            "session=${c?.packageName ?: "—"}/${c?.playbackState?.state ?: "—"} packages(${pkgs.size})=${pkgs.joinToString(",")}", keep = true)
     }
 
     private var kickedAt = 0L
 
     /**
      * Android's A2DP sink without the focus: the phone plays, the track runs, nothing sounds. A "play" through the
-     * session makes the sink ask for the focus. [force]: right after the mode was picked; otherwise only when the
-     * session says it plays while no music is heard, at most every 15 s. Not on Microntek: its BT sound never shows
-     * up in Android's audio, "no music" would be true all the time.
+     * session makes the sink ask for the focus. Only as [kickDue] says: never before the driver asked in this run.
      */
-    fun kick(ctx: Context, force: Boolean = false) {
-        if (Fyt.present(ctx) || (!force && microntek(ctx))) return
+    fun kick(ctx: Context, userAsked: Boolean) {
         val c = controller(ctx) ?: return
         val playing = c.playbackState?.state == PlaybackState.STATE_PLAYING
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val now = SystemClock.elapsedRealtime()
-        if (!force && (!playing || am.isMusicActive || now - kickedAt < 15_000)) return
-        if (force && !playing) return
+        if (!kickDue(userAsked, playing, am.isMusicActive, if (kickedAt == 0L) Long.MAX_VALUE else now - kickedAt)) return
         kickedAt = now
         SsmTrace.log("bt: play to ${c.packageName} (playing=$playing music=${am.isMusicActive})", keep = true)
         runCatching { c.transportControls.play() }
     }
 
-    /** The Bluetooth session: the one [MediaSessions] sees, else the one from the stack's media browser. */
-    fun controller(ctx: Context): MediaController? = MediaSessions.btController(ctx) ?: browsed
+    /** The Bluetooth session: the one [MediaSessions] sees, else the one from the stack's media browser, if it counts. */
+    fun controller(ctx: Context): MediaController? =
+        MediaSessions.btController(ctx) ?: browsed.value?.takeIf { MediaSessions.counts(ctx, it) }
 
-    /** Play / pause / next / previous: the session, else the media keys, which the head unit sends to its source. */
-    fun control(ctx: Context, key: Int, block: (MediaController.TransportControls) -> Unit) {
+    /** What the plans in service/audio decide by. */
+    internal fun facts(ctx: Context): SinkFacts {
+        val c = controller(ctx)
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return SinkFacts(
+            sdk = android.os.Build.VERSION.SDK_INT,
+            session = c != null,
+            playing = c?.playbackState?.state == PlaybackState.STATE_PLAYING,
+            heard = am.isMusicActive,
+            voiceBusy = voiceBusy(ctx),
+        )
+    }
+
+    /** A call, or a voice playing: the navigator's, an assistant's, ours. A navigator that speaks as "media" isn't seen here. */
+    internal fun voiceBusy(ctx: Context): Boolean {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (callOn(ctx)) return true
+        if (android.os.Build.VERSION.SDK_INT < 26) return false
+        return runCatching { am.activePlaybackConfigurations.any { it.audioAttributes.usage in VOICE_USAGES } }.getOrDefault(false)
+    }
+
+    internal fun callOn(ctx: Context) = (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager).mode != AudioManager.MODE_NORMAL
+
+    private val VOICE_USAGES = setOf(
+        android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE, android.media.AudioAttributes.USAGE_ASSISTANT,
+        android.media.AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY, android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION,
+        android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE,
+    )
+
+    /** GAIN and an abandon at once, see [kg.forester.sg.service.audio.focusStep] for when. */
+    internal fun focusPulse(ctx: Context): Int? {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val l = AudioManager.OnAudioFocusChangeListener { }
+        @Suppress("DEPRECATION")
+        val got = runCatching { am.requestAudioFocus(l, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN) }.getOrNull()
+        @Suppress("DEPRECATION")
+        runCatching { am.abandonAudioFocus(l) }
+        SsmTrace.log("bt: focus pulse, answer $got", keep = true)
+        return got
+    }
+
+    internal fun prepare(ctx: Context) { controller(ctx)?.let { c -> runCatching { c.transportControls.prepare() } } }
+
+    /** The browser's session, up to [ms] when the browser is on its way. */
+    internal suspend fun awaitSession(ctx: Context, ms: Long) {
+        if (!connect(ctx) || controller(ctx) != null) return
+        withTimeoutOrNull(ms) { browsed.first { it != null } }
+    }
+
+    /** Play / pause / next / previous: the session, else the media key if there is one to send. */
+    fun control(ctx: Context, key: Int?, block: (MediaController.TransportControls) -> Unit) {
         val c = controller(ctx)
         if (c != null) { runCatching { block(c.transportControls) }; return }
+        if (key == null) return
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, key))
         am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, key))
     }
 
-    @Volatile private var browsed: MediaController? = null
+    private val browsed = kotlinx.coroutines.flow.MutableStateFlow<MediaController?>(null)
     private var browser: MediaBrowser? = null
 
     /** A track a head unit announced in a broadcast (Microntek and others without a media session); blank if none. */
@@ -143,7 +187,7 @@ object BtAudio {
      * broadcasts ("com.android.music.metachanged" and the like): taken from there when they do, and the first ones
      * that come go to the log, to see what a unit sends.
      */
-    private fun listenAnnouncements(ctx: Context) {
+    internal fun listenAnnouncements(ctx: Context) {
         if (listening) return
         listening = true
         val f = android.content.IntentFilter().apply {
@@ -172,32 +216,35 @@ object BtAudio {
         }
     }
 
-    /** Connects once to the Bluetooth stack's media browser service (com.android.bluetooth's AVRCP controller). */
-    fun connect(ctx: Context) {
-        if (microntek(ctx)) listenAnnouncements(ctx)
-        if (browser != null || Fyt.present(ctx)) return
+    /**
+     * Connects once to the Bluetooth stack's media browser service (com.android.bluetooth's AVRCP controller); false
+     * when the unit has none.
+     */
+    fun connect(ctx: Context): Boolean {
+        if (browser != null) return true
         val app = ctx.applicationContext
         val svc = runCatching {
             app.packageManager.queryIntentServices(Intent("android.media.browse.MediaBrowserService"), 0)
                 .map { it.serviceInfo }.firstOrNull { MediaSessions.isBt(it.packageName) }
-        }.getOrNull() ?: return
+        }.getOrNull() ?: return false
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         main.post {
             if (browser != null) return@post
             var b: MediaBrowser? = null
             b = MediaBrowser(app, ComponentName(svc.packageName, svc.name), object : MediaBrowser.ConnectionCallback() {
                 override fun onConnected() {
-                    browsed = runCatching { MediaController(app, b!!.sessionToken) }.getOrNull()
+                    browsed.value = runCatching { MediaController(app, b!!.sessionToken) }.getOrNull()
                     SsmTrace.log("bt: browser ${svc.packageName} connected", keep = true)
                 }
-                override fun onConnectionSuspended() { browsed = null }
+                override fun onConnectionSuspended() { browsed.value = null }
                 override fun onConnectionFailed() {
-                    browsed = null; browser = null
+                    browsed.value = null; browser = null
                     SsmTrace.log("bt: browser ${svc.packageName} refused", keep = true)
                 }
             }, null)
             browser = b
             runCatching { b.connect() }.onFailure { browser = null; android.util.Log.w(TAG, "connect: $it") }
         }
+        return true
     }
 }

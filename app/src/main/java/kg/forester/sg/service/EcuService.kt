@@ -29,6 +29,7 @@ import kg.forester.sg.MainActivity
 import kg.forester.sg.R
 import kg.forester.sg.data.GpsFix
 import kg.forester.sg.data.LinkState
+import kg.forester.sg.data.afterLinkLoss
 import kg.forester.sg.data.Repo
 import kg.forester.sg.ssm.EcuInit
 import kg.forester.sg.ssm.EcuParams
@@ -42,6 +43,7 @@ import kg.forester.sg.ssm.Obd2
 import kg.forester.sg.ssm.ObdLink
 import kg.forester.sg.ssm.RomRaider
 import kg.forester.sg.ssm.RrParam
+import org.json.JSONObject
 import kg.forester.sg.ssm.UsbStreams
 import kg.forester.sg.ssm.OpenPort13
 import kg.forester.sg.ssm.Op2CanTransport
@@ -99,14 +101,14 @@ object EcuLink {
 class EcuService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val faultWatch = FaultWatch()
+    private val codeWatch = CodeWatch()
     private var pollJob: Job? = null
     private val knock by lazy { KnockWatch(this) }
     private val guard = EngineGuard()
     private val tracker by lazy { TripTracker(this) { knock.reset(it); guard.newTrip(it) } }
     private val battery by lazy { BatteryMonitor(this) }
-    private val history = ArrayDeque<EcuSnapshot>()
     private var mafDropLogged = false
-    private val tcuHistory = ArrayDeque<TcuSnapshot>()
     private var tcuAddrs: IntArray? = null
     private var tcuNextTryMs = 0L
     private var tcuAtfOnly = false
@@ -117,7 +119,11 @@ class EcuService : Service() {
 
     /** After ACC sleep: GPS again (it often stalls) and the dashboard on screen if the driver wants it. */
     private val wakeWatch by lazy {
-        WakeWatch(this) {
+        WakeWatch(this, onSleptWake = {
+            // an adapter that wakes with the car is still booting: tries from the start, not after the last sleep's pause
+            Repo.autoBtPause.reset()
+            kg.forester.sg.data.DeviceTier.newSession()
+        }) {
             scope.launch(Dispatchers.Main) {
                 runCatching { startGps() }
                 // the head unit's launcher comes up on the same wake: let it settle before covering it
@@ -130,13 +136,19 @@ class EcuService : Service() {
     override fun onCreate() {
         super.onCreate()
         Repo.init(this)
+        // first: the system gives a started service a few seconds for it, and a weak unit may spend them on what follows
+        startInForeground()
         SsmTrace.init(this)
+        // a log that did not go last time (only if the upload is on, the address is known and the limits allow)
+        LogUpload.auto(this, "start", onlyPending = true)
         // the open folder for own RomRaider files, there from the first start for a file manager to find
         Thread { kg.forester.sg.data.EcuDefs.prepareFolder(this) }.start()
         Alerts.init(this)
         Motion.start(this)
+        // the feature switched in the settings: the sensor follows
+        scope.launch { Repo.featureVersion.collect { Motion.start(this@EcuService) } }
+        scope.launch { linkLossWatch() }
         Tpms.start(this)
-        startInForeground()
         startGps()
         battery // restore the last battery readings for the UI right away
         guard.analyzer = RulesHost.create(this)
@@ -188,6 +200,9 @@ class EcuService : Service() {
         scope.launch { tracker.shutdown() }
         logger?.close()
         scope.cancel()
+        Motion.stop()
+        Voice.stop(wait = false) // the speech model's memory back; the next start of the service loads it again
+        stopGps()
         super.onDestroy()
     }
 
@@ -210,9 +225,31 @@ class EcuService : Service() {
         }
     }
 
+    /**
+     * A failing poll writes no null: it counts failures and, in the end, sets NO_ECU, and the last reading stays in
+     * [Repo.live]. So two seconds after the link leaves CONNECTED the values are wiped here (as releasing the adapter does),
+     * and the screens, which then have nothing, show dashes and say «нет связи».
+     */
+    private suspend fun linkLossWatch() {
+        val loss = kg.forester.sg.data.LinkLoss()
+        while (scope.isActive) {
+            if (loss.due(Repo.link.value, System.currentTimeMillis())) {
+                SsmTrace.log("link lost for ${kg.forester.sg.data.LINK_LOSS_MS} ms: values cleared")
+                Repo.live.value = EcuSnapshot()
+                Repo.tcu.value = null
+                // what the guard and the trip show of the moment, and the SSM values, go with it; totals and latches stay
+                Repo.guard.value = Repo.guard.value.afterLinkLoss()
+                Repo.trip.value = Repo.trip.value.afterLinkLoss()
+                Repo.rrValues.value = emptyMap()
+            }
+            delay(250)
+        }
+    }
+
     private fun reconnectAdapter() {
         if (!Repo.adapterReleased.value) return
         Repo.adapterReleased.value = false
+        Repo.autoBtPause.reset()
         val old = pollJob
         scope.launch {
             old?.join()
@@ -348,7 +385,7 @@ class EcuService : Service() {
                 // the wideband took this device (its connection was closed under us): not a cable fault
                 if (SensorBoxLink.ecuLease?.permitted != false) {
                     Repo.link.value = LinkState.ERROR
-                    Repo.linkMessage.value = e.message ?: "Ошибка связи"
+                    Repo.linkMessage.value = kg.forester.sg.data.Failure.link(e, "Ошибка связи")
                 }
             } finally {
                 runCatching { EcuLink.client?.close() }
@@ -425,6 +462,7 @@ class EcuService : Service() {
     private suspend fun demoLoop() {
         // nothing learned from the car carries into the demo, nothing from the demo into the car (see the end)
         guard.reset()
+        Repo.checkEngine.value = null // the demo has no codes
         Repo.link.value = LinkState.CONNECTED
         Repo.linkMessage.value = "Демо-данные (без машины)"
         knock.reset(System.currentTimeMillis(), record = false)
@@ -432,6 +470,7 @@ class EcuService : Service() {
         val demoStart = System.currentTimeMillis()
         var demoTrip = kg.forester.sg.data.Trip(startMs = demoStart, endMs = demoStart, distanceKm = 0.0, fuelL = 0.0)
         var lastDemo = demoStart
+        val demoDyno = DynoPoll()
         while (scope.isActive && Repo.settings.demo) {
             val now = System.currentTimeMillis()
             val (snap, tcu) = Demo.ecu(now)
@@ -439,18 +478,21 @@ class EcuService : Service() {
             addHistory(snap)
             knock.process(snap, record = false)
             extras(snap, now)
+            // a pull on the dyno's screen as fast as the cable's short list gives it
+            val dynoFast = demoDyno.wanted(Repo.dynoTab.value, snap, now)
             if (Repo.settings.gearbox != "mt") {
                 Repo.tcu.value = lockUp(tcu, snap.rpm, now)
                 Repo.tcuStatus.value = "АКПП: демо"
-                tcuHistory.addLast(tcu)
-                while (tcuHistory.size > 120) tcuHistory.removeFirst()
-                Repo.tcuHistory.value = tcuHistory.toList()
+                if (!dynoFast) {
+                    Repo.tcuHistory.add(tcu)
+                }
             }
             val bearing = if ((snap.speedKmh ?: 0) > 3) Demo.bearing(now) else null
             val (lat, lon) = Demo.position(now, (snap.speedKmh ?: 0).toFloat(), bearing)
             Repo.gps.value = GpsFix(
                 speedKmh = (snap.speedKmh ?: 0).toFloat(), altitudeM = 195.0, accuracyM = 5f, satellites = 9,
                 timeMs = now, bearing = bearing, lat = lat, lon = lon,
+                arrivedMs = android.os.SystemClock.elapsedRealtime(),
             )
             val lh = Demo.litersPerHour(snap)
             val v = snap.speedKmh ?: 0
@@ -467,17 +509,17 @@ class EcuService : Service() {
             )
             val left = tank * 0.62
             Repo.trip.value = Repo.trip.value.copy(
-                trip = demoTrip, instLh = lh, instPer100 = if (v >= 5) lh / v * 100 else null, fuelLeftL = left,
+                trip = demoTrip, instLh = lh, instKnown = true, instPer100 = if (v >= 5) lh / v * 100 else null, fuelLeftL = left,
                 // as with the car: the trip's first minutes (a jam, a hard pull) must not swing the range
                 rangeKm = left / FuelCalc.rangePer100(demoTrip, emptyList()) * 100,
             )
-            delay(250)
+            delay(if (dynoFast) 33 else 250)
         }
         // demo off: none of its made-up numbers may stay on the screen as if they were the car's
         Repo.live.value = EcuSnapshot()
         Repo.tcu.value = null
-        history.clear(); Repo.history.value = emptyList()
-        tcuHistory.clear(); Repo.tcuHistory.value = emptyList()
+        Repo.history.clear()
+        Repo.tcuHistory.clear()
         Repo.gps.value = null
         Repo.trip.value = kg.forester.sg.data.TripState()
         Repo.guard.value = GuardState()
@@ -516,12 +558,12 @@ class EcuService : Service() {
     private fun btSocket(addr: String, label: String, quiet: Boolean): android.bluetooth.BluetoothSocket? {
         if (addr.isEmpty()) {
             Repo.link.value = LinkState.NO_CABLE
-            Repo.linkMessage.value = "Выберите Bluetooth-адаптер: Настройки → «Авто и адаптер»"
+            Repo.linkMessage.value = "Выберите Bluetooth-адаптер: Настройки → «Машина и адаптер»"
             return null
         }
         if (!btAllowed()) {
             Repo.link.value = LinkState.NO_PERMISSION
-            Repo.linkMessage.value = "Нет разрешения на Bluetooth (Настройки → «Авто и адаптер»)"
+            Repo.linkMessage.value = "Нет разрешения на Bluetooth (Настройки → «Машина и адаптер»)"
             return null
         }
         val bt = (getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
@@ -622,17 +664,22 @@ class EcuService : Service() {
         if (!btAllowed()) return false
         val bt = (getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
         if (bt == null || !bt.isEnabled) return false
+        // each try pages the adapter, and the radio is shared with what plays music or runs wireless CarPlay
+        val now = android.os.SystemClock.elapsedRealtime()
+        val pause = Repo.autoBtPause
+        if (!pause.due(now)) return false
         val s = Repo.settings
-        if (s.btAddress.isNotEmpty()) return bluetoothSession(s.btAddress, s.btName, quiet = true)
-        val candidates = runCatching { bt.bondedDevices.toList() }.getOrDefault(emptyList())
-            .filter { d -> OBD_NAMES.any { (d.name ?: "").uppercase().contains(it) } }
-        for (d in candidates) {
-            if (bluetoothSession(d.address, d.name ?: "", quiet = true)) {
-                s.btAddress = d.address; s.btName = d.name ?: d.address
-                return true
+        val connected = if (s.btAddress.isNotEmpty()) bluetoothSession(s.btAddress, s.btName, quiet = true) else {
+            val candidates = runCatching { bt.bondedDevices.toList() }.getOrDefault(emptyList())
+                .filter { d -> OBD_NAMES.any { (d.name ?: "").uppercase().contains(it) } }
+            candidates.any { d ->
+                bluetoothSession(d.address, d.name ?: "", quiet = true).also { ok ->
+                    if (ok) { s.btAddress = d.address; s.btName = d.name ?: d.address }
+                }
             }
         }
-        return false
+        if (connected) pause.reset() else pause.failed(android.os.SystemClock.elapsedRealtime())
+        return connected
     }
 
     /**
@@ -702,7 +749,7 @@ class EcuService : Service() {
         } catch (e: Exception) {
             SsmTrace.log("error: $e")
             Repo.link.value = LinkState.ERROR
-            Repo.linkMessage.value = e.message ?: "Ошибка связи"
+            Repo.linkMessage.value = kg.forester.sg.data.Failure.link(e, "Ошибка связи")
             return true
         } finally {
             EcuLink.client?.close()
@@ -841,7 +888,11 @@ class EcuService : Service() {
             Repo.linkMessage.value = "ROM ${init.romId}" + (car?.let { " ($it)" } ?: "") + " · ${client.transport.name}"
             RomRaider.load(this)
             RomRaider.siblingOf(init.romId)?.let { SsmTrace.log("no extended parameters for ROM ${init.romId}, using sibling $it") }
+            faultWatch.newConnection()
+            Repo.checkEngine.value = null
+            codeWatch.newConnection(System.currentTimeMillis())
             SsmTrace.log("ECU init: SSM ${init.ssmId} ROM ${init.romId} caps ${init.capabilities.toHex(" ")}")
+            guard.romIam = EngineGuard.RomIam()
             val addrs = choosePollAddresses(client, init)
             if (addrs == null) {
                 Repo.link.value = LinkState.ERROR
@@ -851,10 +902,14 @@ class EcuService : Service() {
             }
             Repo.pollAddresses.value = addrs.size
             runCatching { connectChecks(client, init) }.onFailure { SsmTrace.log("connect checks: $it") }
+            runCatching { readRomIam(client, init) }.onFailure { SsmTrace.log("rom iam: $it") }
             ecuWatch.setup(init)
             tcuWatch.clear()
-            // an engine without a turbo (no wastegate in the init) on the untouched factory screen: no empty boost cards
-            if (Repo.settings.homeTiles.isEmpty() && !EcuParams.reported(init, EcuParams.WGDC)) {
+            // boost once seen on this ROM counts from the start: the boost cards must not leave at every connection
+            val ecuSaysTurbo = kg.forester.sg.ssm.EngineId.turbo(this, init, Repo.settings.boostRom == init.romId)
+            Repo.settings.carTurbo = kg.forester.sg.data.HomeLayout.carHasTurbo(true, ecuSaysTurbo, false, false)
+            // an engine without a turbo on the untouched factory screen: no empty boost cards
+            if (Repo.settings.homeTiles.isEmpty() && !ecuSaysTurbo) {
                 Repo.settings.homeTiles = kg.forester.sg.data.HomeLayout.atmoDefault()
             }
             val afSensor = EcuParams.reported(init, EcuParams.AF_SENSOR)
@@ -874,6 +929,12 @@ class EcuService : Service() {
             var fastRun = 0
             var fastTcuMs = 0L
             var fastWatchMs = 0L
+            // the dyno on the screen, the pedal floored: the short list only, into the last full read (see DynoPoll)
+            val dynoPoll = DynoPoll()
+            var dynoFine = true
+            var fastShort = false
+            /** What the stream reads, or last read, when it isn't the short list. */
+            var fullAddrs: IntArray = addrs
             /** Plain requests: the ticked parameters go in the regular read until that is refused once. */
             var joinWatch = true
             try { while (scope.isActive && failures < 5 && !Repo.settings.demo && capsSeen == Repo.capsVersion.value &&
@@ -890,22 +951,51 @@ class EcuService : Service() {
                     Repo.linkMessage.value = "ROM ${init.romId} · ${client.transport.name}"
                 }
                 if (fast && !Repo.settings.fastPoll) { fast = false; EcuLink.mutex.withLock { client.stopStream() } }
+                val dynoNow = System.currentTimeMillis()
+                val dynoShort = if (dynoFine && dynoPoll.wanted(Repo.dynoTab.value, Repo.live.value, dynoNow))
+                    DynoPoll.shortList(addrs, skip, client.transport.maxReadAddrs, ecuWatch.proven(guard.fastRoles().toList().filterNotNull())) else null
                 if (fast) {
+                    // a pull goes on with the rest of the values as they were: a whole read every couple of seconds
+                    // keeps them fresh for the alerts (the request itself stops the stream, the next round starts it)
+                    if (dynoShort != null && dynoPoll.fullDue(dynoNow)) {
+                        val read = fullAddrs
+                        val whole = EcuLink.mutex.withLock { client.read(read) }
+                        val now = System.currentTimeMillis()
+                        if (whole == null) {
+                            // refused with the ticked ones: without them from now on, as the plain requests do
+                            if (read.size > addrs.size) fullAddrs = addrs else { failures++; tracker.tick(now) }
+                            continue
+                        }
+                        failures = 0
+                        var snap = EcuParams.decode(read, whole, now, skip)
+                        if (!afSensor) snap = snap.copy(lambda = null)
+                        if (read.size > addrs.size) ecuWatch.take(read, whole)
+                        dynoPoll.noteFull(snap, now)
+                        onSnapshot(snap, now)
+                        cycle++
+                        continue
+                    }
+                    if (client.streaming && (dynoShort != null) != fastShort) EcuLink.mutex.withLock { client.stopStream() }
                     // the ticked parameters ride along in the stream, but each new list is read on its own first:
                     // an address this ECU doesn't know would silence the whole stream, not just them
-                    if (ecuWatch.refresh() && client.streaming) EcuLink.mutex.withLock { client.stopStream() }
+                    if (dynoShort == null && ecuWatch.refresh() && client.streaming) EcuLink.mutex.withLock { client.stopStream() }
                     // ticked ones that didn't answer get another try now and then (a manual gearbox never stops the stream)
-                    if (client.streaming && !ecuWatch.answers && ecuWatch.addresses.isNotEmpty() &&
+                    if (dynoShort == null && client.streaming && !ecuWatch.answers && ecuWatch.addresses.isNotEmpty() &&
                         System.currentTimeMillis() - fastWatchMs > 10_000) EcuLink.mutex.withLock { client.stopStream() }
                     if (!client.streaming) {
                         fastWatchMs = System.currentTimeMillis()
-                        // a list already read on its own needs no second read after each transmission request: that
-                        // would leave the stream silent for one more request every N × 250 ms
-                        if (!ecuWatch.answers) ecuWatch.poll(client)
-                        val extra = if (ecuWatch.answers) ecuWatch.addresses.filter { it !in addrs } else emptyList()
-                        val room = client.transport.maxReadAddrs - addrs.size
-                        if (extra.size > room) SsmTrace.log("fast poll: ${extra.size - room} watched addresses left out")
-                        fastAddrs = addrs + extra.take(room.coerceAtLeast(0))
+                        fastShort = dynoShort != null
+                        if (dynoShort != null) fastAddrs = dynoShort
+                        else {
+                            // a list already read on its own needs no second read after each transmission request: that
+                            // would leave the stream silent for one more request every N × 250 ms
+                            if (!ecuWatch.answers) ecuWatch.poll(client)
+                            val extra = if (ecuWatch.answers) ecuWatch.addresses.filter { it !in addrs } else emptyList()
+                            val room = client.transport.maxReadAddrs - addrs.size
+                            if (extra.size > room) SsmTrace.log("fast poll: ${extra.size - room} watched addresses left out")
+                            fastAddrs = addrs + extra.take(room.coerceAtLeast(0))
+                            fullAddrs = fastAddrs
+                        }
                         while (fastFrames.tryReceive().isSuccess) Unit
                         val read = fastAddrs
                         fastRun = 0
@@ -941,17 +1031,40 @@ class EcuService : Service() {
                     if (cycle == 0) logFirstRead(addrs, raw)
                     var snap = EcuParams.decode(fastAddrs, raw, now, skip)
                     if (!afSensor) snap = snap.copy(lambda = null)
-                    ecuWatch.take(fastAddrs, raw)
-                    onSnapshot(snap, now)
+                    if (fastShort) {
+                        val fresh = dynoFresh(fastAddrs, raw)
+                        snap = dynoPoll.full?.let { DynoPoll.merge(it, snap) } ?: snap
+                        onSnapshot(snap, now, merged = true, knockFresh = fresh)
+                    } else {
+                        ecuWatch.take(fastAddrs, raw)
+                        dynoPoll.noteFull(snap, now)
+                        onSnapshot(snap, now)
+                    }
                     cycle++
                     // the transmission in between, about as often as with plain requests (N engine reads of ~250 ms
                     // between two of its own); its request stops the stream, the next round starts it again. The gap
                     // counts from the end of the last one, so the stream always runs N × 250 ms in between
-                    if (Repo.settings.gearbox != "mt" && now - fastTcuMs >= Repo.settings.tcuEvery.coerceAtLeast(1) * 250L) {
+                    if (!fastShort && Repo.settings.gearbox != "mt" && now - fastTcuMs >= Repo.settings.tcuEvery.coerceAtLeast(1) * 250L) {
                         pollTcu(client, now)
                         fastTcuMs = System.currentTimeMillis()
                     }
+                    if (!fastShort) checkCodes(now)
                     continue
+                }
+                if (dynoShort != null && !dynoPoll.fullDue(dynoNow)) {
+                    val short = EcuLink.mutex.withLock { client.read(dynoShort) }
+                    val now = System.currentTimeMillis()
+                    if (short != null) {
+                        failures = 0
+                        val snap = EcuParams.decode(dynoShort, short, now, skip)
+                        val fresh = dynoFresh(dynoShort, short)
+                        onSnapshot(dynoPoll.full?.let { DynoPoll.merge(it, snap) } ?: snap, now, merged = true, knockFresh = fresh)
+                        cycle++
+                        continue
+                    }
+                    if (transport.passive) continue
+                    // this ECU won't take the short list: the whole one, for this connection
+                    dynoFine = false
                 }
                 // the ticked parameters that answered on their own ride in the same request, as in the stream: read
                 // apart, they were a request later than the regular values (load_grev and P200 differed in the log)
@@ -979,8 +1092,11 @@ class EcuService : Service() {
                 // "enrichment" in the fuel calculation
                 if (!afSensor) snap = snap.copy(lambda = null)
                 if (read.size > addrs.size) ecuWatch.take(read, raw) else ecuWatch.poll(client)
+                dynoPoll.noteFull(snap, now)
                 onSnapshot(snap, now)
-                if (++cycle % Repo.settings.tcuEvery.coerceAtLeast(1) == 0 && Repo.settings.gearbox != "mt") pollTcu(client, now)
+                // not in a pull: its turn would cost the short list one more request
+                if (++cycle % Repo.settings.tcuEvery.coerceAtLeast(1) == 0 && dynoShort == null && Repo.settings.gearbox != "mt") pollTcu(client, now)
+                if (dynoShort == null) checkCodes(now)
             } } finally {
                 // the ECU would go on sending to nobody; whoever comes next starts from a quiet line (a cable taken
                 // from us has no line left to quiet)
@@ -998,6 +1114,14 @@ class EcuService : Service() {
             }
             SsmTrace.keepPollTail(12)
             SsmTrace.log("ECU silent, polling stopped")
+            // a fault, not a key-off: the engine ran up to the last sample, and the link is still down half a minute later
+            if (faultWatch.looksLikeFault()) {
+                val since = System.currentTimeMillis()
+                scope.launch {
+                    delay(30_000)
+                    if (faultWatch.confirm(Repo.link.value == LinkState.CONNECTED, System.currentTimeMillis() - since)) LogUpload.auto(this@EcuService, "ECU silent")
+                }
+            }
             Repo.link.value = LinkState.NO_ECU
             Repo.linkMessage.value = "Связь с ЭБУ потеряна"
             logger?.close(); logger = null
@@ -1050,18 +1174,32 @@ class EcuService : Service() {
 
     /**
      * The charts' last minute: a point per ~250 ms, as the plain polling gives, kept by time. The fast poll's 12
-     * samples a second would shrink the minute to 20 s and triple what every chart draws on each new sample.
+     * samples a second would triple what every chart draws on each new sample.
      */
     private fun addHistory(snap: EcuSnapshot) {
         val t = snap.timeMs
-        if (history.isNotEmpty() && t - historyMs in 0 until HISTORY_STEP_MS) return
+        if (historyMs != 0L && t - historyMs in 0 until HISTORY_STEP_MS) return
         historyMs = t
-        history.addLast(snap)
-        while (history.size > 300 || (history.isNotEmpty() && t - history.first().timeMs > 60_000L)) history.removeFirst()
-        Repo.history.value = history.toList()
+        Repo.history.add(snap)
     }
 
-    private fun onSnapshot(raw0: EcuSnapshot, now: Long) {
+    /**
+     * The ROM's own values read in a short frame ([read], [raw] in its order) go where the full read puts them.
+     * True when the FBKC was among them: the knock events can be fed from this frame.
+     */
+    private fun dynoFresh(read: IntArray, raw: ByteArray): Boolean {
+        val (fbkc, map) = guard.fastRoles()
+        val got = listOfNotNull(fbkc, map).filter { ecuWatch.proven(listOf(it)).let { a -> a.isNotEmpty() && a.all { x -> x in read } } }
+        ecuWatch.takeOnly(got, read, raw)
+        return fbkc != null && fbkc in got
+    }
+
+    /**
+     * [merged]: a short frame of the dyno over the last full read, see [DynoPoll.route]; [knockFresh]: with the FBKC in
+     * the frame itself.
+     */
+    private fun onSnapshot(raw0: EcuSnapshot, now: Long, merged: Boolean = false, knockFresh: Boolean = false) {
+        val route = DynoPoll.route(merged, knockFresh)
         // what the CAN bus broadcasts fills what the diagnostics did not give
         val raw = if (Repo.settings.canListen) kg.forester.sg.ssm.CanBroadcast.fill(raw0, now) else raw0
         // the own CAN channels heard on the same bus: read like the ticked parameters (a CANable session has them already)
@@ -1073,14 +1211,19 @@ class EcuService : Service() {
             SsmTrace.log("MAF %.2f g/s at %s rpm is impossible, ignored".format(read.mafGs, read.rpm))
         }
         Repo.live.value = snap
+        sampleGaps.tick(android.os.SystemClock.elapsedRealtime())
         addHistory(snap)
-        battery.process(snap)
+        if (route.rules) battery.process(snap)
         // the Link demo's made-up drive is no trip of this car (as the regular demo's isn't)
         if (!Repo.linkDemo.value) tracker.process(snap, Repo.gps.value) // first: a new trip clears the knock events
-        kg.forester.sg.data.Scales.process(snap)
-        knock.process(snap)
-        extras(snap, now)
-        if (Repo.settings.logEnabled && (snap.rpm ?: 0) > 0 && !Repo.linkDemo.value) {
+        if (route.scales) kg.forester.sg.data.Scales.process(snap)
+        // a merged frame's MAF and timing are from the last full read: a load from them with the fresh rpm would put a
+        // full-throttle knock down as part throttle
+        if (route.knock) knock.process(if (merged) snap.copy(mafGs = null, timingDeg = null) else snap)
+        extras(snap, now, route.rules)
+        // merged rows stay out of the log: old values with a new time. DynoStore keeps the fast samples
+        if (merged) { /* the file goes on with the next full read */ }
+        else if (Repo.settings.logEnabled && (snap.rpm ?: 0) > 0 && !Repo.linkDemo.value) {
             // the ticked parameters are extra columns: a new file when the choice changes
             val extras = LogColumns.extras(Repo.rrPolled.value, guard.roleIds())
             if (logger != null && (logger?.extras != extras || logger?.columns?.map { it.key } != LogColumns.enabled().map { it.key })) {
@@ -1111,8 +1254,9 @@ class EcuService : Service() {
         // the gear guess picks its gearbox table by the car, the fuel count without a MAF its cylinders by the engine
         Gears.car = known
         FuelCalc.cylinders = (known?.let { kg.forester.sg.ssm.EngineId.fromCar(it) } ?: kg.forester.sg.ssm.EngineId.fromRomId(romId))?.cylinders ?: 4
-        val car = known ?: return
-        if (!s.car3dCustom) kg.forester.sg.ui.car3dFor(car)?.let { if (it != s.car3d) s.car3d = it }
+        // a sports ECU has no ROM to tell the car by, and says nothing against the model it has
+        if (romId != "LINK") kg.forester.sg.ui.car3dFromEcu(s.car3d, s.car3dCustom, known).let { if (it != s.car3d) s.car3d = it }
+        if (known == null) return
         Repo.carVersion.value++
     }
 
@@ -1147,8 +1291,9 @@ class EcuService : Service() {
     }
 
     /** Engine guard, G-meter, acceleration timer: everything that only reads the samples. */
-    private fun extras(snap: EcuSnapshot, now: Long) {
-        runCatching { guard.process(snap, Repo.tcu.value, now) }.onFailure { SsmTrace.log("guard: $it") }
+    private fun extras(snap: EcuSnapshot, now: Long, rules: Boolean = true) {
+        faultWatch.sample(snap.rpm, now)
+        runCatching { guard.process(snap, Repo.tcu.value, now, rules) }.onFailure { SsmTrace.log("guard: $it") }
         val s = Repo.settings
         if (s.feature("motion")) runCatching { Motion.process(snap, Repo.gps.value, now) }
         if (s.feature("perf")) runCatching { Perf.process(snap, Repo.gps.value, now) }.onFailure { SsmTrace.log("perf: $it") }
@@ -1177,6 +1322,7 @@ class EcuService : Service() {
         // the Link car is a car of its own: switching to it (or back to the stock ECU) starts its scales, usual boost
         // and idle history afresh, as another ROM does
         runCatching { carFromEcu("LINK") }
+        Repo.settings.carTurbo = kg.forester.sg.data.HomeLayout.carHasTurbo(false, false, true, Repo.settings.linkTurbo)
         // the untouched factory screen: the cards a Link fills, not the stock ECU's it leaves empty
         if (Repo.settings.homeTiles.isEmpty()) Repo.settings.homeTiles = kg.forester.sg.data.HomeLayout.linkDefault()
         ecuWatch.clear(); tcuWatch.clear()
@@ -1201,6 +1347,10 @@ class EcuService : Service() {
                 if (frames.isNotEmpty()) lastFrame = now
                 if (now - lastSample < 200) continue
                 lastSample = now
+                // a sports ECU says how many by itself, in its stream: no request
+                kg.forester.sg.data.CanEcu.values()["${kg.forester.sg.data.CanEcu.PREFIX}FAULTS"]?.toInt()?.let { n ->
+                    if (Repo.checkEngine.value?.engine != n) Repo.checkEngine.value = CheckEngine(engine = n)
+                }
                 if (now - lastFrame > 3000) {
                     Repo.link.value = LinkState.NO_ECU
                     Repo.linkMessage.value = "CANable на связи, но шина молчит. Зажигание включено? Скорость $kbit кбит та же, что в настройках CAN у ЭБУ?" +
@@ -1213,7 +1363,7 @@ class EcuService : Service() {
                 link.limits(now).takeIf { it != limitsLogged }?.let { limitsLogged = it; if (it.isNotEmpty()) SsmTrace.log("Link limits: ${it.joinToString()}") }
                 Repo.link.value = LinkState.CONNECTED
                 Repo.linkMessage.value = if (id != null) "Link (${link.format?.title}, ID %d) · CANable %d кбит".format(id, kbit)
-                    else "CANable: на шине ${kg.forester.sg.ssm.CanMonitor.idsSeen(now)} ID, поток Link (Dash2Pro или Generic Dash) не найден. Что идёт по CAN: Настройки, Авто и адаптер"
+                    else "CANable: на шине ${kg.forester.sg.ssm.CanMonitor.idsSeen(now)} ID, поток Link (Dash2Pro или Generic Dash) не найден. Что идёт по CAN: Настройки, Машина и адаптер"
                 Repo.rrAvailable.value = kg.forester.sg.data.CanEcu.params()
                 Repo.rrPolled.value = Repo.rrAvailable.value
                 Repo.rrValues.value = kg.forester.sg.data.CanEcu.values(now)
@@ -1236,6 +1386,9 @@ class EcuService : Service() {
             if (EcuLink.mutex.withLock { runCatching { obd.init() }.getOrDefault(false) } != true) return false
             EcuLink.obd = obd
             ecuWatch.clear(); tcuWatch.clear()
+            // a new connection takes up what the last one learned, before anything watches obdMode (CarKind writes it once it
+            // knows the car is another make)
+            Repo.settings.updateOtherTurbo { it.connected() }
             Repo.obdMode.value = true
             Repo.ecuInit.value = null; Repo.ecuInitRaw.value = null
             Repo.tcuStatus.value = "АКПП: недоступна в режиме OBD-II"
@@ -1243,7 +1396,7 @@ class EcuService : Service() {
             Repo.linkMessage.value = "OBD-II · ${link.name}: основные параметры (SSM не ответил)"
             // the VIN once: the make for the trouble codes and OBDb, the car for the header
             val vin = EcuLink.mutex.withLock { runCatching { obd.vin() }.getOrNull() }
-            SsmTrace.log("VIN (OBD 09 02): ${vin ?: "—"}")
+            SsmTrace.log(if (vin != null) "VIN read ok, ${vin.length} bytes (OBD 09 02)" else "VIN read failed (OBD 09 02)")
             // a Subaru that has spoken SSM on this app before, caught by the K-line OBD try just as the ignition came on:
             // SSM gives it all, so back to it (one older than SSM2 has never answered it and stays here)
             if (link is kg.forester.sg.ssm.KLineObd && vin != null && Repo.settings.lastRomId.isNotEmpty() &&
@@ -1252,7 +1405,7 @@ class EcuService : Service() {
                 return true
             }
             if (vin != null) Repo.vin.value = vin
-            // the unit's own name and calibration (mode 09), for Настройки → Основные instead of the SSM ids
+            // the unit's own name and calibration (mode 09), for Настройки → Система instead of the SSM ids
             val ecuIds = EcuLink.mutex.withLock { runCatching { obd.ecuIds() }.getOrNull() }
             SsmTrace.log("ECU (OBD 09 0A/04): ${ecuIds ?: "—"}")
             Repo.obdEcu.value = ecuIds.orEmpty()
@@ -1261,6 +1414,8 @@ class EcuService : Service() {
             Repo.pollAddresses.value = obd.polledCount
             var failures = 0
             SsmTrace.polling = true
+            Repo.checkEngine.value = null
+            codeWatch.newConnection(System.currentTimeMillis())
             while (scope.isActive && failures < 5 && !Repo.settings.demo && SensorBoxLink.ecuLease?.permitted != false) {
                 val now = System.currentTimeMillis()
                 // a set downloaded or switched on while connected
@@ -1285,6 +1440,11 @@ class EcuService : Service() {
                 if (obdb != null) EcuLink.mutex.withLock { runCatching { obdb?.poll(link, now) }.onFailure { SsmTrace.log("OBDb: $it") } }
                 Repo.rrValues.value = obd.extraValues() + (obdb?.values() ?: emptyMap())
                 onSnapshot(snap, now)
+                if (codeWatch.due(now)) {
+                    // mode 01 PID 01: one request, the lamp and the stored codes' count
+                    codeWatch.done(now)
+                    EcuLink.mutex.withLock { runCatching { obd.readiness() }.getOrNull() }?.let { Repo.checkEngine.value = CheckEngine(it.dtcCount, 0, it.mil) }
+                }
                 // a fast CAN adapter would go round 100 times a second: 5 a second is plenty
                 delay((200 - (System.currentTimeMillis() - now)).coerceAtLeast(0))
             }
@@ -1361,6 +1521,15 @@ class EcuService : Service() {
         private fun defs() = RomRaider.load(this@EcuService) +
             if (tcu) emptyList() else kg.forester.sg.data.CustomParams.list().map { it.toParam() }
 
+        /** The CarBerry's own VE ticked once by itself, at a connection or at the profile's choice; if unticked, it stays so. */
+        private fun tickVe() {
+            val s = Repo.settings
+            if (!tcu && !s.carberryVeTicked && avail.any { it.id == RomRaider.CARBERRY_VE }) {
+                s.carberryVeTicked = true
+                s.watchIds = s.watchIds + RomRaider.CARBERRY_VE
+            }
+        }
+
         fun setup(init: EcuInit) {
             all = defs()
             profile = Repo.settings.loggerProfile
@@ -1369,6 +1538,7 @@ class EcuService : Service() {
             custom = Repo.customVersion.value
             defsSeen = Repo.defsVersion.value
             if (tcu) tcuAvail = avail else ecuAvail = avail
+            tickVe()
             SsmTrace.log("RomRaider: ${avail.size} parameters for ${if (tcu) "TCU" else "ECU"} ROM ${init.romId}")
             version = -1
             params = emptyList()
@@ -1410,7 +1580,7 @@ class EcuService : Service() {
                 custom = Repo.customVersion.value
                 defsSeen = Repo.defsVersion.value
                 all = defs()
-                init?.let { avail = RomRaider.available(this@EcuService, it, tcu, profile); if (tcu) tcuAvail = avail else ecuAvail = avail }
+                init?.let { avail = RomRaider.available(this@EcuService, it, tcu, profile); if (tcu) tcuAvail = avail else ecuAvail = avail; tickVe() }
                 version = -1
             }
             if (version == Repo.watchVersion.value && internal == Repo.internalWatch.value) return false
@@ -1443,6 +1613,19 @@ class EcuService : Service() {
         fun take(read: IntArray, raw: ByteArray) {
             if (params.isEmpty()) return
             Repo.rrValues.value = Repo.rrValues.value + RomRaider.decode(params, read, raw, all)
+        }
+
+        /** The addresses of [list], if all of it is watched and has answered in a read: safe for a stream or a short list. */
+        fun proven(list: List<RrParam>): IntArray {
+            if (!answers) return IntArray(0)
+            val out = RomRaider.readList(list.filter { it in params }, all)
+            return if (out.all { it in addrs }) out else IntArray(0)
+        }
+
+        /** Only the values of [list] out of a read that has their addresses. */
+        fun takeOnly(list: List<RrParam>, read: IntArray, raw: ByteArray) {
+            if (list.isEmpty()) return
+            Repo.rrValues.value = Repo.rrValues.value + RomRaider.decode(list, read, raw, all)
         }
 
         /** The unit keeps refusing the request: keep only the parameters that answer on their own. */
@@ -1498,28 +1681,85 @@ class EcuService : Service() {
             val p = EcuLink.mutex.withLock { client.read(intArrayOf(0xDA, 0xDB, 0xDC)) }
             if (p != null && p.size == 3) {
                 val at = ((p[0].toInt() and 0xFF) shl 16) or ((p[1].toInt() and 0xFF) shl 8) or (p[2].toInt() and 0xFF)
-                val raw = EcuLink.mutex.withLock { client.read(IntArray(17) { at + it }) }
+                val raw = EcuLink.mutex.withLock { SsmTrace.muted { client.read(IntArray(17) { at + it }) } }
                 val vin = raw?.map { (it.toInt() and 0xFF).toChar() }?.joinToString("")?.trim()
                 if (vin != null && vin.length == 17 && vin.all { it.isLetterOrDigit() }) Repo.vin.value = vin
-                SsmTrace.log("VIN: ${vin ?: "—"}")
+                SsmTrace.log(if (vin != null) "VIN read ok, ${vin.length} bytes" else "VIN read failed")
             }
         }
         // on CAN the same unit also answers standard OBD-II: one request (mode 09 PID 02) for a VIN SSM did not give
         if (Repo.vin.value.isNullOrEmpty() && client.transport.isCan) {
-            val r = EcuLink.mutex.withLock { runCatching { client.transport.exchange(SsmClient.ECU, byteArrayOf(0x09, 0x02)) }.getOrNull() }
+            val r = EcuLink.mutex.withLock { SsmTrace.muted { runCatching { client.transport.exchange(SsmClient.ECU, byteArrayOf(0x09, 0x02)) }.getOrNull() } }
             val vin = r?.takeIf { it.size > 3 && it[0] == 0x49.toByte() && it[1] == 0x02.toByte() }?.let { Obd2.vinOf(it.copyOfRange(3, it.size)) }
-            SsmTrace.log("VIN (OBD 09 02): ${vin ?: "—"}")
+            SsmTrace.log(if (vin != null) "VIN read ok, ${vin.length} bytes (OBD 09 02)" else "VIN read failed (OBD 09 02)")
             if (vin != null) Repo.vin.value = vin
         }
         if (init.supports(19, 5)) {
             val t = EcuLink.mutex.withLock { client.read(intArrayOf(0x61)) }
+            SsmTrace.log("diag: 0x61=${t?.firstOrNull()?.let { "%02X".format(it.toInt() and 0xFF) } ?: "—"}", keep = true)
             if (t != null && t.isNotEmpty() && (t[0].toInt() shr 5) and 1 == 1) {
                 Alerts.raise(
-                    "testMode", "Замкнуты разъёмы тест-режима (зелёные, под рулём): «чек» мигает и ЭБУ может записать " +
-                        "ложные ошибки. Разъедините их, если не проводите диагностику", Alerts.Level.WARN, 60 * 60_000L,
+                    "testMode", "ЭБУ видит замкнутые разъёмы тест-режима (зелёные, под рулём): «чек» мигает и ЭБУ может записать " +
+                        "ложные ошибки. Разъедините их, если не проводите диагностику. Тот же признак может дать кабель, " +
+                        "вставленный в разъём до включения зажигания: попробуйте вынуть его и включить зажигание ещё раз", Alerts.Level.WARN, 60 * 60_000L,
                 )
             }
         }
+    }
+
+    /**
+     * Once per ROM id (kept in the settings, so a reconnect costs nothing): the ROM's own IAM constants for the guard
+     * and, where the ROM has both P90 and E31, the two compared in the trace to see which is right. Nothing of this is
+     * polled. The constants are read one by one and the first refusal stops it and counts a failed connection; after 3
+     * of them the ROM is left alone for 30 days ([EngineGuard.shouldReadRomIam]), a success clears the count.
+     */
+    private suspend fun readRomIam(client: SsmClient, init: EcuInit) {
+        val rom = init.romId.uppercase()
+        val s = Repo.settings
+        val cache = runCatching { JSONObject(s.romIamCache) }.getOrDefault(JSONObject())
+        val e = cache.optJSONObject(rom) ?: JSONObject().also { cache.put(rom, it) }
+        val all = RomRaider.available(this, init, false)
+        suspend fun value(p: RrParam): Double? {
+            val raw = EcuLink.mutex.withLock { runCatching { client.read(p.addresses) }.getOrNull() } ?: return null
+            return RomRaider.decode(listOf(p), p.addresses, raw, all)[p.id]
+        }
+        fun f(k: String) = if (e.has(k)) e.getDouble(k).toFloat() else null
+        val consts = RomRaider.romConstants(rom)
+        val now = System.currentTimeMillis()
+        if (consts.isNotEmpty() && (e.has("IAM_INIT") || EngineGuard.shouldReadRomIam(e.optInt("failures"), e.optLong("lastTry"), now))) {
+            if (!e.has("IAM_INIT")) {
+                val got = LinkedHashMap<String, Float>()
+                for (p in consts) { got[p.id] = value(p)?.toFloat() ?: break }
+                val ok = got.size == consts.size
+                if (ok) { got.forEach { (k, v) -> e.put(k, v.toDouble()) }; e.remove("failures") }
+                else { e.put("failures", e.optInt("failures") + 1); e.put("lastTry", now) }
+                SsmTrace.log("rom iam $rom: $got" + if (ok) "" else " refused (${e.optInt("failures")})", keep = true)
+                s.romIamCache = cache.toString()
+            }
+            if (e.has("IAM_INIT")) guard.romIam = EngineGuard.RomIam(f("IAM_INIT"), f("IAM_CUT"), f("IAM_RESTORE"), f("IAM_STEP")).checked()
+        }
+        val both = listOf("P90", "E31").mapNotNull { id -> all.firstOrNull { it.id == id } }
+        if (both.size == 2 && !e.optBoolean("compared")) {
+            val v = both.map { p -> value(p)?.toFloat()?.let { EngineGuard.iamOf(it, p.units) } }
+            SsmTrace.log("iam $rom: P90 ${v[0]}, E31 ${v[1]}" + if (v[0] != null && v[1] != null && kotlin.math.abs(v[0]!! - v[1]!!) >= 0.02f) " DIFFER" else "", keep = true)
+            e.put("compared", true)
+            s.romIamCache = cache.toString()
+        }
+    }
+
+    /**
+     * The rare look at the trouble codes behind the check-engine icon (see [CodeWatch]), between two regular reads. A unit
+     * that gives no answer keeps its last count: one lost request must not put the icon out.
+     */
+    private suspend fun checkCodes(now: Long) {
+        if (!codeWatch.due(now)) return
+        codeWatch.done(now)
+        val ecu = Repo.ecuInit.value?.let { kg.forester.sg.ui.DtcRepo.readCurrent(kg.forester.sg.ui.DtcRepo.defs(this, it), SsmClient.ECU) }
+        val tcu = if (Repo.settings.gearbox == "mt") 0
+            else Repo.tcuInit.value?.let { kg.forester.sg.ui.DtcRepo.readCurrent(kg.forester.sg.ui.DtcRepo.defs(this, it), SsmClient.TCU) }
+        if (ecu == null && tcu == null) return
+        val old = Repo.checkEngine.value
+        Repo.checkEngine.value = CheckEngine(ecu ?: old?.engine ?: 0, tcu ?: old?.gearbox ?: 0)
     }
 
     /** The transmission unit answers at 0x18 on the same K-line; poll it every few ECU cycles. */
@@ -1557,9 +1797,7 @@ class EcuService : Service() {
         tcuWatch.poll(client)
         val t = lockUp(TcuParams.decode(addrs, raw, now), Repo.live.value.rpm, now)
         Repo.tcu.value = t
-        tcuHistory.addLast(t)
-        while (tcuHistory.size > 120) tcuHistory.removeFirst()
-        Repo.tcuHistory.value = tcuHistory.toList()
+        Repo.tcuHistory.add(t)
     }
 
     private var lockSlipSinceMs = 0L
@@ -1604,14 +1842,32 @@ class EcuService : Service() {
     @Volatile private var gpsStartedMs = 0L
     private var gpsShownMs = 0L
 
+    /** The fixes come here, not on the main thread: there a busy screen held them up and the other way round. */
+    private var gpsThread: android.os.HandlerThread? = null
+    private val gpsLooper: Looper
+        @Synchronized get() = (gpsThread ?: android.os.HandlerThread("gps").also { it.start(); gpsThread = it }).looper
+
+    // for a log sent from a car whose map goes in steps: how the receiver takes its fixes, how they get here, what it is
+    private val gpsTaken = GapLog("gps taken", 1500) { SsmTrace.gap(it) }
+    private val gpsArrived = GapLog("gps arrived", 1500) { SsmTrace.gap(it) }
+    private val sampleGaps = GapLog("ecu sample", 500) { SsmTrace.gap(it) }
+    private var gpsSourceLogged = ""
+
     private val gpsListener = object : LocationListener {
         override fun onLocationChanged(l: Location) {
             val now = System.currentTimeMillis()
             lastGpsFixMs = now
             Repo.gpsStatus.value = ""
-            // the time the fix was taken, not when it got here: the main thread hands it over 50–300 ms late, unevenly,
-            // and the run timer counts between fixes
+            gpsTaken.tick(l.elapsedRealtimeNanos / 1_000_000)
+            gpsArrived.tick(android.os.SystemClock.elapsedRealtime())
+            // the time the fix was taken, not when it got here: it gets here 50–300 ms late, unevenly, and the run timer
+            // counts between fixes
             val age = (android.os.SystemClock.elapsedRealtimeNanos() - l.elapsedRealtimeNanos) / 1_000_000
+            val source = "${l.provider}, speed ${l.hasSpeed()}, bearing ${l.hasBearing()}, late ${age > 1000}"
+            if (source != gpsSourceLogged) {
+                gpsSourceLogged = source
+                SsmTrace.gap("gps fix from $source" + if (age > 1000) ", age ${age.coerceIn(0L, 3000L)} ms" else "")
+            }
             val fix = GpsFix(
                 speedKmh = if (l.hasSpeed()) l.speed * 3.6f else 0f,
                 altitudeM = l.altitude,
@@ -1619,7 +1875,8 @@ class EcuService : Service() {
                 satellites = (l.extras?.getInt("satellites") ?: 0).takeIf { it > 0 } ?: gpsSats,
                 timeMs = now - age.coerceIn(0L, 3000L),
                 bearing = if (l.hasBearing()) l.bearing else null,
-                lat = l.latitude, lon = l.longitude, cn0 = gpsCn0,
+                lat = l.latitude, lon = l.longitude, cn0 = gpsCn0, speedKnown = l.hasSpeed(),
+                arrivedMs = android.os.SystemClock.elapsedRealtime(),
             )
             // every fix to the run timer; the screens a couple of times a second (a 10 Hz receiver would redraw them
             // ten times a second)
@@ -1637,9 +1894,9 @@ class EcuService : Service() {
     private val netListener = object : LocationListener {
         override fun onLocationChanged(l: Location) {
             if (System.currentTimeMillis() - lastGpsFixMs < 30_000) return
-            Repo.gps.value = GpsFix(
-                speedKmh = 0f, altitudeM = l.altitude, accuracyM = if (l.hasAccuracy()) maxOf(l.accuracy, 50f) else 99f,
-                satellites = gpsSats, timeMs = System.currentTimeMillis(), bearing = null, lat = l.latitude, lon = l.longitude,
+            Repo.gps.value = GpsFix.fromNetwork(
+                l.latitude, l.longitude, l.altitude, l.accuracy, l.hasAccuracy(), gpsSats,
+                System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime(),
             )
         }
 
@@ -1673,15 +1930,25 @@ class EcuService : Service() {
         runCatching { lm.unregisterGnssStatusCallback(gnssCallback) }
         runCatching {
             // as often as the receiver gives (most 1 Hz, some 5–10 Hz): the run timer goes by GPS from 4 Hz on
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 100L, 0f, gpsListener, Looper.getMainLooper())
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 100L, 0f, gpsListener, gpsLooper)
         }.onFailure { SsmTrace.log("gps: $it") }
-        runCatching { lm.registerGnssStatusCallback(gnssCallback, android.os.Handler(Looper.getMainLooper())) }
+        runCatching { lm.registerGnssStatusCallback(gnssCallback, android.os.Handler(gpsLooper)) }
         if (lm.allProviders.contains(LocationManager.NETWORK_PROVIDER)) runCatching {
-            lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 10_000L, 0f, netListener, Looper.getMainLooper())
+            lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 10_000L, 0f, netListener, gpsLooper)
         }
         gpsStartedMs = System.currentTimeMillis()
         gpsCheck()
         SsmTrace.log("gps started, providers ${lm.allProviders}, enabled ${lm.getProviders(true)}")
+    }
+
+    @Synchronized
+    private fun stopGps() {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        runCatching { lm.removeUpdates(gpsListener) }
+        runCatching { lm.removeUpdates(netListener) }
+        runCatching { lm.unregisterGnssStatusCallback(gnssCallback) }
+        gpsThread?.quitSafely()
+        gpsThread = null
     }
 
     /** Why there is no position, for the GPS card and the mini-map. */
@@ -1750,7 +2017,7 @@ class EcuService : Service() {
         lastNotifMs = now
         val t = Repo.trip.value
         val text = if (Repo.adapterReleased.value) "Адаптер отпущен для другой программы"
-        else t.instPer100?.let { "%.1f л/100 км".format(it) } ?: "%.1f л/ч".format(t.instLh)
+        else t.instPer100?.let { kg.forester.sg.data.DistanceUnits.consumptionText(it) } ?: "%.1f л/ч".format(t.instLh)
         getSystemService(NotificationManager::class.java).notify(1, buildNotification(text))
     }
 
@@ -1761,7 +2028,7 @@ class EcuService : Service() {
         @Suppress("DEPRECATION")
         return (if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL) else Notification.Builder(this))
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(text)
+            .setContentText(kg.forester.sg.data.tr(text))
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(pi)
             .setOngoing(true)
@@ -1769,13 +2036,13 @@ class EcuService : Service() {
                 // another diagnostic app (BTSSM…) wants the same adapter: let it go from here, and take it back
                 if (!Repo.settings.demo) {
                     val (label, action) = if (Repo.adapterReleased.value) "Подключиться" to ACTION_RECONNECT else "Отпустить адаптер" to ACTION_RELEASE
-                    addAction(Notification.Action.Builder(null, label, PendingIntent.getService(
+                    addAction(Notification.Action.Builder(null, kg.forester.sg.data.tr(label), PendingIntent.getService(
                         this@EcuService, 2, Intent(this@EcuService, EcuService::class.java).setAction(action),
                         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
                     )).build())
                 }
             }
-            .addAction(Notification.Action.Builder(null, "Выход", PendingIntent.getService(
+            .addAction(Notification.Action.Builder(null, kg.forester.sg.data.I18n.pick("Выход", "Exit"), PendingIntent.getService(
                 this, 1, Intent(this, EcuService::class.java).setAction(ACTION_EXIT), PendingIntent.FLAG_IMMUTABLE
             )).build())
             .build()

@@ -19,11 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -57,7 +53,7 @@ import kg.forester.sg.service.DisplayEngine
 import kg.forester.sg.service.RelayEngine
 
 /*
- * Настройки → Доп датчики → «Дисплеи»: a small screen wired to the box (an OLED, a text LCD, four digits) showing what
+ * Настройки → Датчики и экраны → «Дисплеи»: a small screen wired to the box (an OLED, a text LCD, four digits) showing what
  * the driver picks. The preview here draws with the box's own font, so what is on the head unit is what the car gets.
  */
 
@@ -97,7 +93,7 @@ fun DisplaysSection(selected: String?, onSelect: (String) -> Unit) {
             val (txt, col) = dispStatus(d)
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (sel) C.Purple.copy(alpha = 0.22f) else C.CardHi)
-                    .border(1.dp, if (sel) C.Purple else C.Border, RoundedCornerShape(10.dp)).clickable { onSelect("disp:${d.id}") }
+                    .border(1.dp, if (sel) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(10.dp)).clickable { onSelect("disp:${d.id}") }
                     .heightIn(min = 52.dp).padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -122,7 +118,7 @@ fun DisplaysSection(selected: String?, onSelect: (String) -> Unit) {
 fun DisplayNew(board: BoxBoard, onCreated: (Int) -> Unit) {
     Displays.list.collectAsState().value
     T("Какой дисплей подключаете?", 18.sp, weight = FontWeight.SemiBold)
-    T("Плата рисует на нём то, что выберете: температуры, давление, напряжение. Пропадёт связь с магнитолой, на экране будет НЕТ СВЯЗИ вместо старых цифр", 12.sp, C.Sub)
+    SettingHint("Плата рисует на нём то, что выберете: температуры, давление, напряжение. Пропадёт связь с магнитолой, на экране будет НЕТ СВЯЗИ вместо старых цифр")
     Spacer(Modifier.height(10.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         DispKind.entries.forEach { k ->
@@ -152,7 +148,7 @@ fun DisplayNew(board: BoxBoard, onCreated: (Int) -> Unit) {
     Spacer(Modifier.height(10.dp))
     Hint(Lucide.Lightbulb, "Можно поставить сразу четыре: OLED и текстовый LCD на одних проводах I2C, цифровой TM1637 и цветной на SPI")
     Hint(Lucide.Info, "Цветной AMOLED с ESP32-S3 (LilyGO, Waveshare, круглые) к этой плате не подключается: он идёт отдельным устройством в USB магнитолы. " +
-        "Настройки, вкладка «Цветной экран»")
+        "Настройки, Датчики и экраны, Цветной экран")
 }
 
 /** One display: what it shows (a preview drawn with the box's font), what goes on each line, how to wire it. */
@@ -250,7 +246,7 @@ fun DisplayDetails(board: BoxBoard, id: Int, onGone: () -> Unit) {
             }
         }
         if (picks.any { it.second.isEmpty() }) T("Свободных пинов не хватает: уберите один из выходов", 12.sp, C.Orange)
-        if (d.kind.colour) T("SCK (${board.sck}) и MOSI (${board.mosi}) у шины SPI свои, RES к пину RST платы", 12.sp, C.Sub)
+        if (d.kind.colour) SettingHint("SCK (${board.sck}) и MOSI (${board.mosi}) у шины SPI свои, RES к пину RST платы")
     }
     if (d.kind == DispKind.TM1637) {
         Spacer(Modifier.height(8.dp))
@@ -295,7 +291,7 @@ private fun ItemPicker(src: String?, @Suppress("UNUSED_PARAMETER") now: Long, on
     val live = s?.let { RelayEngine.value(it.id) }
     Box {
         Chip(s?.let { it.title + (live?.let { v -> " · " + kg.forester.sg.service.RuleRunner.num(it.id, v) } ?: "") } ?: "пусто", s != null, { open = true }, Lucide.ChevronDown)
-        DropdownMenu(open, { open = false }) {
+        CarDropdownMenu(open, { open = false }) {
             DropdownMenuItem(text = { Text("Ничего (пустая строка)") }, onClick = { open = false; onPick("") })
             RuleSources.all().forEach { r -> DropdownMenuItem(text = { Text(r.title) }, onClick = { open = false; onPick(r.id) }) }
         }

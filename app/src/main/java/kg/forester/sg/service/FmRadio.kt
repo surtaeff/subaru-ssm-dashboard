@@ -1,6 +1,10 @@
 package kg.forester.sg.service
 
 import android.content.Context
+import kg.forester.sg.service.audio.AudioPlatforms
+import kg.forester.sg.service.audio.RadioBackend
+import kg.forester.sg.service.audio.RadioCap
+import kg.forester.sg.service.audio.settled
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -13,7 +17,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 
 /**
- * The driver's own FM stations and tuning to them on an FYT unit, for the player and the voice alike.
+ * The driver's own FM stations and tuning to them through the platform's tuner, for the player and the voice alike.
  *
  * The stations are ours (frequency, band, name in our prefs) and are tuned by frequency. The stock radio's
  * preset slots are not used for them: after its autoscan a slot holds another station, so a station picked by
@@ -31,6 +35,8 @@ object FmRadio {
 
     private var app: Context? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private fun radio() = app?.let { AudioPlatforms.current(it).radio }
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("radio", Context.MODE_PRIVATE)
 
@@ -85,89 +91,53 @@ object FmRadio {
 
     /** ⏮ ⏭ (the player, the wheel, the voice): through ours when there are any, else the tuner's presets. */
     fun step(next: Boolean) {
-        val s = neighbour(Fyt.radio.value.freq, next)
-        if (s != null) tune(s.freq, s.band) else Fyt.radioPreset(next)
+        val radio = radio() ?: return
+        val s = neighbour(radio.state.value.freq, next)
+        if (s != null) tune(s.freq, s.band) else if (RadioCap.PRESET in radio.caps) Fyt.radioPreset(next) else if (RadioCap.SEEK in radio.caps) radio.seek(next)
     }
 
+    /** The last tune didn't reach the station (the screen says so instead of looking as if it had). */
+    var failed by mutableStateOf(false)
+        private set
+
     /**
-     * To [target] (FM in 10 kHz units, AM in kHz): the radio made the source first, out of AM for an FM station,
-     * then the frequency command; no reaction at all → the stock radio app is started (it relays our commands on
-     * radio type 3 / 4) and the command sent again; a tuner that still doesn't take a frequency gets there seek
-     * by seek.
+     * To [target] (FM in 10 kHz units, AM in kHz): the radio made the source first, out of AM for an FM station, then
+     * the platform's tuning. True only when the tuner got there; false at once if one is under way or none is there.
      */
-    fun tune(target: Int, band: Int = 65536) {
-        if (tuning) return
+    suspend fun tuneNow(target: Int, band: Int = 65536): Boolean {
+        if (tuning) return false
+        val radio = radio()?.takeIf { RadioCap.TUNE in it.caps } ?: return false
         tuning = true
-        scope.launch {
-            radioOn()
-            val fmTarget = target >= 8750
-            if (fmTarget && !(Fyt.radio.value.isFm || Fyt.radio.value.band == -1)) toFm(band)
-            val tol = if (fmTarget) 15 else 9
-            if (near(target, tol)) return@launch
-            val f0 = Fyt.radio.value.freq
-            if (direct(target, tol)) return@launch
-            // not a single update: the command went nowhere
-            if (Fyt.radio.value.freq == f0 && Fyt.wakeRadioApp()) {
-                withTimeoutOrNull(5000) { Fyt.appId.first { it == 1 } }
-                // it comes up on its own last station: let it, then ours
-                settled(Fyt.radio.value.freq, 1500)
-                if (near(target, tol) || direct(target, tol)) return@launch
-            }
-            seekTo(target, tol)
-        }.invokeOnCompletion { tuning = false }
-    }
-
-    private fun near(target: Int, tol: Int) = abs(Fyt.radio.value.freq - target) <= tol
-
-    /**
-     * The frequency command in each of [Fyt.TUNE_MODES], the one that worked on this unit last first (it is
-     * remembered); true when the tuner got there.
-     */
-    private suspend fun direct(target: Int, tol: Int): Boolean {
-        val sp = app?.let { prefs(it) }
-        val learned = sp?.getInt("tuneMode", -1) ?: -1
-        val modes = (listOf(learned).filter { it in Fyt.TUNE_MODES } + Fyt.TUNE_MODES.toList()).distinct()
-        for (mode in modes) {
-            Fyt.radioTune(target, mode)
-            if (withTimeoutOrNull(2500) { Fyt.radio.first { abs(it.freq - target) <= tol } } == null) continue
-            settled(Fyt.radio.value.freq, 400)
-            if (mode != learned) sp?.edit()?.putInt("tuneMode", mode)?.apply()
-            return near(target, tol)
+        failed = false
+        try {
+            radio.on()
+            if (target >= 8750 && !(radio.state.value.isFm || radio.state.value.band == -1)) toFm(radio, band)
+            val ok = radio.tune(target)
+            failed = !ok
+            return ok
+        } finally {
+            tuning = false
         }
-        return false
     }
+
+    fun tune(target: Int, band: Int = 65536) { scope.launch { tuneNow(target, band) } }
 
     /** Out of AM for an FM station: the band by its number, else the other builds' "FM" (-3), else the band key. */
-    private suspend fun toFm(band: Int) {
+    private suspend fun toFm(radio: RadioBackend, band: Int) {
         for (b in listOf(if (band >= 65536) band else 65536, -3, -1)) {
-            Fyt.radioBand(b)
-            if (withTimeoutOrNull(1500) { Fyt.radio.first { it.isFm } } != null) break
+            radio.band(b)
+            if (withTimeoutOrNull(1500) { radio.state.first { it.isFm } } != null) break
         }
-        settled(Fyt.radio.value.freq, 600)
-    }
-
-    /** Station by station towards [target], for a tuner without the frequency command. */
-    private suspend fun seekTo(target: Int, tol: Int) {
-        for (i in 0 until 12) {
-            val cur = Fyt.radio.value.freq
-            if (abs(cur - target) <= tol) break
-            val up = target > cur
-            Fyt.radioSeek(up, ensure = false)
-            val first = withTimeoutOrNull(8000) { Fyt.radio.first { it.freq != cur } }?.freq ?: break
-            // the tuner reports the frequencies it passes while seeking; the next seek sent before it stops
-            // cancelled this one, and the tuner went back to where it started
-            val now = settled(first, 900)
-            // past the target, or round the end of the band: stop at this station
-            if ((up && (now >= target - tol || now < cur)) || (!up && (now <= target + tol || now > cur))) break
-        }
+        radio.state.settled(radio.state.value.freq, 600)
     }
 
     /** The stock radio's preset [p] (1..6) by its slot: only for a slot we have never seen the frequency of. */
     fun toPreset(p: Int) {
         if (tuning) return
+        val radio = radio()?.takeIf { RadioCap.PRESET in it.caps } ?: return
         tuning = true
         scope.launch {
-            radioOn()
+            radio.on()
             if (Fyt.radio.value.preset == p) return@launch
             // the preset itself; a unit that doesn't take that gets it step by step
             val f0 = Fyt.radio.value.freq
@@ -178,29 +148,8 @@ object FmRadio {
             repeat(if (fwd <= 3) fwd else 6 - fwd) {
                 val f = Fyt.radio.value.freq
                 Fyt.radioPreset(fwd <= 3, ensure = false)
-                withTimeoutOrNull(3000) { Fyt.radio.first { it.freq != f } }?.let { settled(it.freq, 400) }
+                withTimeoutOrNull(3000) { Fyt.radio.first { it.freq != f } }?.let { Fyt.radio.settled(it.freq, 400) }
             }
         }.invokeOnCompletion { tuning = false }
-    }
-
-    /**
-     * Makes the radio the source and waits for it: coming up, it tunes to its own last station, and a seek or
-     * preset sent before that was undone by it.
-     */
-    private suspend fun radioOn() {
-        if (Fyt.appId.value == 1 || Fyt.radioUnconfirmed) return
-        Fyt.ensureRadio()
-        // the source command, and the radio's activity when that alone didn't do (after 1.5 s)
-        withTimeoutOrNull(5000) { Fyt.appId.first { it == 1 } }
-        settled(Fyt.radio.value.freq, 1500)
-    }
-
-    /** The frequency once the tuner has stayed on it for [quietMs], starting from [from] (at most ~15 s). */
-    private suspend fun settled(from: Int, quietMs: Long): Int {
-        var f = from
-        repeat(15_000 / quietMs.toInt()) {
-            f = withTimeoutOrNull(quietMs) { Fyt.radio.first { it.freq != f } }?.freq ?: return f
-        }
-        return f
     }
 }

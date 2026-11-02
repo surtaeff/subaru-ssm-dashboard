@@ -13,6 +13,35 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sqrt
 
+/**
+ * The peak of a value per short slot over the last seconds, with no allocation per sample: the sensor runs at ~50 Hz.
+ * Written from the sensor's thread, read from the ECU's.
+ */
+class ShockHold {
+    private val slot = LongArray(SLOTS) { -1L }
+    private val peak = FloatArray(SLOTS)
+
+    @Synchronized
+    fun sample(tMs: Long, g: Float) {
+        val n = tMs / SLOT_MS
+        val i = (n % SLOTS).toInt()
+        if (slot[i] != n) { slot[i] = n; peak[i] = g } else if (g > peak[i]) peak[i] = g
+    }
+
+    /** The highest in the slots touching [fromMs]..[toMs], null when none has a sample. */
+    @Synchronized
+    fun peak(fromMs: Long, toMs: Long): Float? {
+        var best = -1f
+        for (i in 0 until SLOTS) if (slot[i] in (fromMs / SLOT_MS)..(toMs / SLOT_MS) && peak[i] > best) best = peak[i]
+        return best.takeIf { it >= 0f }
+    }
+
+    companion object {
+        const val SLOT_MS = 100L
+        const val SLOTS = 40
+    }
+}
+
 /** G-forces and tilt for the G-meter and the inclinometer. */
 data class MotionState(
     /** Sideways (+ = to the right) and along the car (+ = speeding up), in g. */
@@ -30,6 +59,9 @@ data class MotionState(
     val maxLat: Float = 0f,
     val maxAccel: Float = 0f,
     val maxBrake: Float = 0f,
+    /** The largest sideways G each way, for the G-force card. */
+    val maxLeft: Float = 0f,
+    val maxRight: Float = 0f,
 )
 
 /**
@@ -50,20 +82,43 @@ object Motion : SensorEventListener {
     private var distM = 0.0
     private var lastSnapMs = 0L
 
+    /** The sensor runs only with the G-meter and tilt feature on; call again when the feature changes. */
     fun start(ctx: Context) {
-        if (sm != null) return
         val m = ctx.getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return
-        sm = m
         val acc = m.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+        if (!Repo.settings.feature("motion")) {
+            stop()
+            if (!Repo.motion.value.hasSensor) Repo.motion.value = Repo.motion.value.copy(hasSensor = true)
+            return
+        }
+        if (sm != null) return
+        sm = m
         m.registerListener(this, acc, SensorManager.SENSOR_DELAY_GAME)
         zero = Repo.settings.tiltZero.split(',').mapNotNull { it.toFloatOrNull() }.takeIf { it.size == 3 }?.toFloatArray()
         tracker.start(zero)
         Repo.motion.value = Repo.motion.value.copy(hasSensor = true, calibrated = zero != null)
     }
 
+    fun stop() {
+        sm?.unregisterListener(this)
+        sm = null
+    }
+
     override fun onSensorChanged(ev: SensorEvent) {
         tracker.sample(ev.values, ev.timestamp)
+        // the raw reading along "down", gravity taken out: the smoothing above would flatten a jolt
+        val g = tracker.gravity ?: return
+        val len = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
+        if (len < 1f) return
+        val v = ev.values
+        val along = ((v[0] - g[0]) * g[0] + (v[1] - g[1]) * g[1] + (v[2] - g[2]) * g[2]) / len
+        shocks.sample(System.currentTimeMillis(), abs(along) / 9.81f)
     }
+
+    private val shocks = ShockHold()
+
+    /** The strongest vertical shock between these moments, g; null with no sensor running. */
+    fun shockG(fromMs: Long, toMs: Long): Float? = if (sm == null) null else shocks.peak(fromMs, toMs)
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
@@ -77,7 +132,7 @@ object Motion : SensorEventListener {
     }
 
     fun resetMax() {
-        Repo.motion.value = Repo.motion.value.copy(maxLat = 0f, maxAccel = 0f, maxBrake = 0f)
+        Repo.motion.value = Repo.motion.value.copy(maxLat = 0f, maxAccel = 0f, maxBrake = 0f, maxLeft = 0f, maxRight = 0f)
     }
 
     /** The car's axes in the sensor's frame from the calibration: up, forward (out of the screen's back), right. */
@@ -162,6 +217,8 @@ object Motion : SensorEventListener {
             maxLat = maxOf(st.maxLat, abs(lat ?: 0f)),
             maxAccel = maxOf(st.maxAccel, lon ?: 0f),
             maxBrake = maxOf(st.maxBrake, -(lon ?: 0f)),
+            maxLeft = maxOf(st.maxLeft, -(lat ?: 0f)),
+            maxRight = maxOf(st.maxRight, lat ?: 0f),
         )
     }
 

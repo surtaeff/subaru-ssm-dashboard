@@ -22,10 +22,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
@@ -77,7 +75,7 @@ import kg.forester.sg.data.WIRE_RED
 import java.util.Locale
 
 /**
- * Настройки → «Доп датчики»: the SensorBox (an Arduino with sensors on the head unit's USB). The left side is the
+ * Настройки → «Датчики и экраны»: the SensorBox (an Arduino with sensors on the head unit's USB). The left side is the
  * board and its inputs, the right side what the chosen input is for: a sensor from the examples, how to wire it
  * (a drawing of the real board with the pins to use), and its settings with the live reading.
  */
@@ -104,7 +102,7 @@ fun SensorBoxSettings() {
     var selected by remember { mutableStateOf<String?>(null) }
     fun go(s: BoxStep, sel: String? = null) { step = s; selected = sel }
     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
-        val leftW = if (maxWidth >= 1050.dp) 420.dp else 340.dp
+        val leftW = if (maxWidth >= 1050.dp) 420.dp else if (LocalCar.current.small) 380.dp else 340.dp
         Row(Modifier.fillMaxSize()) {
             Panel(Modifier.width(leftW).fillMaxHeight()) {
                 BoxHeader()
@@ -158,7 +156,7 @@ private fun UndoBar(m: Modifier) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        T(u.text, 14.sp, maxLines = 2, modifier = Modifier.widthIn(max = 420.dp))
+        T(u.text, 14.sp, maxLines = 2, modifier = Modifier.widthIn(max = roomFor(420.dp, 14f)))
         Spacer(Modifier.width(16.dp))
         Chip("Вернуть", true, { u.back(); undoState.value = null }, Lucide.Undo2)
     }
@@ -187,7 +185,7 @@ private fun BoxHeader() {
         Icon(icon, null, tint = color, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(10.dp))
         T(text, 14.sp, C.Text, FontWeight.SemiBold, maxLines = 2, modifier = Modifier.weight(1f))
-        if (demo) Chip("Выйти из демо", false, { Repo.settings.demo = false })
+        if (demo) Chip("Выйти", false, { Repo.settings.demo = false })
         else Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Switch(on, { SensorBox.setEnabled(it) }, colors = SwitchDefaults.colors(
                 checkedTrackColor = C.Purple, uncheckedTrackColor = C.CardHi, uncheckedThumbColor = C.Sub))
@@ -279,7 +277,7 @@ private fun BoxSteps(step: BoxStep, selected: String?, go: (BoxStep, String?) ->
 internal fun AddRow(title: String, sub: String, sel: Boolean, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(RoundedCornerShape(10.dp)).background(if (sel) C.Purple.copy(alpha = 0.22f) else C.CardHi)
-            .border(1.dp, if (sel) C.Purple else C.Border, RoundedCornerShape(10.dp)).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
+            .border(1.dp, if (sel) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(10.dp)).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Lucide.Plus, null, tint = C.Violet, modifier = Modifier.size(20.dp))
@@ -297,7 +295,7 @@ private fun InputRow(board: BoxBoard, input: String, s: BoxSlot?, r: kg.forester
     val bad = r?.problem != null
     Row(
         Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(shape).background(if (sel) C.Purple.copy(alpha = 0.22f) else C.CardHi)
-            .border(if (bad) 2.dp else 1.dp, if (bad) C.Orange else if (sel) C.Purple else C.Border, shape).clickable(onClick = onClick)
+            .border(if (bad) 2.dp else 1.dp, if (bad) C.Orange else if (sel) C.activeEdge(C.Purple) else C.Border, shape).clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -316,7 +314,7 @@ private fun InputRow(board: BoxBoard, input: String, s: BoxSlot?, r: kg.forester
             bad -> Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Lucide.TriangleAlert, null, tint = C.Orange, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                T(shortProblem(r!!.problem!!), 13.sp, C.Orange, maxLines = 2, modifier = Modifier.widthIn(max = 110.dp))
+                T(shortProblem(r!!.problem!!), 13.sp, C.Orange, maxLines = 2, modifier = Modifier.widthIn(max = roomFor(110.dp, 13f)))
             }
             else -> T("—", 15.sp, C.Sub)
         }
@@ -344,7 +342,7 @@ private fun BoardStep(onNext: () -> Unit) {
     val slots by SensorBox.slots.collectAsState()
     var confirm by remember { mutableStateOf<BoxBoard?>(null) }
     T("Какая у вас плата", 18.sp, weight = FontWeight.SemiBold)
-    T("От неё зависят входы и схемы подключения. Если плата уже на связи, она отмечена", 13.sp, C.Sub)
+    SettingHint("От неё зависят входы и схемы подключения. Если плата уже на связи, она отмечена")
     Spacer(Modifier.height(10.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         BoxBoard.entries.forEach { b ->
@@ -352,7 +350,7 @@ private fun BoardStep(onNext: () -> Unit) {
             val here = info?.takeIf { it.via != "демо" }?.board == b.id
             Column(
                 Modifier.width(250.dp).clip(RoundedCornerShape(14.dp)).background(if (sel) C.Purple.copy(alpha = 0.22f) else C.CardHi)
-                    .border(if (sel) 2.dp else 1.dp, if (sel) C.Purple else C.Border, RoundedCornerShape(14.dp))
+                    .border(if (sel) 2.dp else 1.dp, if (sel) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(14.dp))
                     .clickable {
                         if (b == board) return@clickable
                         // the inputs the new board has not got would lose their sensors: ask first
@@ -360,7 +358,11 @@ private fun BoardStep(onNext: () -> Unit) {
                     }.padding(10.dp),
             ) {
                 val ctx = androidx.compose.ui.platform.LocalContext.current
-                if (hasModel3D(ctx, board3d(b))) Model3D(board3d(b), Modifier.fillMaxWidth().height(120.dp))
+                val hasModel by androidx.compose.runtime.produceState<Boolean?>(null, b) {
+                    value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { hasModel3D(ctx, board3d(b)) }
+                }
+                if (hasModel == null) Box(Modifier.fillMaxWidth().height(120.dp))
+                else if (hasModel == true) Model3D(board3d(b), Modifier.fillMaxWidth().height(120.dp))
                 else Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
                     Icon(Lucide.Cpu, null, tint = C.Sub, modifier = Modifier.size(56.dp))
                 }
@@ -375,12 +377,12 @@ private fun BoardStep(onNext: () -> Unit) {
     }
     confirm?.let { b ->
         val lost = slots.filter { it.input !in b.inputs }
-        androidx.compose.material3.AlertDialog(
+        CarAlertDialog(
             onDismissRequest = { confirm = null },
-            title = { androidx.compose.material3.Text("Сменить плату на ${b.short}?") },
-            text = { androidx.compose.material3.Text("На ${b.short} нет входов ${lost.joinToString { it.input }}. Эти датчики будут убраны: ${lost.joinToString { it.name }}.") },
-            confirmButton = { androidx.compose.material3.TextButton({ SensorBox.setBoard(b); confirm = null }) { androidx.compose.material3.Text("Сменить") } },
-            dismissButton = { androidx.compose.material3.TextButton({ confirm = null }) { androidx.compose.material3.Text("Отмена") } },
+            title = { Text("Сменить плату на ${b.short}?") },
+            text = { Text("На ${b.short} нет входов ${lost.joinToString { it.input }}. Эти датчики будут убраны: ${lost.joinToString { it.name }}.") },
+            confirmButton = { androidx.compose.material3.TextButton({ SensorBox.setBoard(b); confirm = null }) { Text("Сменить") } },
+            dismissButton = { androidx.compose.material3.TextButton({ confirm = null }) { Text("Отмена") } },
         )
     }
     Spacer(Modifier.height(14.dp))
@@ -403,7 +405,7 @@ private fun BoardStep(onNext: () -> Unit) {
 @Composable
 internal fun BigButton(text: String, icon: ImageVector, onClick: () -> Unit, enabled: Boolean = true) {
     Row(
-        Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(14.dp))
+        Modifier.fillMaxWidth().height(maxOf(LocalMinTap.current, LocalCar.current.secondary.lineDp() * 2f + 8.dp)).clip(RoundedCornerShape(14.dp))
             .background(if (enabled) C.Purple else C.CardHi).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center,
     ) {
@@ -426,8 +428,8 @@ private fun BoxIntro(onFlash: () -> Unit, onSelect: (String) -> Unit) {
     var howOpen by remember { mutableStateOf(empty) }
     if (!empty) {
         T("Ваша плата целиком", 18.sp, weight = FontWeight.SemiBold)
-        T("Все датчики и выходы: что в какой пин, и общие клеммники питания и массы. Добавили или поменяли датчик — " +
-            "плату перепрошивать не нужно, приложение пересчитывает всё само", 13.sp, C.Sub)
+        SettingHint("Все датчики и выходы: что в какой пин, и общие клеммники питания и массы. Добавили или поменяли датчик — " +
+            "плату перепрошивать не нужно, приложение пересчитывает всё само")
         Spacer(Modifier.height(8.dp))
         BoardOverview(board, mine, null)
         Spacer(Modifier.height(8.dp))
@@ -464,14 +466,14 @@ private fun BoxIntro(onFlash: () -> Unit, onSelect: (String) -> Unit) {
         BigButton("Добавить первый датчик", Lucide.Plus, { onSelect("add") })
         Spacer(Modifier.height(8.dp))
         Row(
-            Modifier.fillMaxWidth().height(52.dp).clip(RoundedCornerShape(14.dp)).background(C.Violet.copy(alpha = 0.12f))
+            Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(14.dp)).background(C.Violet.copy(alpha = 0.12f))
                 .border(1.dp, C.Violet.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
                 .clickable { Repo.settings.demo = true; SensorBox.fillExample(); onSelect(board.analog.first()) }.padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center,
         ) {
             Icon(Lucide.Sparkles, null, tint = C.Violet, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(10.dp))
-            T("Посмотреть на примере (демо, ничего паять не надо)", 15.sp, C.Text, FontWeight.SemiBold, maxLines = 1)
+            FitText("Посмотреть на примере (демо, ничего паять не надо)", LocalCar.current.secondary, Modifier.weight(1f), C.Text, FontWeight.SemiBold, maxLines = 2)
         }
         Spacer(Modifier.height(10.dp))
     }
@@ -520,7 +522,7 @@ private fun AddSensor(onAdded: (String) -> Unit) {
 @Composable
 private fun FlowBox(icon: ImageVector, title: String, sub: String) {
     Column(
-        Modifier.width(118.dp).clip(RoundedCornerShape(12.dp)).background(C.CardHi).border(1.dp, C.Border, RoundedCornerShape(12.dp)).padding(8.dp),
+        Modifier.width(roomFor(118.dp, 13f)).clip(RoundedCornerShape(12.dp)).background(C.CardHi).border(1.dp, C.Border, RoundedCornerShape(12.dp)).padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Icon(icon, null, tint = C.Violet, modifier = Modifier.size(26.dp))
@@ -597,7 +599,7 @@ private fun OwnFirmware(board: BoxBoard) {
         msg = runCatching {
             ctx.assets.open(asset).use { i -> ctx.contentResolver.openOutputStream(uri)!!.use { i.copyTo(it) } }
             "Сохранено: ${fileName(ctx, uri)}"
-        }.getOrElse { "Не удалось сохранить: ${it.message}" }
+        }.getOrElse { kg.forester.sg.ssm.SsmTrace.log("save: $it"); "Не удалось сохранить: ${kg.forester.sg.data.Failure.text(it)}" }
     }
     val saveHex = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/octet-stream")) { copy(asset, it) }
@@ -619,14 +621,14 @@ private fun OwnFirmware(board: BoxBoard) {
                 listOf(false to "Файл больше ${limit / 1024 / 1024} МБ: это не прошивка для ${board.short}"), null, null)
             else if (esp) kg.forester.sg.flash.FirmwareCheck.ofEsp(bytes)
             else kg.forester.sg.flash.FirmwareCheck.of(String(bytes, Charsets.ISO_8859_1), board)
-        }.getOrElse { kg.forester.sg.flash.FirmwareCheck(null, listOf(false to "Не удалось прочитать файл: ${it.message}"), null, null) }
+        }.getOrElse { kg.forester.sg.flash.FirmwareCheck(null, listOf(false to "Не удалось прочитать файл: ${kg.forester.sg.data.Failure.text(it)}"), null, null) }
     }
     Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { open = !open }, verticalAlignment = Alignment.CenterVertically) {
         T("Своя прошивка: сохранить, изменить, залить", 15.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
         Icon(if (open) Lucide.ChevronDown else Lucide.ChevronRight, null, tint = C.Sub, modifier = Modifier.size(20.dp))
     }
     if (!open) return
-    T("Готовая прошивка платы и её исходник: чтобы держать копию, поменять скетч под себя в Arduino IDE и залить обратно отсюда же.", 13.sp, C.Sub)
+    SettingHint("Готовая прошивка платы и её исходник: чтобы держать копию, поменять скетч под себя в Arduino IDE и залить обратно отсюда же.")
     Spacer(Modifier.height(6.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Chip("Сохранить готовую прошивку ($ext) для ${board.short}", false, { saveHex.launch(asset.substringAfterLast('/')) }, Lucide.Download)
@@ -660,7 +662,7 @@ private fun OwnFirmware(board: BoxBoard) {
             Chip("Убрать файл", false, { picked = null }, Lucide.X)
         }
         if (info?.via == "демо") T("В демо заливать некуда: подключите настоящую плату", 12.sp, C.Sub)
-        else if (chk.ok) T("Ход прошивки и ответ платы появятся выше, под большой кнопкой", 12.sp, C.Sub)
+        else if (chk.ok) SettingHint("Ход прошивки и ответ платы появятся выше, под большой кнопкой")
     }
 }
 
@@ -744,10 +746,10 @@ private fun FlashGuide(onNext: () -> Unit) {
         msg = runCatching {
             ctx.assets.open("sensorbox/sensorbox.ino").use { i -> ctx.contentResolver.openOutputStream(uri)!!.use { i.copyTo(it) } }
             "Сохранено. Перекиньте файл на компьютер"
-        }.getOrElse { "Не удалось сохранить: ${it.message}" }
+        }.getOrElse { kg.forester.sg.ssm.SsmTrace.log("save: $it"); "Не удалось сохранить: ${kg.forester.sg.data.Failure.text(it)}" }
     }
     T("Прошивка платы: ${board.title}", 18.sp, weight = FontWeight.SemiBold)
-    T("Плата подключена к USB магнитолы, компьютер не нужен. Прошивка уже лежит в приложении.", 13.sp, C.Sub)
+    SettingHint("Плата подключена к USB магнитолы, компьютер не нужен. Прошивка уже лежит в приложении.")
     Spacer(Modifier.height(8.dp))
     Hint(Lucide.CircleCheck, "Прошивают один раз. Прошивка одна на любые датчики: плата не знает, что где подключено, она отдаёт сырые " +
         "показания всех входов, а в градусы и бары их пересчитывает приложение. Выходы, дисплеи и пины термопар приложение само " +
@@ -765,13 +767,13 @@ private fun FlashGuide(onNext: () -> Unit) {
         Icon(if (pc) Lucide.ChevronDown else Lucide.ChevronRight, null, tint = C.Sub, modifier = Modifier.size(20.dp))
     }
     if (!pc) return
-    T("Делается один раз на компьютере (Windows, Mac или Linux), потом плата работает сама.", 13.sp, C.Sub)
+    SettingHint("Делается один раз на компьютере (Windows, Mac или Linux), потом плата работает сама.")
     Spacer(Modifier.height(10.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         Chip("Сохранить прошивку sensorbox.ino", false, { save.launch("sensorbox.ino") }, Lucide.Download)
         if (msg.isNotEmpty()) T(msg, 13.sp, C.Green)
     }
-    T("Или скачайте её с GitHub: surtaeff/subaru-ssm-dashboard, папка hardware/sensorbox", 12.sp, C.Sub)
+    SettingHint("Или скачайте её с GitHub: surtaeff/subaru-ssm-dashboard, папка hardware/sensorbox")
     Spacer(Modifier.height(10.dp))
     Step(1, "Поставьте Arduino IDE", "Бесплатная программа с сайта arduino.cc, раздел Software.")
     Step(2, "Откройте файл sensorbox.ino", "Двойным щелчком или Файл, Открыть. Программа спросит, можно ли положить его в папку sensorbox: нажмите ОК.")
@@ -779,7 +781,7 @@ private fun FlashGuide(onNext: () -> Unit) {
     Step(4, "Выберите плату и порт", "Инструменты, Плата, ${board.ide}. Затем Инструменты, Порт: тот, что появился после подключения платы.")
     Step(5, "Нажмите Загрузка", "Круглая кнопка со стрелкой вправо вверху. Внизу должно появиться «Загрузка завершена».")
     Step(6, "Проверьте", "Инструменты, Монитор порта, справа внизу скорость 115200. Напишите ? и нажмите Enter: должна прийти строка I SENSORBOX, а за ней побегут строки D t=…")
-    Step(7, "Подключите к магнитоле", "Плату в USB магнитолы, в приложении включите «Доп датчики». Android спросит разрешение на USB: поставьте галочку «по умолчанию» и ОК.")
+    Step(7, "Подключите к магнитоле", "Плату в USB магнитолы, в приложении откройте «Датчики и экраны». Android спросит разрешение на USB: поставьте галочку «по умолчанию» и ОК.")
     Spacer(Modifier.height(10.dp))
     T("Если не получается", 15.sp, weight = FontWeight.SemiBold)
     if (board == BoxBoard.NANO) {
@@ -888,7 +890,7 @@ private fun BuyInfo(p: BoxPreset) {
     Spacer(Modifier.height(4.dp))
     @Composable
     fun Line(k: String, v: String) = Row(Modifier.padding(vertical = 2.dp)) {
-        T(k, 12.sp, C.Sub, modifier = Modifier.width(120.dp))
+        T(k, 12.sp, C.Sub, modifier = Modifier.width(roomFor(120.dp, 12f)))
         T(v, 12.sp, modifier = Modifier.weight(1f))
     }
     if (p.partNumbers.isNotEmpty()) Line("Номера", p.partNumbers.joinToString("; "))
@@ -914,7 +916,7 @@ private fun BuyInfo(p: BoxPreset) {
 @Composable
 private fun PresetGallery(board: BoxBoard, input: String, current: BoxSlot?, onPick: (BoxPreset) -> Unit) {
     T("Что подключаете к ${board.pinOf(input)}?", 18.sp, weight = FontWeight.SemiBold)
-    T("Выберите свой датчик или похожий. Цифры потом можно поправить", 12.sp, C.Sub)
+    SettingHint("Выберите свой датчик или похожий. Цифры потом можно поправить")
     Spacer(Modifier.height(10.dp))
     val groups = BoxPresets.forInput(input).groupBy(::presetGroup)
     groups.entries.sortedBy { PRESET_GROUPS.indexOf(it.key).let { i -> if (i < 0) 99 else i } }.forEach { (g, list) ->
@@ -924,7 +926,7 @@ private fun PresetGallery(board: BoxBoard, input: String, current: BoxSlot?, onP
                 val sel = current?.preset == p.id
                 Row(
                     Modifier.width(250.dp).clip(RoundedCornerShape(12.dp)).background(if (sel) C.Purple.copy(alpha = 0.22f) else C.CardHi)
-                        .border(1.dp, if (sel) C.Purple else C.Border, RoundedCornerShape(12.dp)).clickable { onPick(p) }.padding(10.dp),
+                        .border(1.dp, if (sel) C.activeEdge(C.Purple) else C.Border, RoundedCornerShape(12.dp)).clickable { onPick(p) }.padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(kindIcon(p), null, tint = C.Violet, modifier = Modifier.size(24.dp))
@@ -986,7 +988,7 @@ private fun LiveValue(s: BoxSlot, r: kg.forester.sg.data.BoxReading?) {
         Column(Modifier.weight(1f)) {
             T("Сейчас", 12.sp, C.Sub)
             when {
-                info == null -> T("Плата не подключена. Значение появится, когда она будет на связи (или включите демо)", 13.sp, C.Sub)
+                info == null -> SettingHint("Плата не подключена. Значение появится, когда она будет на связи (или включите демо)")
                 r?.value != null -> Row(verticalAlignment = Alignment.Bottom) {
                     val warn = (s.warnAbove != null && r.value > s.warnAbove) || (s.warnBelow != null && r.value < s.warnBelow)
                     T(valueText(s, r.value), 40.sp, if (warn) C.Orange else C.Text, FontWeight.Bold)
@@ -1064,7 +1066,7 @@ private fun TcCsPicker(board: BoxBoard, input: String) {
     val owners = SensorBox.pinOwners(board, "tc:$input")
     Spacer(Modifier.height(10.dp))
     T("Пин CS этого модуля", 15.sp, weight = FontWeight.SemiBold)
-    T("Модули термопар висят на одних проводах SCK (${board.sck}) и SO (${board.miso}), у каждого свой CS. Первый, TC0, на ${board.cs}", 12.sp, C.Sub)
+    SettingHint("Модули термопар висят на одних проводах SCK (${board.sck}) и SO (${board.miso}), у каждого свой CS. Первый, TC0, на ${board.cs}")
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
         board.outPins.forEach { p ->
             val who = owners[p]
@@ -1118,7 +1120,7 @@ private fun SlotSettings(s: BoxSlot) {
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         BoxField("Название", name, Modifier.weight(1f), text = true) { name = it; save() }
-        BoxField("Единицы", unit, Modifier.width(110.dp), text = true) { unit = it; save() }
+        BoxField("Единицы", unit, Modifier.width(roomFor(110.dp, 13f)), text = true) { unit = it; save() }
     }
     Spacer(Modifier.height(6.dp))
     when (s.p.kind) {
@@ -1187,9 +1189,9 @@ private fun FuelLineCalibration(input: String) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         T("Тарировка бака: сама", 15.sp, weight = FontWeight.SemiBold)
-        T("Залейте полный бак и отметьте это на экране «Расход» (Заправка, галочка «полный бак»). Дальше приложение знает, " +
+        SettingHint("Залейте полный бак и отметьте это на экране «Расход» (Заправка, галочка «полный бак»). Дальше приложение знает, " +
             "сколько сожгло, и на каждой остановке от 15 секунд (светофор, пробка, стоянка с мотором) само ставит точку " +
-            "«напряжение = литры», примерно через каждые 3 л. За один бак шкала готова, следующие баки её уточняют.", 12.sp, C.Sub)
+            "«напряжение = литры», примерно через каждые 3 л. За один бак шкала готова, следующие баки её уточняют.")
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             T("Сейчас на проводе " + (volts?.let { "%.2f В".format(Locale("ru"), it) } ?: "—"), 13.sp)
             val span = if (pts.size >= 2) pts.maxOf { it.second } - pts.minOf { it.second } else 0f
@@ -1216,7 +1218,7 @@ private fun FuelLineCalibration(input: String) {
             }, Lucide.Trash2)
         }
         if (manual) {
-            T("Если знаете, сколько сейчас в баке (например, только что залили до полного), поставьте точку сами", 12.sp, C.Sub)
+            SettingHint("Если знаете, сколько сейчас в баке (например, только что залили до полного), поставьте точку сами")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 T("В баке", 13.sp, C.Sub, modifier = Modifier.align(Alignment.CenterVertically))
                 Chip("−5", false, { kg.forester.sg.data.FuelLine.litres.value = (litres - 5f).coerceAtLeast(0f) })
@@ -1262,11 +1264,10 @@ private class Pin(val name: String, val x: Float, val y: Float, val side: Int) /
 @Composable
 fun WiringPicture(board: BoxBoard, input: String, p: BoxPreset, others: List<BoxSlot>, modifier: Modifier, fault: String? = null) {
     val tm = rememberTextMeasurer()
-    val top = rememberBoardTop(board)
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val module = remember(p.id) { module3d(p)?.let { BoardTop.load(ctx, it) } }
+    val top = rememberBoardTop(board3d(board))
+    val module = rememberBoardTop(module3d(p))
     Canvas(modifier.clip(RoundedCornerShape(12.dp)).background(Color(0xFF0B0F1A))) {
-        drawWiring(tm, board, input, p, others, top, module, fault)
+        if (top.loaded && module.loaded) drawWiring(tm, board, input, p, others, top.top, module.top, fault)
     }
 }
 
@@ -1280,7 +1281,8 @@ class TopPin(val name: String, val fx: Float, val fy: Float, val side: Int)
 class BoardTop(val img: androidx.compose.ui.graphics.ImageBitmap, val w: Int, val h: Int, val pitch: Float, val pins: List<TopPin>) {
     companion object {
         private val cache = HashMap<String, BoardTop?>()
-        fun load(ctx: android.content.Context, id: String): BoardTop? = cache.getOrPut(id) {
+        /** Reads a JSON and decodes a picture the first time: off the main thread. */
+        fun load(ctx: android.content.Context, id: String): BoardTop? = synchronized(cache) { cache.getOrPut(id) {
             runCatching {
                 val j = org.json.JSONObject(ctx.assets.open("boards3d/$id/top.json").bufferedReader().readText())
                 val bmp = ctx.assets.open("boards3d/$id/top.webp").use { android.graphics.BitmapFactory.decodeStream(it) }
@@ -1290,14 +1292,22 @@ class BoardTop(val img: androidx.compose.ui.graphics.ImageBitmap, val w: Int, va
                     a.getJSONArray(i).let { r -> TopPin(r.getString(0), r.getDouble(1).toFloat(), r.getDouble(2).toFloat(), r.getInt(3)) }
                 })
             }.getOrNull()
-        }
+        } }
     }
 }
 
+/** [loaded] false: not read yet, so nothing to draw; true and [top] null: there is no such picture. */
+class BoardTopRead(val loaded: Boolean, val top: BoardTop?)
+
+/** The top view [id] (null: none wanted), read off the main thread. */
 @Composable
-fun rememberBoardTop(board: BoxBoard): BoardTop? {
+fun rememberBoardTop(id: String?): BoardTopRead {
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    return remember(board) { BoardTop.load(ctx, board3d(board)) }
+    val read by androidx.compose.runtime.produceState<Pair<String?, BoardTop?>?>(null, id) {
+        value = id to id?.let { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { BoardTop.load(ctx, it) } }
+    }
+    val v = read
+    return if (v != null && v.first == id) BoardTopRead(true, v.second) else BoardTopRead(false, null)
 }
 
 private val SIGNALS = setOf("SIG", "SCK", "SO", "CS")
@@ -1492,7 +1502,7 @@ private fun DrawScope.drawWiring(tm: TextMeasurer, board: BoxBoard, input: Strin
         for ((wi, nm) in termNames) {
             val x = termX[wi]!!
             val y = termY[wi]!!
-            val l = tm.measure(nm, TextStyle(fontSize = 10.5.sp, color = if (wi.color == Color(WIRE_BLACK)) Color(0xFFE5E7EB) else wi.color, fontWeight = FontWeight.Bold))
+            val l = tm.measure(kg.forester.sg.data.tr(nm), TextStyle(fontSize = 10.5.sp, color = if (wi.color == Color(WIRE_BLACK)) Color(0xFFE5E7EB) else wi.color, fontWeight = FontWeight.Bold))
             val tl = Offset(x - r * 1.5f - l.size.width - dp(3f), y - l.size.height - dp(2f))
             drawRoundRect(Color(0xE60B0F1A), tl - Offset(dp(2f), dp(1f)), Size(l.size.width + dp(4f), l.size.height + dp(2f)), CornerRadius(dp(3f)))
             drawText(l, topLeft = tl)
@@ -1613,7 +1623,7 @@ private fun DrawScope.drawWiring(tm: TextMeasurer, board: BoxBoard, input: Strin
             fault.contains("5 В") -> "Сигнал касается +5 В"
             else -> fault.replaceFirstChar { it.uppercase() }
         }
-        val l = tm.measure(msg, TextStyle(fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold))
+        val l = tm.measure(kg.forester.sg.data.tr(msg), TextStyle(fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold))
         val tl = Offset((at.x - l.size.width - dp(10f)).coerceAtLeast(dp(4f)), at.y - l.size.height / 2f)
         drawRoundRect(C.Orange, tl - Offset(dp(5f), dp(3f)), Size(l.size.width + dp(10f), l.size.height + dp(6f)), CornerRadius(dp(5f)))
         drawText(l, topLeft = tl)
@@ -1634,7 +1644,7 @@ private fun DrawScope.drawWiring(tm: TextMeasurer, board: BoxBoard, input: Strin
             drawLine(c, Offset(mid - len / 2 + len * f, y - dp(5f)), Offset(mid - len / 2 + len * f, y + dp(5f)), dp(2f))
         }
         drawCircle(legs, dp(3f), Offset(sig.x, y))
-        val label = tm.measure("резистор ${p.pullUp}", TextStyle(fontSize = 11.sp, color = Color(0xFFD6B98C), fontWeight = FontWeight.Bold))
+        val label = tm.measure(kg.forester.sg.data.tr("резистор ${p.pullUp}"), TextStyle(fontSize = 11.sp, color = Color(0xFFD6B98C), fontWeight = FontWeight.Bold))
         drawText(label, topLeft = Offset(mid - label.size.width / 2f, if (sign == 1) y + dp(7f) else y - dp(7f) - label.size.height))
     }
 }
@@ -1722,7 +1732,7 @@ private fun DrawScope.text(tm: TextMeasurer, s: String, at: Offset, sizeSp: Floa
 
 /** A pin label turned along the pin row, as printed on the boards: reading into the board from the pin. */
 private fun DrawScope.vtext(tm: TextMeasurer, s: String, at: Offset, sizeSp: Float, color: Color, bold: Boolean, down: Boolean, backing: Boolean = false) {
-    val r = tm.measure(s, TextStyle(fontSize = sizeSp.sp, color = color, fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal))
+    val r = tm.measure(kg.forester.sg.data.tr(s), TextStyle(fontSize = sizeSp.sp, color = color, fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal))
     rotate(if (down) 90f else -90f, pivot = at) {
         // on a real top view the label sits over the board's own print: a dark backing keeps it readable
         if (backing) drawRoundRect(Color(0xE60B0F1A), Offset(at.x - 2f * density, at.y - r.size.height / 2f - 1f * density),
@@ -1779,7 +1789,8 @@ private fun sideOf(board: BoxBoard, pin: String) = when (pin) { in board.topRow 
  */
 @Composable
 fun BoardOverview(board: BoxBoard, slots: List<BoxSlot>, highlight: String?, modifier: Modifier = Modifier) {
-    val boardTop = rememberBoardTop(board)
+    val topRead = rememberBoardTop(board3d(board))
+    val boardTop = topRead.top
     val tm = rememberTextMeasurer()
     val uses = boardUses(board, slots)
     val sigs = uses.flatMap { u -> u.signals.map { it.first } }
@@ -1793,7 +1804,7 @@ fun BoardOverview(board: BoxBoard, slots: List<BoxSlot>, highlight: String?, mod
     val blocks = (n5 + nG) * 18 + 90
     val height = maxOf(topSpace + 104 + bottom, blocks, 240)
     Canvas(modifier.fillMaxWidth().height(height.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF0B0F1A))) {
-        drawOverview(tm, board, uses, highlight, (topSpace + 52).dp.toPx(), boardTop)
+        if (topRead.loaded) drawOverview(tm, board, uses, highlight, (topSpace + 52).dp.toPx(), boardTop)
     }
 }
 
@@ -1885,7 +1896,7 @@ private fun DrawScope.drawOverview(tm: TextMeasurer, board: BoxBoard, uses: List
         val sideY = HashMap<Tag, Float>()
         if (side == 0) list.sortedBy { it.pin.y }.fold(-1e9f) { prev, t -> maxOf(t.pin.y, prev + dp(15f)).also { sideY[t] = it } }
         list.sortedByDescending { it.pin.x }.forEachIndexed { r, t ->
-            val label = tm.measure(t.text, TextStyle(fontSize = 11.sp, color = t.color, fontWeight = FontWeight.Bold))
+            val label = tm.measure(kg.forester.sg.data.tr(t.text), TextStyle(fontSize = 11.sp, color = t.color, fontWeight = FontWeight.Bold))
             val (lx, ly) = if (side == 0) {
                 val y = sideY[t] ?: t.pin.y
                 drawLine(t.color, Offset(t.pin.x, t.pin.y), Offset(g.br + dp(6f), t.pin.y), dp(2f))
@@ -1965,7 +1976,7 @@ private fun BoxCheck(go: (BoxStep, String?) -> Unit) {
     val seen = remember { mutableStateMapOf<String, Pair<Float, Float>>() }
     readings.forEach { (k, r) -> r.value?.let { v -> val (lo, hi) = seen[k] ?: (v to v); seen[k] = minOf(lo, v) to maxOf(hi, v) } }
     T("Проверка", 18.sp, weight = FontWeight.SemiBold)
-    T("Пройдитесь по списку: каждый датчик и выход проверяется вживую. Нажмите на строку, чтобы открыть его схему", 13.sp, C.Sub)
+    SettingHint("Пройдитесь по списку: каждый датчик и выход проверяется вживую. Нажмите на строку, чтобы открыть его схему")
 
     Spacer(Modifier.height(12.dp))
     T("Связь", 16.sp, weight = FontWeight.SemiBold)

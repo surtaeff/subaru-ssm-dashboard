@@ -76,6 +76,48 @@ class FytMusicService : Service() {
     }
 }
 
+/** The BT module's commands: 27 play, 3 pause. */
+internal fun btPlayCode(play: Boolean) = if (play) 27 else 3
+
+/** The BT module's toggle: says nothing about where the phone ends up, but the one code known to work on every firmware. */
+private const val BT_TOGGLE = 2
+/** After a switch of the source: the unit resumes the phone by itself, and a toggle on top of that paused it again. */
+private const val BT_TOGGLE_SETTLE_MS = 800L
+/** ⏮ ⏭ right after the switch: the same resume, for a moment. */
+private const val BT_SKIP_SETTLE_MS = 300L
+
+/** What a play or pause sends: [code] once the source is there, [settleMs] later; [followUp]: its effect is checked. */
+internal data class BtPlayStep(val code: Int, val settleMs: Long, val followUp: Boolean)
+
+/**
+ * A module that reports gets the explicit command, and its reports tell whether the firmware took it. One that has never
+ * said anything can't tell, and [toggleOnly]: this firmware ignored the explicit ones already. Both get the toggle.
+ */
+internal fun btPlayStep(play: Boolean, reported: Boolean, toggleOnly: Boolean, wasSource: Boolean): BtPlayStep =
+    if (reported && !toggleOnly) BtPlayStep(btPlayCode(play), 0, true)
+    else BtPlayStep(BT_TOGGLE, if (wasSource) 0 else BT_TOGGLE_SETTLE_MS, false)
+
+/** The explicit command did nothing that the module reports. Not when it was there before: a toggle would undo that. */
+internal fun btNeedsToggle(play: Boolean, before: MusicState, now: MusicState) =
+    now.updatedMs > 0 && !btReached(play, now) && !btReached(play, before)
+
+/**
+ * A check that runs later for a press: only the latest press acts, and only while the source is still what it was
+ * when the command went out ([s0]; 0 when the unit has reported none, as some firmware never reports 3) or BT.
+ */
+internal fun btStillDue(press: Int, latest: Int, s0: Int, source: Int) = press == latest && (source == 3 || source == s0)
+
+internal fun btToggleDue(play: Boolean, before: MusicState, now: MusicState, press: Int, latest: Int, s0: Int, source: Int) =
+    btStillDue(press, latest, s0, source) && btNeedsToggle(play, before, now)
+
+/** The phone is where the command wanted it, as far as the module has said anything. */
+internal fun btReached(play: Boolean, now: MusicState) = now.updatedMs > 0 && now.playing == play
+
+internal enum class RadioWake { SERVICE, ACTIVITY }
+
+/** The radio's exported service wakes it without showing anything; its activity once that wasn't enough or isn't there. */
+internal fun radioWakeStep(serviceThere: Boolean, serviceUseless: Boolean) =
+    if (serviceThere && !serviceUseless) RadioWake.SERVICE else RadioWake.ACTIVITY
 object Fyt {
     /** True on FYT-platform head units (Teyes and other UIS7862/… units): the system service is installed. */
     fun present(ctx: android.content.Context): Boolean =
@@ -98,8 +140,8 @@ object Fyt {
     /** sys.fyt.radio_type: "1" the MCU's tuner, "3" / "4" one the stock radio app drives (it must be running), "2" none. */
     @Volatile var radioType = ""
     val appId = MutableStateFlow(0) // current audio source: 1 radio, 3 BT music, 8 music player
-    /** Master volume as the MCU reports it (update U_VOL = 2), -1 = unknown. */
-    val volume = MutableStateFlow(-1)
+    /** Master volume as the MCU reports it (update U_VOL = 2), null = unknown. */
+    val volume = MutableStateFlow<Int?>(null)
 
     private var main: IBinder? = null
     private var radioModule: IBinder? = null
@@ -176,7 +218,7 @@ object Fyt {
 
     private val soundCb = object : Callback() {
         override fun onUpdate(code: Int, ints: IntArray?, strs: Array<String?>?) {
-            if (code == 2) volume.value = ints?.getOrNull(0) ?: -1
+            if (code == 2) volume.value = ints?.getOrNull(0)?.takeIf { it >= 0 }
         }
     }
 
@@ -308,7 +350,7 @@ object Fyt {
     }
 
     /** BT is what plays: the active source says so; before the unit has told it, the latest now-playing push. */
-    private fun btActive() = appId.value == 3 || (appId.value != 8 && music.value.source == "bt")
+    fun btActive() = appId.value == 3 || (appId.value != 8 && music.value.source == "bt")
 
     fun playPause() {
         if (btActive()) btPlay(!btMusic.value.playing) else startMusicService("com.syu.music.playpause")
@@ -339,19 +381,50 @@ object Fyt {
     // --- Bluetooth music -----------------------------------------------------------------------------
 
     /*
-     * BT is made the source first and the command waits for the switch: the unit resumes the phone by itself
-     * when BT becomes the source, so a play/pause toggle sent at once paused it again, and ⏮ ⏭ sent before the
-     * switch went to the old source (the radio's presets, the stock player). Then the BT module's command; when
-     * the phone shows no reaction to it, the phone's media session if the unit has one, else the media key.
+     * BT is made the source first and the command waits for the switch: ⏮ ⏭ sent before it went to the old source
+     * (the radio's presets, the stock player). The unit may resume the phone by itself as BT becomes the source, and
+     * that can't clash with an explicit play or pause, only with a toggle ([btPlayStep]). When the phone shows no
+     * reaction to the BT module's command, the phone's media session if the unit has one, else the media key.
      */
 
+    /** The firmware ignored 27 / 3 in this run: straight to the toggle from then on. */
+    @Volatile private var btToggleOnly = false
+    /** Counts the presses; whatever still waits for an older one is off. */
+    private val btPress = java.util.concurrent.atomic.AtomicInteger()
+
+    /** Another source was picked or the Bluetooth mode left: nothing waiting for a press goes to the module any more. */
+    fun btCancel() { btPress.incrementAndGet() }
+
     fun btPlay(play: Boolean) {
+        val press = btPress.incrementAndGet()
         val wasSource = appId.value == 3
         if (!wasSource) source(3)
-        whenBtSource(wasSource) {
-            // becoming the source already resumed it
-            if (!wasSource && play && btMusic.value.playing) { Log.i(TAG, "bt resumed by the source switch"); return@whenBtSource }
-            btCmd(2, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, { before, now -> now.playing != before.playing }) { if (play) it.play() else it.pause() }
+        val step = btPlayStep(play, btMusic.value.updatedMs > 0, btToggleOnly, wasSource)
+        val key = if (play) KeyEvent.KEYCODE_MEDIA_PLAY else KeyEvent.KEYCODE_MEDIA_PAUSE
+        val session: (MediaController.TransportControls) -> Unit = { if (play) it.play() else it.pause() }
+        whenBtSource(wasSource, step.settleMs, press) {
+            val before = btMusic.value
+            val s0 = appId.value
+            val m = bt
+            Log.i(TAG, "bt cmd ${step.code} (module ${if (m != null) "bound" else "missing"}, source ${appId.value})")
+            when {
+                m == null -> btFallback(key, session)
+                // becoming the source already resumed it
+                step.code == BT_TOGGLE && btReached(play, before) -> Log.i(TAG, "bt already there, no toggle")
+                else -> {
+                    cmd(m, step.code)
+                    if (step.followUp) handler.postDelayed({
+                        if (btToggleDue(play, before, btMusic.value, press, btPress.get(), s0, appId.value)) {
+                            trace("bt: command ${step.code} did nothing, toggle from now on")
+                            btToggleOnly = true
+                            cmd(bt, BT_TOGGLE)
+                            handler.postDelayed({
+                                if (btStillDue(press, btPress.get(), s0, appId.value) && !btReached(play, btMusic.value)) btFallback(key, session)
+                            }, 2500)
+                        }
+                    }, 2000)
+                }
+            }
         }
     }
 
@@ -360,34 +433,39 @@ object Fyt {
     fun btPrev() = btSkip(0, KeyEvent.KEYCODE_MEDIA_PREVIOUS) { it.skipToPrevious() }
 
     private fun btSkip(code: Int, key: Int, session: (MediaController.TransportControls) -> Unit) {
+        val press = btPress.incrementAndGet()
         val wasSource = appId.value == 3
         if (!wasSource) source(3)
-        whenBtSource(wasSource) {
-            btCmd(code, key, { before, now -> now.title != before.title || now.posMs + 2000 < before.posMs }, session)
+        whenBtSource(wasSource, BT_SKIP_SETTLE_MS, press) {
+            btCmd(press, code, key, { before, now -> now.title != before.title || now.posMs + 2000 < before.posMs }, session)
         }
     }
 
-    private fun whenBtSource(wasSource: Boolean, block: () -> Unit) {
+    private fun whenBtSource(wasSource: Boolean, settleMs: Long, press: Int, block: () -> Unit) {
         if (wasSource) { block(); return }
         val t0 = SystemClock.uptimeMillis()
         handler.post(object : Runnable {
             override fun run() {
-                // the switch has come (or isn't coming), then a moment for the unit to resume the phone
-                if (appId.value == 3 || SystemClock.uptimeMillis() - t0 > 2500) handler.postDelayed(block, 800)
+                if (press != btPress.get()) return
+                // the switch has come (or isn't coming), then what [settleMs] leaves for the unit to resume the phone
+                if (appId.value == 3 || SystemClock.uptimeMillis() - t0 > 2500) handler.postDelayed({ if (press == btPress.get()) block() }, settleMs)
                 else handler.postDelayed(this, 100)
             }
         })
     }
 
-    private fun btCmd(code: Int, key: Int, reacted: (MusicState, MusicState) -> Boolean, session: (MediaController.TransportControls) -> Unit) {
+    private fun btCmd(press: Int, code: Int, key: Int, reacted: (MusicState, MusicState) -> Boolean, session: (MediaController.TransportControls) -> Unit) {
         val before = btMusic.value
+        val s0 = appId.value
         val m = bt
         Log.i(TAG, "bt cmd $code (module ${if (m != null) "bound" else "missing"}, source ${appId.value})")
         if (m == null) { btFallback(key, session); return }
         cmd(m, code)
-        // the module never reported anything: nothing to tell a reaction by, and a second try could undo the first
+        // the module never reported anything: nothing to tell a reaction by, and a second skip would go one too far
         if (before.updatedMs == 0L) return
-        handler.postDelayed({ if (!reacted(before, btMusic.value)) btFallback(key, session) }, 2500)
+        handler.postDelayed({
+            if (btStillDue(press, btPress.get(), s0, appId.value) && !reacted(before, btMusic.value)) btFallback(key, session)
+        }, 2500)
     }
 
     private fun btFallback(key: Int, session: (MediaController.TransportControls) -> Unit) {
@@ -404,6 +482,10 @@ object Fyt {
 
     private var radioAskedMs = -10_000L
     private var radioLaunchMs = -120_000L
+    /** The service didn't bring the radio up on this unit: the activity from now on, this run. */
+    @Volatile private var radioServiceUseless = false
+    /** The radio's start still to come; another source picked meanwhile cancels it, it would take the source back. */
+    @Volatile private var radioPending: Runnable? = null
 
     /** Also into the exchange log (Настройки → «Журнал обмена»), where a radio that won't switch can be seen. */
     private fun trace(msg: String) {
@@ -422,6 +504,8 @@ object Fyt {
      * station picked, so it is started (and our screen brought back) only when the source hasn't switched in 1.5 s.
      */
     fun ensureRadio() {
+        // a Bluetooth press still waiting would take the source back
+        btCancel()
         // started a moment ago with no word of the source since: the source command again could throw it back too
         if (appId.value == 1 || radioUnconfirmed) return
         val ctx = app ?: return
@@ -431,19 +515,55 @@ object Fyt {
         radioAskedMs = SystemClock.uptimeMillis()
         trace("radio on (source ${appId.value})")
         cmd(main, 0, intArrayOf(1))
-        handler.postDelayed({
-            if (appId.value == 1) return@postDelayed
+        radioLater(1500) {
+            if (appId.value == 1) return@radioLater
             // started a minute ago, and the unit never said the radio is the source (some don't, or say another
             // number): started again, the radio went back to its own last station each time and undid every seek
             // and preset, so the buttons seemed dead
-            if (SystemClock.uptimeMillis() - radioLaunchMs < 60_000) { trace("radio: source still ${appId.value}, not starting it again"); return@postDelayed }
+            if (SystemClock.uptimeMillis() - radioLaunchMs < 60_000) { trace("radio: source still ${appId.value}, not starting it again"); return@radioLater }
             trace("radio: source still ${appId.value}, starting the radio's activity")
             launchRadioApp(ctx)
-        }, 1500)
+        }
+    }
+
+    private fun radioLater(ms: Long, block: () -> Unit) {
+        radioPending?.let { handler.removeCallbacks(it) }
+        val r = Runnable { radioPending = null; block() }
+        radioPending = r
+        handler.postDelayed(r, ms)
+    }
+
+    /** The exported com.syu.broadcast.MyService of whichever stock app has it. */
+    private fun radioService(ctx: Context): android.content.pm.ServiceInfo? = listOf("com.syu.radio", "com.syu.broadcast").firstNotNullOfOrNull { p ->
+        runCatching { ctx.packageManager.getServiceInfo(ComponentName(p, "com.syu.broadcast.MyService"), 0) }.getOrNull()?.takeIf { it.exported }
+    }
+
+    /**
+     * The radio doesn't become the source: its service if the unit has one (nothing shows). It is unproven what that
+     * service does, so with the source still not the radio in 800 ms the activity, and only the activity for this run.
+     */
+    private fun launchRadioApp(ctx: Context) {
+        radioLaunchMs = SystemClock.uptimeMillis()
+        val service = radioService(ctx)
+        if (radioWakeStep(service != null, radioServiceUseless) == RadioWake.SERVICE && service != null) {
+            val c = ComponentName(service.packageName, service.name)
+            val started = runCatching { ctx.startService(Intent().setComponent(c)) }.getOrNull() != null
+            trace("radio: service ${c.flattenToShortString()} (process ${service.processName}) started $started")
+            if (started) {
+                cmd(main, 0, intArrayOf(1))
+                radioLater(800) {
+                    if (appId.value != 1) { radioServiceUseless = true; hopToRadioApp(ctx) }
+                }
+                return
+            }
+            radioServiceUseless = true
+        }
+        hopToRadioApp(ctx)
     }
 
     /** The stock radio's activity for a moment (it comes up on its own last station), then our screen back. */
-    private fun launchRadioApp(ctx: Context) {
+    private fun hopToRadioApp(ctx: Context) {
+        trace("radio: activity for a moment (source ${appId.value})")
         radioLaunchMs = SystemClock.uptimeMillis()
         runCatching {
             ctx.startActivity(Intent().setClassName("com.syu.radio", "com.syu.radio.Launch").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -467,7 +587,9 @@ object Fyt {
         // the MCU's own tuner needs no app; a frequency it ignores is not a dead app
         if (radioType == "1" || SystemClock.uptimeMillis() - radioLaunchMs < 20_000) return false
         trace("radio: no reaction (type $radioType, source ${appId.value}), starting the radio app")
-        launchRadioApp(ctx)
+        // the radio is the source here and its app is dead: the source can't tell whether a service helped
+        radioPending?.let { handler.removeCallbacks(it); radioPending = null }
+        hopToRadioApp(ctx)
         return true
     }
 
@@ -493,7 +615,16 @@ object Fyt {
     }
 
     /** Makes [id] the head unit's audio source: 1 radio, 3 BT music, 8 music player (the call ensureRadio makes). */
-    fun source(id: Int) { cmd(main, 0, intArrayOf(id)) }
+    fun source(id: Int) {
+        if (id != 3) btCancel()
+        if (id != 1) radioPending?.let {
+            handler.removeCallbacks(it)
+            radioPending = null
+            // the radio's start was called off: next time it starts again, not "started a moment ago"
+            radioLaunchMs = -120_000L
+        }
+        cmd(main, 0, intArrayOf(id))
+    }
 
     /** [ensure] false: the caller has made the radio the source and waited for it already. */
     fun radioSeek(up: Boolean, ensure: Boolean = true) {
@@ -515,8 +646,6 @@ object Fyt {
      * frequency as it is (FM in 10 kHz units, AM in kHz) and works at once (found by the CarRadio app,
      * github.com/nikhil914/CarRadio); mode 1 stays as the fallback.
      */
-    val TUNE_MODES = intArrayOf(3, 1)
-
     /** Straight to [freq] (FM in 10 kHz units, AM in kHz) by command 13 [mode]; a tuner that doesn't take it stays. */
     fun radioTune(freq: Int, mode: Int = 3) {
         trace("radio tune $freq mode $mode from ${radio.value.freq} (source ${appId.value})")

@@ -25,6 +25,12 @@ AXES = {
     "load": ["Fine Correction Columns (Load)", "Fine Correction Columns (Load)_"],
 }
 
+# ROMs the metric definitions above don't have, added by hand. 2A04446305 (A8AK210A, JDM Forester XT, 32-bit): the
+# addresses and 7 + 7 elements are from TD-D's SubaruDefs (Alpha, ECUFlash/subaru standard/A8AK210A.xml), no A/F axis there.
+MANUAL = {
+    "2A04446305": {"bits": 32, "cal": "A8AK210A", "load": [0x6A4EC, 7, "float", 1.0], "rpm": [0x6A508, 7, "float", 1.0]},
+}
+
 
 def load(path):
     try:
@@ -113,6 +119,9 @@ def main(src, out):
             result[ecuid] = entry
         else:
             skipped += 1
+
+    for ecuid, entry in MANUAL.items():
+        result.setdefault(ecuid, entry)
 
     with open(out, "w") as f:
         json.dump({"source": "SubaruDefs ECUFlash metric (Stable), https://github.com/RomRaider/SubaruDefs",

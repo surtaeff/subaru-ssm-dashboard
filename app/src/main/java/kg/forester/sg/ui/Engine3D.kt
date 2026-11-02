@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -48,6 +47,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -151,9 +151,15 @@ private fun engineMesh(e: kg.forester.sg.ssm.EngineInfo): List<Face> {
 /** A part with a reading: where its callout points ([anchor]), the metric ids to show, what to say about it. */
 private class Spot(val id: String, val title: String, val anchor: V3, val metrics: List<String>, val about: String, val turboOnly: Boolean = false)
 
+internal const val STOCK_EJ20T = "Сток EJ20T обычно до 0,7–0,9 бар (зависит от версии)."
+
+/** What a callout says on this engine: the stock EJ20T's boost figure only on one. */
+internal fun spotAbout(about: String, e: kg.forester.sg.ssm.EngineInfo) =
+    if (InfoTexts.ej20Boost(e)) about else about.replace("$STOCK_EJ20T ", "")
+
 private val SPOTS = listOf(
     Spot("coolant", "Охлаждение (ОЖ)", V3(-0.8f, -0.45f, -0.9f), listOf("coolant"),
-        "Датчик температуры ОЖ у термостата. Прогретый мотор держит примерно 85–95°. Выше 100° повод присмотреться, 105° и выше перегрев. Долго ниже 75° в движении: подклинил открытым термостат."),
+        "Датчик температуры ОЖ у термостата. Прогретый мотор на ходу держит примерно 85–97°. Выше 100° повод присмотреться, 105° и выше перегрев. Долго ниже 75° в движении: подклинил открытым термостат."),
     Spot("maf", "Расходомер (MAF)", V3(-0.55f, 0.88f, -1.55f), listOf("maf"),
         "Сколько воздуха идёт в мотор, г/с. На прогретых холостых у EJ20 обычно около 2,5–4 г/с, растёт с оборотами и нагрузкой. Заниженный при той же нагрузке: грязный датчик или подсос воздуха после него."),
     Spot("throttle", "Дроссель", V3(0f, 0.75f, -1.1f), listOf("throttle"),
@@ -161,7 +167,7 @@ private val SPOTS = listOf(
     Spot("intake", "Воздух на впуске", V3(0f, 1.0f, 0.55f), listOf("intake"),
         "Температура воздуха во впуске. Обычно выше уличной на 10–30°. Сильно горячий воздух забирает мощность и повышает риск детонации."),
     Spot("turbo", "Турбина", V3(1.3f, -0.2f, 1.25f), listOf("boost", "wgdc"),
-        "Наддув над атмосферой и открытие вестгейта. Сток EJ20T обычно до 0,7–0,9 бар (зависит от версии). Не добирает: утечка во впуске или вестгейт. Перебирает: вестгейт или прошивка.", turboOnly = true),
+        "Наддув над атмосферой и открытие вестгейта. $STOCK_EJ20T Не добирает: утечка во впуске или вестгейт. Перебирает: вестгейт или прошивка.", turboOnly = true),
     Spot("inj", "Форсунки", V3(1.25f, 0.62f, -0.55f), listOf("inj", "injDuty"),
         "Время впрыска и загрузка форсунок. На холостых около 2–3 мс. Загрузка выше 85% на пике значит, форсунки на пределе."),
     Spot("knock", "Датчик детонации", V3(0.15f, 0.62f, 0.45f), listOf("fbkc", "flkc", "iamV"),
@@ -173,7 +179,7 @@ private val SPOTS = listOf(
     Spot("avcs", "Распредвал (AVCS)", V3(-1.55f, 0.45f, -1.1f), listOf("avcs"),
         "Насколько муфта AVCS повернула впускной распредвал. На холостых около нуля, в нагрузке до 20–35°."),
     Spot("oil", "Масло", V3(0f, -0.95f, 0.3f), listOf("oil"),
-        "Температура масла. У большинства EJ своего датчика нет, это оценка по ОЖ, времени и нагрузке: прогретое масло обычно на 10–20° горячее антифриза, под нагрузкой больше, но точность у оценки условная. Пока антифриз ниже 80°, не крутите выше 3000–3500 оборотов. " +
+        "Температура масла. У большинства EJ своего датчика нет, это оценка по ОЖ, времени и нагрузке: прогретое масло обычно на 10–20° горячее антифриза, под нагрузкой больше, но точность у оценки условная (если есть с чем сравнить, в настройках машины есть поправка). Пока антифриз ниже 80°, не крутите выше 3000–3500 оборотов. " +
             "Лампа давления масла загорается почти при нуле (0,15 бар, а норма на горячих холостых от 1 бара): если загорелась, глушите сразу. Уровень щупом проверяйте хотя бы раз в пару заправок."),
     Spot("crank", "Коленвал", V3(0f, -0.25f, -1.38f), listOf("rpm", "load"),
         "Обороты и нагрузка (воздух за оборот, г/об). Прогретые холостые EJ около 650–800 об/мин."),
@@ -223,10 +229,19 @@ internal fun Engine3DTab(bottom: @Composable () -> Unit = {}) {
     // the engine of this car: from the ECU's ROM, else the car set up; unknown: the generic EJ drawn here
     val demoOn by Repo.demoOn.collectAsState()
     val engine = remember(init, guardTurbo, demoOn) { kg.forester.sg.ssm.EngineId.detect(appCtx) }
+    // the real model when the app has it rendered for this family, else the one drawn here; its JSON is read off the
+    // main thread, and the room stands empty until then (which one it is decides where everything goes)
+    val read by androidx.compose.runtime.produceState<Pair<kg.forester.sg.ssm.EngineInfo, EngineFrames?>?>(null, engine) {
+        value = engine to kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { EngineFrames.load(appCtx, engine) }
+    }
+    val loaded = read
+    if (loaded == null || loaded.first != engine) {
+        Box(Modifier.fillMaxSize())
+        return
+    }
+    val frames = loaded.second
     val turbo = engine.turbo
     val mesh = remember(engine) { engineMesh(engine) }
-    // the real model when the app has it rendered for this family, else the one drawn here
-    val frames = remember(engine) { EngineFrames.load(appCtx, engine) }
     var frameF by remember { mutableFloatStateOf(0f) }
     val frame = frames?.let { ((frameF.roundToInt() % it.count) + it.count) % it.count } ?: 0
     var bmp by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -234,7 +249,7 @@ internal fun Engine3DTab(bottom: @Composable () -> Unit = {}) {
         if (frames != null) bmp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { frames.bitmap(appCtx, frame) } ?: bmp
     }
     val avail by Repo.rrAvailable.collectAsState()
-    val ctx = rememberMetricCtx()
+    val ctx by rememberMetricCtx()
     var yaw by remember { mutableFloatStateOf(0.75f) }
     var pitch by remember { mutableFloatStateOf(0.5f) }
 
@@ -244,16 +259,19 @@ internal fun Engine3DTab(bottom: @Composable () -> Unit = {}) {
         .ifEmpty { SPOTS.filter { !it.turboOnly || turbo } }
         .filter { frames == null || frames.anchors.containsKey(it.id) }
 
+    val calloutW = calloutWidth()
     BoxWithConstraints(
         Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp))
-            .background(Brush.radialGradient(listOf(Color(0xFF1C2233), C.Bg)))
+            .background(Brush.radialGradient(listOf(C.palette.stageTop, C.palette.stageFoot)))
             .border(1.dp, C.Border, RoundedCornerShape(18.dp)),
     ) {
         val d = LocalDensity.current
         val wPx = with(d) { maxWidth.toPx() }
         val hPx = with(d) { maxHeight.toPx() }
-        val labelW = with(d) { 184.dp.toPx() }
-        val labelH = with(d) { 58.dp.toPx() }
+        val labelW = with(d) { calloutW.toPx() }
+        // six to a side have to fit the panel's height: a low panel gets lower callouts, their text with them
+        val calloutH = calloutHeight(maxHeight)
+        val labelH = with(d) { calloutH.toPx() }
         val margin = with(d) { 14.dp.toPx() }
         val cy = hPx * 0.58f
         val cx = wPx * 0.5f
@@ -360,7 +378,7 @@ internal fun Engine3DTab(bottom: @Composable () -> Unit = {}) {
 
         for (s in spots) {
             val o = placed[s] ?: continue
-            Callout(s, avail, ctx, guardNote(s.id, g), selected == s, Modifier.offset { IntOffset(o.x.roundToInt(), o.y.roundToInt()) }) {
+            Callout(s, avail, ctx, guardNote(s.id, g), selected == s, calloutH, Modifier.offset { IntOffset(o.x.roundToInt(), o.y.roundToInt()) }) {
                 selected = if (selected == s) null else s
                 watched = false
             }
@@ -399,7 +417,7 @@ internal fun Engine3DTab(bottom: @Composable () -> Unit = {}) {
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     T(s?.title ?: "Что отслеживается", 17.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    Icon(Lucide.X, "Закрыть", tint = C.Sub, modifier = Modifier.size(22.dp).clip(CircleShape).clickable { selected = null; watched = false })
+                    IconTap(Lucide.X, "Закрыть", { selected = null; watched = false })
                 }
                 Spacer(Modifier.height(6.dp))
                 Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
@@ -421,7 +439,7 @@ internal fun Engine3DTab(bottom: @Composable () -> Unit = {}) {
                             "coolant" -> CoolingDetails()
                         }
                         Spacer(Modifier.height(10.dp))
-                        T(s.about, 13.sp, C.Text.copy(alpha = 0.85f))
+                        T(spotAbout(s.about, engine), 13.sp, C.Text.copy(alpha = 0.85f))
                     }
                 }
             }
@@ -458,6 +476,13 @@ internal fun engineSource(e: kg.forester.sg.ssm.EngineInfo): String = when (e.so
 private fun valueText(m: Indicator, v: Float?): String =
     m.text(v) + if (m.unit.isEmpty() || v == null) "" else if (m.unit.startsWith("°")) m.unit else " ${m.unit}"
 
+/** A callout's size: two lines of the secondary size beside its icon, no wider than the engine can spare. */
+@Composable
+private fun calloutWidth() = maxOf(184.dp, LocalCar.current.secondary.asDp() * 8.5f)
+
+@Composable
+private fun calloutHeight(room: Dp) = minOf(maxOf(58.dp, LocalCar.current.secondary.lineDp() * 2f + 2.dp), (room - 28.dp) / 6f - 8.4.dp).coerceAtLeast(44.dp)
+
 /** [main] and, bottom-aligned after it, [aside] if the rest of the width takes it whole; otherwise [aside] is left out. */
 @Composable
 private fun MainAndAside(main: @Composable () -> Unit, aside: (@Composable () -> Unit)?) {
@@ -477,7 +502,7 @@ private fun MainAndAside(main: @Composable () -> Unit, aside: (@Composable () ->
 /** A callout card: the part, its main value large in the colour of its state, a second value small. */
 @Composable
 private fun Callout(
-    s: Spot, avail: List<kg.forester.sg.ssm.RrParam>, ctx: MetricCtx, note: Pair<String, Color>?, selected: Boolean, modifier: Modifier,
+    s: Spot, avail: List<kg.forester.sg.ssm.RrParam>, ctx: MetricCtx, note: Pair<String, Color>?, selected: Boolean, height: Dp, modifier: Modifier,
     onClick: () -> Unit,
 ) {
     val main = s.metrics.firstNotNullOfOrNull { Metrics.of(it, avail) }
@@ -490,7 +515,7 @@ private fun Callout(
         else -> C.Green
     }
     Row(
-        modifier.width(184.dp).height(58.dp).clip(RoundedCornerShape(14.dp))
+        modifier.width(calloutWidth()).height(height).clip(RoundedCornerShape(14.dp))
             .background(C.Card.copy(alpha = if (selected) 0.98f else 0.86f))
             // «all fine» stays quiet (the icon says it), so an orange or red frame stands out among a dozen cards
             .border(1.dp, if (selected) Color.White else state.copy(alpha = if (state == C.Green) 0.3f else 0.7f), RoundedCornerShape(14.dp))
@@ -502,11 +527,13 @@ private fun Callout(
         }
         Spacer(Modifier.width(9.dp))
         Column {
-            T(s.title, 11.sp, C.Sub, maxLines = 1)
+            // six to a side and the panel low: the value alone at the full size, the icon and a tap say what it is
+            val textSp = LocalCar.current.secondary
+            if (height >= textSp.lineDp() * 2f) FitText(s.title, textSp, color = C.Sub)
             // the small second value only when it fits whole beside the main one (it was cut to «0.1…» in the card's
             // fixed width); the main value always stays
             MainAndAside(
-                { T(if (v == null && note != null) note.first else main?.let { valueText(it, v) } ?: "—", 17.sp, C.Text, FontWeight.Bold, maxLines = 1) },
+                { FitText(if (v == null && note != null) note.first else main?.let { valueText(it, v) } ?: "—", textSp, color = C.Text, weight = FontWeight.Bold) },
                 // no reading of its own: the guard's value takes its place
                 if (note != null && v != null) ({ T("  " + note.first, 11.sp, note.second, maxLines = 1) })
                 else if (second != null) ({ T("  " + valueText(second.first, second.second), 11.sp, C.Sub, maxLines = 1) })

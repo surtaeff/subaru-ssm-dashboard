@@ -129,7 +129,7 @@ fun DrawScope.outlineCarOnGround(cx: Float, ground: Float, rear: Boolean) {
     scale(-1f, 1f, Offset(cx, ground)) { outlineCarSide(cx - cw / 2, ground - cw * 0.366f, cw) }
 }
 
-/** «Тип машины» in Настройки → «Авто и адаптер»: found by itself, or said by hand. */
+/** «Тип машины» in Настройки → «Машина и адаптер»: found by itself, or said by hand. */
 @Composable
 fun CarKindSettings() {
     val s = Repo.settings
@@ -146,6 +146,6 @@ fun CarKindSettings() {
     }
     val now = if (other) "другая машина" + (make?.let { " (${it.name})" } ?: "") else "Subaru"
     T((if (kind == "auto") "Сейчас: $now. По VIN и по ответу ЭБУ. " else "") +
-        "У другой машины скрыто то, что есть только у Subaru: экран АКПП, «Обучение», 3D-модели, профили RomRaider и CarBerry.",
+        "У другой машины скрыто то, что есть только у Subaru: экран АКПП, «Обучение», профили RomRaider и CarBerry.",
         11.sp, C.Sub)
 }

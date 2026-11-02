@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.composables.icons.lucide.Flame
 import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.Monitor
 import com.composables.icons.lucide.Usb
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import kg.forester.sg.data.*
@@ -31,14 +32,21 @@ import java.util.Locale
 
 @Composable
 fun ExtraSensorSettings() {
-    var wideband by remember { mutableStateOf(false) }
+    var part by remember { mutableStateOf("box") }
     Column {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Chip("SensorBox", !wideband, { wideband = false })
-            Chip("ШДК по USB", wideband, { wideband = true })
+            Chip("SensorBox", part == "box", { part = "box" })
+            Chip("ШДК по USB", part == "wideband", { part = "wideband" })
+            Chip("Цветной экран", part == "screen", { part = "screen" }, Lucide.Monitor)
         }
         Spacer(Modifier.height(8.dp))
-        Box(Modifier.weight(1f)) { if (wideband) WidebandSettings() else SensorBoxSettings() }
+        Box(Modifier.weight(1f)) {
+            when (part) {
+                "wideband" -> WidebandSettings()
+                "screen" -> UsbScreenSettings()
+                else -> SensorBoxSettings()
+            }
+        }
     }
 }
 
@@ -67,7 +75,7 @@ fun WidebandSettings() {
     @Composable
     fun title(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) =
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            androidx.compose.material3.Icon(icon, null, tint = C.Text, modifier = Modifier.size(22.dp))
+            Icon(icon, null, tint = C.Text, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(10.dp))
             T(text, 17.sp, weight = androidx.compose.ui.text.font.FontWeight.SemiBold)
         }
@@ -75,7 +83,7 @@ fun WidebandSettings() {
         Panel(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())) {
             title(Lucide.Flame, "Innovate LC-2 / LC / MTX-L")
             Spacer(Modifier.height(6.dp))
-            T("Цифровой выход контроллера → совместимый USB–serial адаптер → магнитола. Один контроллер, 19200 бод. Аналоговый вход Arduino настраивается в SensorBox.", 12.sp, C.Sub)
+            SettingHint("Цифровой выход контроллера → совместимый USB–serial адаптер → магнитола. Один контроллер, 19200 бод. Аналоговый вход Arduino настраивается в SensorBox.")
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 T("Читать ШДК по USB", 15.sp, modifier = Modifier.weight(1f))
@@ -96,7 +104,7 @@ fun WidebandSettings() {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            T("λ настоящая, (L + 500) / 1000, AFR по стехиометрии контроллера. Прогрев, ошибки и отсутствие свежих данных не заменяются числом.", 11.sp, C.Sub)
+            SettingHint("λ настоящая, (L + 500) / 1000, AFR по стехиометрии контроллера. Прогрев, ошибки и отсутствие свежих данных не заменяются числом.")
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip(if (preview) "Остановить тест" else "Тест статусов", preview, {
@@ -105,7 +113,7 @@ fun WidebandSettings() {
                 })
             }
             Spacer(Modifier.height(6.dp))
-            T("Тест циклически показывает измерение, прогрев и ошибки на синтетических данных; на это время чтение USB приостанавливается. Показатели «AFR ШДК» и «λ ШДК» доступны в выборе приборов. В CSV они отдельные от AFR ЭБУ.", 11.sp, C.Sub)
+            SettingHint("Тест циклически показывает измерение, прогрев и ошибки на синтетических данных; на это время чтение USB приостанавливается. Показатели «AFR ШДК» и «λ ШДК» доступны в выборе приборов. В CSV они отдельные от AFR ЭБУ.")
         }
         Panel(Modifier.weight(1.2f).fillMaxHeight().verticalScroll(rememberScrollState())) {
             title(Lucide.Usb, "USB-адаптер")
@@ -141,7 +149,7 @@ fun WidebandSettings() {
                 }
             }
             Spacer(Modifier.height(10.dp))
-            T("Адаптер ШДК узнаётся по серийному номеру, а без него (CH340) по пакетам Innovate: приложение пару секунд слушает адаптер, ничего не отправляя. Только узнанный адаптер исключается из поиска ЭБУ и SensorBox. Два одинаковых адаптера без серийного номера различаются, когда контроллер включён; не получилось — кабель ЭБУ остаётся кабелю ЭБУ, а здесь и в предупреждениях будет сказано.", 11.sp, C.Sub)
+            SettingHint("Адаптер ШДК узнаётся по серийному номеру, а без него (CH340) по пакетам Innovate: приложение пару секунд слушает адаптер, ничего не отправляя. Только узнанный адаптер исключается из поиска ЭБУ и SensorBox. Два одинаковых адаптера без серийного номера различаются, когда контроллер включён; не получилось — кабель ЭБУ остаётся кабелю ЭБУ, а здесь и в предупреждениях будет сказано.")
             if (cfg.vendor >= 0) {
                 Spacer(Modifier.height(10.dp))
                 Chip("Забыть адаптер", false, { save(WidebandConfig()) })
