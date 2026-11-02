@@ -1,7 +1,8 @@
 {
- "tag": "v0.9-beta32",
- "name": "0.9-beta32",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v0.9-beta32/subaru-ssm-dashboard.apk",
- "size": 128596752,
- "notes": "Группа CarPulse в Telegram (Настройки, Связь, QR-код), понятный плеер Bluetooth на Microntek."
+ "tag": "v1.0-beta1",
+ "name": "1.0-beta1",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta1/subaru-ssm-dashboard.apk",
+ "size": 125229715,
+ "notes": "Английский язык, 13 тем, новые датчики и панели, значок ошибок, мини-плеер, настройка меню, мили, заметно быстрее работа.",
+ "logUrl": "https://script.google.com/macros/s/AKfycbyItYtasioVogj8klr_jO6DD3v2052wrEYNdCeyKa0b5J9jsX2sAIYam7JFS9xnCrmYkA/exec"
 }
