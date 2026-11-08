@@ -48,7 +48,7 @@ object EspFlasher {
         else -> null
     }
 
-    private val held = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val held = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
     private fun hold(device: String) { held += device; ScreenLink.pauseForFlash(device, true) }
 

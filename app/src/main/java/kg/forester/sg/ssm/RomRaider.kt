@@ -328,7 +328,7 @@ object RomRaider {
             val cv = c.getJSONArray(k)
             if (first == null) first = cv
             if (typed.isEmpty()) typed = cv.getString(3)
-            RrExpr.parse(cv.getString(1))?.let { convs.putIfAbsent(cv.getString(0).lowercase(), it) }
+            RrExpr.parse(cv.getString(1))?.let { convs.getOrPut(cv.getString(0).lowercase()) { it } }
         }
         return RrParam(
             id = p.getString("id"), kind = kind, target = p.getInt("t"),

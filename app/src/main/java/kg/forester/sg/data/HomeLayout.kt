@@ -383,6 +383,28 @@ val TcuBoard = Board(
     ),
 )
 
+/**
+ * «Расход», tab «Текущий»: the panels of its fixed layout as cards, in the same two rows and about the same proportions
+ * (the gauge with the tank figures beside it and the chart; the trip, the modes and the last trips).
+ */
+val FuelBoard = Board(
+    "fuelTiles", 12, 12, stretch = true,
+    defaults = listOf(
+        TileCfg("inst", true, 3), TileCfg("tank", true, 4), TileCfg("chart", true, 5),
+        TileCfg("trip", true, 6), TileCfg("modes", true, 3), TileCfg("recent", true, 3),
+    ),
+)
+
+/**
+ * The «Текущий» tab on a 7" or 8" screen until the driver saves his own: the gauge and the tank figures over the trip,
+ * the chart, the modes and the last trips to add. Anything saved is the saved one.
+ */
+fun fuelEffective(saved: String, small: Boolean): String {
+    if (saved.isNotBlank() || !small) return saved
+    val on = listOf(TileCfg("inst", true, 5), TileCfg("tank", true, 7), TileCfg("trip", true, 12))
+    return FuelBoard.format(on + FuelBoard.defaults.filter { d -> on.none { it.id == d.id } }.map { it.copy(on = false) })
+}
+
 /** The SensorBox outputs' widgets (button or slider) a screen can show. */
 val OUT_WIDGETS = (1..8).map { "outw_$it" }
 
@@ -412,6 +434,7 @@ object Boards {
     fun byKey(key: String) = when (key) {
         DriveBoard.key -> DriveBoard
         TcuBoard.key -> TcuBoard
+        FuelBoard.key -> FuelBoard
         "myTiles" -> MyBoard
         else -> HomeLayout.board
     }

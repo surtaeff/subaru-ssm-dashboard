@@ -47,8 +47,14 @@ object TapSound {
         val handler = Handler(HandlerThread("tap-sound").apply { start() }.looper)
         var pool: SoundPool? = null
         var id = 0
+        var logged = 0
         val p = TapPlayer(object : TapPlayer.Out {
-            override fun play() = pool?.play(id, 1f, 1f, 1, 0, 1f) ?: 0
+            override fun play(): Int {
+                // the first clicks of a run in a sent log: a unit source ("fyt: source …") changing right after one
+                // would say the head unit reacts to any Android sound, focus or not
+                if (logged < 3) { logged++; kg.forester.sg.ssm.SsmTrace.log("tap: click, no focus (unit source ${Fyt.appId.value})", keep = true) }
+                return pool?.play(id, 1f, 1f, 1, 0, 1f) ?: 0
+            }
             override fun stop(stream: Int) { pool?.stop(stream) }
         }, { handler.post(it) }, on)
         player = p

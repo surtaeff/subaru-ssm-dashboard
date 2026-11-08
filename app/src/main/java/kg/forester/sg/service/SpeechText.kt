@@ -312,7 +312,7 @@ object SpeechText {
     /** Unit words already written out, in any form, so «91 градусов» comes out «девяносто один градус». */
     private val UNIT_WORDS: Map<String, Pair<Unit, Case?>> = buildMap {
         for (u in listOf(DEG, VOLT, BAR, PCT, KM, LITRE, REV, SEC, MIN, HOUR, MHOUR, DAY, TIMES, MS)) {
-            for (f in listOf(u.nomSg, u.genSg, u.genPl, u.accSg)) putIfAbsent(f, u to null)
+            for (f in listOf(u.nomSg, u.genSg, u.genPl, u.accSg)) getOrPut(f) { u to null }
             put(u.prepSg, u to Case.PREP); put(u.prepPl, u to Case.PREP)
         }
         put("бар", BAR to null)

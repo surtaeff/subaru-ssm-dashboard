@@ -66,8 +66,28 @@ internal fun <T> pickSession(all: List<T>, playing: (T) -> Boolean, hasTrack: (T
     all.firstOrNull(playing) ?: all.firstOrNull { !isBt(it) || hasTrack(it) || a2dp() }
 
 object MediaSessions {
-    fun allowed(ctx: Context): Boolean =
-        androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
+    @Volatile private var accessSeen = ""
+
+    /**
+     * Three ways to ask, since a head unit's firmware may answer one of them wrong: the settings string, the system's own
+     * answer (Android 8.1+), and whether the sessions, the thing this permission is for, can actually be read.
+     */
+    fun allowed(ctx: Context): Boolean {
+        val listener = ComponentName(ctx, MediaListener::class.java)
+        val listed = runCatching { androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName) }.getOrDefault(false)
+        val granted = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1 && runCatching {
+            ctx.getSystemService(android.app.NotificationManager::class.java).isNotificationListenerAccessGranted(listener)
+        }.getOrDefault(false)
+        val readable = !listed && !granted && runCatching {
+            ctx.getSystemService(MediaSessionManager::class.java).getActiveSessions(listener); true
+        }.getOrDefault(false)
+        val seen = "listed=$listed granted=$granted sessions=$readable"
+        if (seen != accessSeen) {
+            accessSeen = seen
+            kg.forester.sg.ssm.SsmTrace.log("notification access: $seen sdk=${android.os.Build.VERSION.SDK_INT}", keep = true)
+        }
+        return listed || granted || readable
+    }
 
     /** The session that plays now, else the latest one that counts ([pickSession]); null without the listener permission. */
     fun controller(ctx: Context): MediaController? = runCatching {

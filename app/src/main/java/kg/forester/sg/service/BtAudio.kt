@@ -143,7 +143,18 @@ object BtAudio {
         android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE,
     )
 
-    /** GAIN and an abandon at once, see [kg.forester.sg.service.audio.focusStep] for when. */
+    /**
+     * GAIN and an abandon at once, see [kg.forester.sg.service.audio.focusStep] for when: only from the driver's own
+     * action (Bluetooth picked in «Медиа», or its play button) with a phone session and nothing heard; never from a
+     * tab switch or a restored mode (enter(byUser = false) asks for nothing), and never on FYT ([kg.forester.sg.service.audio.FytBt] has no pulse).
+     *
+     * Why not a transient GAIN, which would hurt nobody: the sink is stuck in a transient loss, so someone else is
+     * on top of the focus stack. A transient request of ours goes above them, and its abandon hands the focus back to
+     * that top one, not to the sink: it stays silent. Only a permanent GAIN clears the stack and sends the sink to
+     * "no focus", from where the play that follows makes it ask again. The price is that a player still holding the
+     * focus (one paused with it, a radio app whose sound isn't Android's) gets a permanent loss and stays off, which
+     * is what picking Bluetooth means anyway. The old call works on every API level, so no AudioFocusRequest here.
+     */
     internal fun focusPulse(ctx: Context): Int? {
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val l = AudioManager.OnAudioFocusChangeListener { }
@@ -151,11 +162,11 @@ object BtAudio {
         val got = runCatching { am.requestAudioFocus(l, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN) }.getOrNull()
         @Suppress("DEPRECATION")
         runCatching { am.abandonAudioFocus(l) }
-        SsmTrace.log("bt: focus pulse, answer $got", keep = true)
+        SsmTrace.log("bt: focus pulse (gain, abandoned at once), answer $got", keep = true)
         return got
     }
 
-    internal fun prepare(ctx: Context) { controller(ctx)?.let { c -> runCatching { c.transportControls.prepare() } } }
+    internal fun prepare(ctx: Context) { controller(ctx)?.let { c -> if (android.os.Build.VERSION.SDK_INT >= 24) runCatching { c.transportControls.prepare() } } }
 
     /** The browser's session, up to [ms] when the browser is on its way. */
     internal suspend fun awaitSession(ctx: Context, ms: Long) {

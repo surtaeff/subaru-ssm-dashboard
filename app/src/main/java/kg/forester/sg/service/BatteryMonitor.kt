@@ -45,6 +45,8 @@ class BatteryMonitor(private val ctx: Context) {
     /** A start whose record waits for the voltage to recover (or a minute to pass). */
     private var pendingCrank: BatteryEvent? = null
     private var restingSinceMs = 0L
+    /** When the last sample came: a long pause before the next one is the ignition switched off in between. */
+    private var lastSampleMs = 0L
     /** Voltage of the last 30 s with the engine running, for the alternator warnings. */
     private val window30 = ArrayDeque<Pair<Long, Float>>()
     /** This drive the alternator was seen charging (13.6 V+): 12.5–13 V later is the ECU's charge cut-out, not a fault. */
@@ -72,6 +74,21 @@ class BatteryMonitor(private val ctx: Context) {
         voltSlot = slot
         voltSum += v; voltN++
 
+        // no data for a while: the ignition was off. The ECU loses power with the key, mostly before it has read
+        // 0 rpm, so the engine stopped when it was last heard running, not now (else the next morning's first
+        // reading would say "stood 0 min"), and the stop's resting reading is a new one
+        if (lastSampleMs != 0L && now - lastSampleMs > SESSION_GAP_MS) {
+            if (wasRunning) {
+                Repo.settings.lastEngineOffMs = lastSampleMs
+                logCharging(lastSampleMs)
+                finishCrank(lastSampleMs, -1f)
+                wasRunning = false
+            }
+            restingSamples.clear()
+            restingLogged = false
+        }
+        lastSampleMs = now
+
         if (!running && wasRunning) {
             Repo.settings.lastEngineOffMs = now
             logCharging(now)
@@ -85,22 +102,7 @@ class BatteryMonitor(private val ctx: Context) {
             // after ~5 s of steady ignition-on readings publish the resting voltage: by time, not by count (OBD-II
             // reads the voltage only every few polls, the fast poll 12 times a second)
             if (restingSamples.size >= 5 && now - restingSinceMs >= 5000) {
-                val med = restingSamples.map { it.second }.sorted()[restingSamples.size / 2]
-                Repo.battery.value = Repo.battery.value.copy(restingV = med, restingTimeMs = now)
-                val off = Repo.settings.lastEngineOffMs
-                val parkedH = if (off > 0 && now > off) (now - off) / 3_600_000f else null
-                Repo.battery.value = Repo.battery.value.copy(restingParkedH = parkedH)
-                if (!restingLogged) {
-                    restingLogged = true
-                    // a flat battery: below 12.2 V after standing long enough for the surface charge to go
-                    if (Repo.settings.feature("battAlert") && med < 12.2f && (parkedH == null || parkedH >= 2f)) {
-                        Alerts.raise("battLow", "Аккумулятор разряжен: %.1f В, около %d %%".format(med, socPct(med)), Alerts.Level.WARN, 6 * 3_600_000L)
-                    }
-                    event(now, "resting", med.toDouble(), 0.0, info(
-                        "parked_h" to parkedH?.toDouble(), "soc_pct" to socPct(med).toDouble(),
-                        "intake_c" to s.intakeC?.toDouble(), "coolant_c" to s.coolantC?.toDouble(),
-                    ))
-                }
+                resting(restingSamples.map { it.second }.sorted()[restingSamples.size / 2], now, s)
             }
         }
 
@@ -128,6 +130,9 @@ class BatteryMonitor(private val ctx: Context) {
                     pendingCrank = BatteryEvent(now, "crank", minV.toDouble(), dur.toDouble(), info(
                         "intake_c" to s.intakeC?.toDouble(), "coolant_c" to s.coolantC?.toDouble(), "crank_rpm" to crankRpm?.toDouble(),
                     ))
+                    // cranked before the 5 s of a resting reading: what the ECU gave between the key and the starter
+                    // (a daily start, the app connected a second or two before it, never had one)
+                    if (!restingLogged) beforeCrank(restingSamples, minV)?.let { (t, rv) -> resting(rv, t, s) }
                 }
             }
             restingSamples.clear()
@@ -201,6 +206,24 @@ class BatteryMonitor(private val ctx: Context) {
         p.edit().putLong("cutoutInfo", now).apply()
         Alerts.raise("altCutout", "Напряжение %.1f В на ходу у этой Subaru нормально: блок двигателя сам временно отключает зарядку при малой нагрузке. ".format(avg) +
             "Включите фары или печку, и зарядка вернётся", Alerts.Level.INFO, 0L, speak = false)
+    }
+
+    /** A resting voltage [med] read at [now]: on the screen, and the stop's first one in the log. */
+    private fun resting(med: Float, now: Long, s: EcuSnapshot) {
+        Repo.battery.value = Repo.battery.value.copy(restingV = med, restingTimeMs = now)
+        val off = Repo.settings.lastEngineOffMs
+        val parkedH = if (off > 0 && now > off) (now - off) / 3_600_000f else null
+        Repo.battery.value = Repo.battery.value.copy(restingParkedH = parkedH)
+        if (restingLogged) return
+        restingLogged = true
+        // a flat battery: below 12.2 V after standing long enough for the surface charge to go
+        if (Repo.settings.feature("battAlert") && med < 12.2f && (parkedH == null || parkedH >= 2f)) {
+            Alerts.raise("battLow", "Аккумулятор разряжен: %.1f В, около %d %%".format(med, socPct(med)), Alerts.Level.WARN, 6 * 3_600_000L)
+        }
+        event(now, "resting", med.toDouble(), 0.0, info(
+            "parked_h" to parkedH?.toDouble(), "soc_pct" to socPct(med).toDouble(),
+            "intake_c" to s.intakeC?.toDouble(), "coolant_c" to s.coolantC?.toDouble(),
+        ))
     }
 
     private fun logCharging(now: Long) {
@@ -277,6 +300,24 @@ class BatteryMonitor(private val ctx: Context) {
         /** The resting median's window and the charging average's: 40 and 600 samples of the plain polling. */
         private const val RESTING_MS = 10_000L
         private const val CHARGE_MS = 150_000L
+        /** Longer without a sample: the ignition was off in between (a lost answer or two are a second). */
+        const val SESSION_GAP_MS = 30_000L
+
+        /**
+         * The resting voltage from the 0 rpm samples (time, volts; oldest first) of a stop too short for the 5 s
+         * reading, at the start whose lowest voltage was [crankMinV]: the time of the last one used, and their median.
+         * Some ECUs read 0 rpm while the starter turns, so what sags 0.3 V+ below the highest is the starter and
+         * left out, two samples must remain, and they must be clearly (0.5 V) above the crank's minimum: else they
+         * were the cranking itself (the app connected while the starter turned). Null when there is no such reading.
+         */
+        fun beforeCrank(samples: List<Pair<Long, Float>>, crankMinV: Float): Pair<Long, Float>? {
+            val top = samples.maxOfOrNull { it.second } ?: return null
+            val kept = samples.filter { it.second > top - 0.3f }
+            if (kept.size < 2) return null
+            val med = kept.map { it.second }.sorted()[kept.size / 2]
+            if (med - crankMinV < 0.5f) return null
+            return kept.last().first to med
+        }
         /** battery.csv: extra = crank ms / alternator duty %, then the further numbers of each reading. */
         private val CSV_INFO = listOf("parked_h", "soc_pct", "intake_c", "coolant_c", "crank_rpm", "recovery_s", "idle_v", "rev_v", "min_v", "max_v")
         private val CSV_HEAD = "datetime,type,volts,extra," + CSV_INFO.joinToString(",")

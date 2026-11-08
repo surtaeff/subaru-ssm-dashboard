@@ -12,7 +12,7 @@ data class TcuSnapshot(
     val frontWheelKmh: Int? = null,
     val rearWheelKmh: Int? = null,
     val brakeClutchPct: Float? = null,
-    /** Selector position: "P/N", "R", "D", "3", "2", "1". */
+    /** Selector position: "P/N", "R", "D", "3", "2", "1", or "M" for the SportShift manual gate; see [TcuParams.selector]. */
     val range: String? = null,
     /** Fuse in the FWD holder (RomRaider S83): the TCU keeps the rear axle off and the FWD lamp is lit. */
     val fwdFuse: Boolean? = null,
@@ -55,7 +55,11 @@ object TcuParams {
     const val REAR_SPEED = 0x51
     const val ATF_NEW = 0x56
     const val RANGE = 0x6B
-    /** Switch byte with the FWD fuse input in bit 0 (RomRaider S83, init byte 28 bit 0). */
+    /**
+     * Switch byte with the FWD fuse input in bit 0 (RomRaider S83, init byte 28 bit 0) and the SportShift manual gate
+     * in bit 7 («Tiptronic Mode Switch», RomRaider S76 / FreeSSM flagbyte 21 bit 8, init byte 28 bit 7; the Subaru
+     * Select Monitor calls it the sport mode signal). Bits 2 and 4 are the +/− taps (S81, S79).
+     */
     const val FWD = 0x6A
     /** Lamp outputs: bit 1 AT OIL TEMP (RomRaider S106), bit 3 diagnosis lamp (S104); init byte 31. */
     const val LAMPS = 0x6D
@@ -72,20 +76,26 @@ object TcuParams {
         val known = all.filter { it.second - 8 < init.capabilities.size }
         if (known.isEmpty()) return (all.map { it.first } + RANGE).toIntArray()
         // Range switch byte isn't in the capability table; verified on this car (bit1 R, bit2 D, bit3 3, bit4 2, bit5 1).
-        // the FWD switch only where the init lists it: a unit without it may refuse the whole request
-        val fwd = if (init.supports(28, 0)) listOf(FWD) else emptyList()
+        // the FWD / manual-gate switch byte only where the init lists one of them: a unit without it may refuse the whole request
+        val fwd = if (init.supports(28, 0) || manualSwitch(init)) listOf(FWD) else emptyList()
         val lamps = if (init.supports(31, 1) || init.supports(31, 3)) listOf(LAMPS) else emptyList()
         return (known.filter { init.supports(it.second, it.third) }.map { it.first } + RANGE + fwd + lamps).toIntArray()
     }
 
-    fun decode(addrs: IntArray, raw: ByteArray, now: Long): TcuSnapshot {
+    /** The unit lists the SportShift manual-gate switch (0x6A bit 7) among its capabilities. */
+    fun manualSwitch(init: EcuInit?): Boolean = init?.supports(28, 7) == true
+
+    /** [init] tells which switch bits of a shared byte are real; without it only the FWD bit is read, as before. */
+    fun decode(addrs: IntArray, raw: ByteArray, now: Long, init: EcuInit? = null): TcuSnapshot {
         val v = HashMap<Int, Int>()
         addrs.forEachIndexed { i, a -> v[a] = raw[i].toInt() and 0xFF }
         val atf = v[ATF_NEW]?.let { it - 50 } ?: v[ATF_OLD]?.let { ATF_TABLE[it] }
+        val gear = v[GEAR]?.let { it + 1 }
+        val manual = v[FWD]?.takeIf { manualSwitch(init) }?.let { it shr 7 and 1 == 1 }
         return TcuSnapshot(
             timeMs = now,
             atfC = atf,
-            gear = v[GEAR]?.let { it + 1 },
+            gear = gear,
             turbineRpm = v[TURBINE]?.let { it * 32 },
             linePressurePct = v[LINE_PRESSURE]?.let { it / 2f },
             lockUpPct = v[LOCK_UP]?.let { it / 2f },
@@ -93,20 +103,37 @@ object TcuParams {
             frontWheelKmh = v[FRONT_SPEED],
             rearWheelKmh = v[REAR_SPEED],
             brakeClutchPct = v[BRAKE_CLUTCH]?.let { it / 2f },
-            fwdFuse = v[FWD]?.let { it and 1 == 1 },
+            fwdFuse = v[FWD]?.takeIf { init == null || init.supports(28, 0) }?.let { it and 1 == 1 },
             atfLamp = v[LAMPS]?.let { it shr 1 and 1 == 1 },
             diagLamp = v[LAMPS]?.let { it shr 3 and 1 == 1 },
-            range = v[RANGE]?.let {
-                when {
-                    it and 0x02 != 0 -> "R"
-                    it and 0x04 != 0 -> "D"
-                    it and 0x08 != 0 -> "3"
-                    it and 0x10 != 0 -> "2"
-                    it and 0x20 != 0 -> "1"
-                    else -> "P/N"
-                }
-            },
+            range = selector(v[RANGE], manual, gear),
         )
+    }
+
+    /**
+     * The selector from the range byte 0x6B (bit 0 N/P, 1 R, 2 D, 3 «3», 4 «2», 5 «1»), the manual-gate switch
+     * ([manual], null when the unit doesn't list it) and the gear the unit holds.
+     *
+     * In the SportShift gate the TCU drops the D bit and raises the range bit of the gear it holds (the FSM ties
+     * «1» range to "driving at 1st gear on manual mode"; 4th has its own bit in 0x6C), so without the switch the
+     * gate read as «1». The switch, when listed, decides; otherwise a gear above the lever range can't be a lever
+     * position (3/2/1 hold the box at or below their number), so it is the manual gate too. Two range bits at
+     * once are no position at all: null, and the screens show the gear alone.
+     */
+    fun selector(rangeBits: Int?, manual: Boolean?, gear: Int?): String? {
+        if (manual == true) return "M"
+        val b = rangeBits ?: return null
+        if (Integer.bitCount(b and 0x3F) > 1) return null
+        val r = when {
+            b and 0x02 != 0 -> "R"
+            b and 0x04 != 0 -> "D"
+            b and 0x08 != 0 -> "3"
+            b and 0x10 != 0 -> "2"
+            b and 0x20 != 0 -> "1"
+            else -> "P/N"
+        }
+        val held = r.toIntOrNull()
+        return if (manual == null && held != null && gear != null && gear > held) "M" else r
     }
 
     /** FreeSSM 4EAT ATF temperature table for address 0x49 (raw -> °C). */

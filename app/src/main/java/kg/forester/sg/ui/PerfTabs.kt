@@ -399,7 +399,7 @@ fun SeriesTab() {
                                 }.padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            T(tag ?: "", 16.sp, if (tag == "A") C.Blue else C.Orange, FontWeight.Bold, modifier = Modifier.width(22.dp))
+                            T(tag ?: "", 16.sp, if (tag == "A") C.Blue else C.Orange, FontWeight.Bold, modifier = Modifier.width(roomFor(22.dp, 16f)))
                             Column(Modifier.weight(1f)) {
                                 T(name(label) + "  ·  ${st.n} шт.", 13.sp, C.Sub, maxLines = 1)
                                 T("%.2f ± %.2f с  ·  лучший %.2f".format(st.mean, st.sd, st.min), 14.sp, weight = FontWeight.SemiBold, maxLines = 1)

@@ -13,10 +13,10 @@ android {
 
     defaultConfig {
         applicationId = "kg.forester.sg"
-        minSdk = 25
+        minSdk = 23
         targetSdk = 34
-        versionCode = 41
-        versionName = "1.0-beta1"
+        versionCode = 42
+        versionName = "1.0-beta2"
     }
 
     // head units and phones are 32 or 64-bit ARM; the other copies of the native libraries only made the APK bigger
@@ -50,7 +50,7 @@ android {
         }
     }
 
-    // minSdk 25 is the head units of Android 7.1: a call above it compiles and crashes there, and no JVM test or new emulator
+    // minSdk 23 is the budget head units of Android 6 (AC8227L and the like, often shown as "9.1"): a call above it compiles and crashes there, and no JVM test or new emulator
     // shows it. NewApi is fatal, so every release build (lintVitalRelease) stops on one; the other checks are left as they were.
     // abortOnError stays on: with it off a fatal issue no longer stops the release build either.
     lint {

@@ -144,7 +144,7 @@ object Updater {
             if (code != 200) error("HTTP $code")
             break
         }
-        val total = c.contentLengthLong.takeIf { it > 0 } ?: r.size
+        val total = c.contentLength.toLong().takeIf { it > 0 } ?: r.size
         c.inputStream.use { input ->
             f.outputStream().use { out ->
                 val buf = ByteArray(64 * 1024)

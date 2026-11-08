@@ -47,8 +47,7 @@ object Alerts {
         if (tts != null) return
         tts = TextToSpeech(ctx.applicationContext) { status ->
             val t = tts ?: return@TextToSpeech
-            ttsReady = status == TextToSpeech.SUCCESS &&
-                t.setLanguage(Speech.locale()).let { it != TextToSpeech.LANG_MISSING_DATA && it != TextToSpeech.LANG_NOT_SUPPORTED }
+            ttsReady = status == TextToSpeech.SUCCESS && speaksChosen(t)
             t.setOnUtteranceProgressListener(progress)
             // like a navigator's voice: over the music, not at the notification volume
             runCatching {
@@ -121,9 +120,24 @@ object Alerts {
     /** The language was changed: the head unit's voice follows, whether it can or not. */
     fun languageChanged(ctx: Context) {
         val t = tts
-        if (t != null) ttsReady = runCatching { t.setLanguage(Speech.locale()) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
-            .let { it != TextToSpeech.LANG_MISSING_DATA && it != TextToSpeech.LANG_NOT_SUPPORTED }
+        if (t != null) ttsReady = speaksChosen(t)
         if (Repo.settings.voiceAlerts) Speech.prepare(ctx)
+    }
+
+    /**
+     * Asks the head unit's voice for the chosen language and checks it took it. Some units' engines answer «available»
+     * to Russian and go on with an English voice: the phrase came out in English, the engine never said it had started,
+     * and after the wait the model said it again in Russian. The voice it has now must be of the language asked for.
+     */
+    private fun speaksChosen(t: TextToSpeech): Boolean {
+        val want = Speech.locale()
+        val answer = runCatching { t.setLanguage(want) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
+        val voiceLang = if (android.os.Build.VERSION.SDK_INT >= 21) runCatching { t.voice?.locale?.language }.getOrNull() else null
+        val ok = answer != TextToSpeech.LANG_MISSING_DATA && answer != TextToSpeech.LANG_NOT_SUPPORTED &&
+            (voiceLang == null || voiceLang.equals(want.language, ignoreCase = true) || (want.language == "ru" && voiceLang.equals("rus", true)) ||
+                (want.language == "en" && voiceLang.equals("eng", true)))
+        kg.forester.sg.ssm.SsmTrace.log("system voice: ${runCatching { t.defaultEngine }.getOrNull()} asked $want, answer $answer, voice $voiceLang -> ${if (ok) "used" else "not used"}", keep = true)
+        return ok
     }
 
     /** The head unit's own voice can say the chosen language. */

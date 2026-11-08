@@ -107,7 +107,11 @@ fun BatteryScreen() {
             }
             VoltCard(Lucide.Moon, "Покой", "мотор заглушен", C.Violet, "Покой (зажигание, двигатель заглушен)",
                 b.restingV, restingVerdict(b.restingV), b.restingTimeMs, Modifier.weight(1f),
-                extra = b.restingParkedH?.let { Lucide.Clock to parkedText(it) })
+                extra = b.restingParkedH?.let { Lucide.Clock to parkedText(it) },
+                // an old reading: the app has not seen the engine standing with the ignition on since (it
+                // connects a few seconds after the key, the start came first)
+                extra2 = if (b.restingTimeMs > 0 && System.currentTimeMillis() - b.restingTimeMs > 20 * 3_600_000L)
+                    Lucide.Info to "до пуска подождите 3 с" else null)
             VoltCard(Lucide.Zap, "Пуск", "просадка", C.Orange, "Просадка при пуске",
                 b.crankMinV, crankVerdict(b.crankMinV), b.crankTimeMs, Modifier.weight(1f),
                 extra = b.crankMs?.let { Lucide.Timer to "крутил стартер %.1f с".format(it / 1000f) },

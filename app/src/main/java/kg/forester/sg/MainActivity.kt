@@ -131,7 +131,7 @@ private val ScreenSaver = androidx.compose.runtime.saveable.Saver<Screen, String
 class MainActivity : ComponentActivity() {
     override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: android.content.res.Configuration) {
         super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
-        kg.forester.sg.ui.SplitScreen.on.value = isInMultiWindowMode
+        kg.forester.sg.ui.SplitScreen.on.value = android.os.Build.VERSION.SDK_INT >= 24 && isInMultiWindowMode
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -142,7 +142,7 @@ class MainActivity : ComponentActivity() {
         // told apart in a sent log: a start after a dead process, a recreated activity (saved=true), a plain launch
         SsmTrace.log("start: saved=${savedInstanceState != null} sdk=${android.os.Build.VERSION.SDK_INT}", keep = true)
         lastCfg = android.content.res.Configuration(resources.configuration)
-        kg.forester.sg.ui.SplitScreen.on.value = isInMultiWindowMode
+        kg.forester.sg.ui.SplitScreen.on.value = android.os.Build.VERSION.SDK_INT >= 24 && isInMultiWindowMode
         logExitReasons()
         // adb: am start -n kg.forester.sg/.MainActivity --ez demo true [--ez skipSetup true]
         if (intent?.hasExtra("demo") == true) Repo.settings.demo = intent.getBooleanExtra("demo", false)
@@ -334,7 +334,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        kg.forester.sg.ui.SplitScreen.on.value = isInMultiWindowMode
+        kg.forester.sg.ui.SplitScreen.on.value = android.os.Build.VERSION.SDK_INT >= 24 && isInMultiWindowMode
         kg.forester.sg.service.WakeWatch.appOnScreen = true
     }
 
@@ -965,7 +965,7 @@ private fun TopBar(screen: Screen, logo: Boolean) {
                     weight = if (noLink) FontWeight.SemiBold else FontWeight.Normal)
             }
             Spacer(Modifier.width(14.dp))
-            kg.forester.sg.ui.TopValues(Modifier.width(plan.valuesDp.dp), limit = plan.values)
+            kg.forester.sg.ui.TopValues(if (plan.values > 0) Modifier.width(plan.valuesDp.dp) else Modifier.weight(1f), limit = plan.values)
             if (plan.demoDp > 0f) kg.forester.sg.ui.DemoPill(short = true, Modifier.width(plan.demoDp.dp)) // the caption under the name says «демо-данные» already
             if (pill != null && plan.statusDp > 0f) kg.forester.sg.ui.StatusPill(pill, Modifier.width(plan.statusDp.dp))
           }

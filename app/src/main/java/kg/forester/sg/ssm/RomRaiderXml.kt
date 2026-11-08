@@ -274,7 +274,7 @@ object RomRaiderXml {
         // some ecuparams list psi or mmHg before kPa: a metric one first, like the converter
         val cs = all.sortedBy { it.units.lowercase().substringBefore(' ') in IMPERIAL }
         val convs = LinkedHashMap<String, RrExpr>()
-        cs.forEach { c -> RrExpr.parse(c.expr)?.let { convs.putIfAbsent(c.units.lowercase(), it) } }
+        cs.forEach { c -> RrExpr.parse(c.expr)?.let { convs.getOrPut(c.units.lowercase()) { it } } }
         val first = cs.firstOrNull()
         return RrParam(
             id = id, kind = kind, target = target, name = name, nameEn = name, desc = desc,
@@ -307,7 +307,7 @@ object RomRaiderXml {
     fun merge(base: List<RrParam>, baseByRom: Map<String, List<RrParam>>, files: List<Pair<String, Defs>>): Merged {
         val baseById = base.associateBy { it.id }
         val baseExt = HashMap<String, RrParam>()
-        baseByRom.values.forEach { l -> l.forEach { baseExt.putIfAbsent(it.id, it) } }
+        baseByRom.values.forEach { l -> l.forEach { baseExt.getOrPut(it.id) { it } } }
         val all = LinkedHashMap<String, RrParam>()
         base.forEach { all[it.id] = it }
         val touched = HashMap<String, LinkedHashMap<String, RrParam>>()

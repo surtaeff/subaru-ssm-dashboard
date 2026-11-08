@@ -698,9 +698,10 @@ private val Slanted = GenericShape { s, _ ->
 /**
  * The gear: from the automatic's TCU when it answers, otherwise from revs per km/h by [kg.forester.sg.service.Gears]
  * (this car's learned ratios, else the usual Subaru gearboxes). "—" with the clutch down or between gears.
+ * «M3» in the SportShift manual gate.
  */
 private fun gearText(e: kg.forester.sg.ssm.EcuSnapshot, tcu: kg.forester.sg.ssm.TcuSnapshot?): String {
-    tcu?.gear?.takeIf { it > 0 }?.let { return "$it" }
+    tcu?.gear?.takeIf { it > 0 }?.let { return if (tcu.range == "M") "M$it" else "$it" }
     return kg.forester.sg.service.Gears.text(e.rpm, e.speedKmh, Repo.settings.gearbox == "at",
         kg.forester.sg.service.RulesHost.diag.value.gears)
 }

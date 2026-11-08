@@ -298,7 +298,7 @@ object Voice {
     /** One source into [tmp]; any failure (no connection, a cut-off file) is an IOException, so the next source is tried. */
     private fun fetch(ctx: Context, url: String, tmp: File, spec: VoiceModel) {
         val con = URL(url).openConnection().apply { connectTimeout = 20_000; readTimeout = 30_000 }
-        val total = con.contentLengthLong
+        val total = con.contentLength.toLong()
         con.getInputStream().use { inp ->
             tmp.outputStream().use { out ->
                 val buf = ByteArray(64 * 1024)

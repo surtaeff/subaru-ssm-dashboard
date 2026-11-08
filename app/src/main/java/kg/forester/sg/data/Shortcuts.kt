@@ -97,7 +97,7 @@ object Shortcuts {
      * already on, else split screen is turned on through our accessibility service (our app goes to the first
      * half, the other app to the second); with the service off it opens full screen and says how to enable it.
      */
-    fun launch(ctx: Context, s: Shortcut) {
+    fun launch(ctx: Context, s: Shortcut, then: Intent? = null) {
         val pm = ctx.packageManager
         val intent = pm.getLaunchIntentForPackage(s.pkg) ?: return
         val comp: ComponentName = intent.component ?: return
@@ -112,13 +112,24 @@ object Shortcuts {
                 am start --windowingMode 3 -n ${comp.flattenToShortString()}
             """.trimIndent()
             val ok = runCatching { Runtime.getRuntime().exec(arrayOf("su", "-c", script)).waitFor() == 0 }.getOrDefault(false)
-            if (ok) return
+            if (ok) {
+                // whatever is under the new left half fills the right one: home there would minimise the navigator to a strip
+                kg.forester.sg.ssm.SsmTrace.log("split: root ${s.pkg} onTop=${kg.forester.sg.service.WakeWatch.appOnScreen} ${homeInfo(ctx)}", keep = true)
+                startThen(ctx, then)
+                return
+            }
             intent.addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or Intent.FLAG_ACTIVITY_NEW_TASK)
-            val inSplit = (ctx as? android.app.Activity)?.isInMultiWindowMode == true
-            if (!inSplit) {
+            // voice and map links come with the application context: then the mode the activity last reported
+            val act = ctx as? android.app.Activity
+            val inSplit = if (act != null) android.os.Build.VERSION.SDK_INT >= 24 && act.isInMultiWindowMode else kg.forester.sg.ui.SplitScreen.on.value
+            // the toggle docks whatever is on top: with our window not there it docks the navigator itself, which
+            // the system then shrinks to a strip beside the home screen that the divider can't be dragged out of
+            val onTop = kg.forester.sg.service.WakeWatch.appOnScreen
+            kg.forester.sg.ssm.SsmTrace.log("split: ${s.pkg} inSplit=$inSplit onTop=$onTop act=${act != null} pending=${splitPending()} ${homeInfo(ctx)}", keep = true)
+            if (!inSplit && splitPending()) return  // a second tap while the first one is still docking: the toggle would undo it
+            if (!inSplit && onTop) {
                 if (kg.forester.sg.service.SplitService.toggleSplit()) {
-                    // give the system a moment to dock our window before the other app takes the free half
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ runCatching { ctx.startActivity(intent) } }, 700)
+                    startWhenDocked(ctx, intent, then)
                     return
                 }
                 kg.forester.sg.service.Alerts.raise(
@@ -129,14 +140,69 @@ object Shortcuts {
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { ctx.startActivity(intent) }
+        startThen(ctx, then?.also { if (s.split) it.addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT) })
     }
+
+    /**
+     * A link for the app just opened (a route, a place), sent only after the app is in its half: sent at once, it
+     * brought the navigator up full screen before the split toggle, which then docked the navigator as a strip.
+     */
+    private fun startThen(ctx: Context, then: Intent?) {
+        if (then == null) return
+        then.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { ctx.startActivity(then) }.onFailure { kg.forester.sg.ssm.SsmTrace.log("split: link failed: $it") }
+    }
+
+    /** Until when a split toggle is still being waited for (uptime ms). */
+    @Volatile private var splitPendingUntil = 0L
+
+    private fun splitPending() = android.os.SystemClock.uptimeMillis() < splitPendingUntil
+
+    /**
+     * Opens the app in the free half once our window is really docked (the activity reports split screen), not after
+     * a fixed pause: launched before that, on a slow head unit, the app came up full screen on top and the late
+     * toggle docked it instead of ours, as a narrow strip. Gives up waiting after 2 s and launches anyway.
+     */
+    private fun startWhenDocked(ctx: Context, intent: Intent, then: Intent? = null) {
+        val h = android.os.Handler(android.os.Looper.getMainLooper())
+        val t0 = android.os.SystemClock.uptimeMillis()
+        splitPendingUntil = t0 + 2500
+        val tick = object : Runnable {
+            override fun run() {
+                val docked = kg.forester.sg.ui.SplitScreen.on.value
+                val waited = android.os.SystemClock.uptimeMillis() - t0
+                if (!docked && waited < 2000) { h.postDelayed(this, 100); return }
+                kg.forester.sg.ssm.SsmTrace.log("split: docked=$docked after ${waited}ms, launching adjacent", keep = true)
+                // a moment for the divider to settle once docked
+                h.postDelayed({
+                    splitPendingUntil = 0L
+                    runCatching { ctx.startActivity(intent) }
+                    then?.let { l -> h.postDelayed({ startThen(ctx, l.addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)) }, 400L) }
+                }, if (docked) 200L else 0L)
+            }
+        }
+        h.postDelayed(tick, 150)
+    }
+
+    /**
+     * For the log: whether we are the default home screen and whether one of our tasks was started as home. A home
+     * task can't be docked, and beside a docked app it makes the system minimise that app to a strip.
+     */
+    private fun homeInfo(ctx: Context): String = runCatching {
+        val home = ctx.packageManager.resolveActivity(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), android.content.pm.PackageManager.MATCH_DEFAULT_ONLY,
+        )?.activityInfo?.packageName
+        val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val homeTask = am.appTasks.any { t -> runCatching { t.taskInfo.baseIntent.hasCategory(Intent.CATEGORY_HOME) }.getOrDefault(false) }
+        "defaultHome=${home == ctx.packageName} homeTask=$homeTask"
+    }.getOrDefault("home=?")
 
     /** Leaves split screen: closes the left window (the app keeps running in background) so ours goes full screen. */
     fun exitSplit(ctx: Context) {
         val script = "id=${'$'}(am stack list | awk '/^Stack id=/{id=${'$'}2; sub(\"id=\",\"\",id)} /mWindowingMode=split-screen-primary/{print id; exit}'); [ -n \"${'$'}id\" ] && am stack remove ${'$'}id"
         val ok = runCatching { Runtime.getRuntime().exec(arrayOf("su", "-c", script)).waitFor() == 0 }.getOrDefault(false)
         // without root the same accessibility action turns split screen off again
-        if (!ok && (ctx as? android.app.Activity)?.isInMultiWindowMode == true) kg.forester.sg.service.SplitService.toggleSplit()
+        if (!ok && (android.os.Build.VERSION.SDK_INT >= 24 && (ctx as? android.app.Activity)?.isInMultiWindowMode == true)) kg.forester.sg.service.SplitService.toggleSplit()
     }
 
     fun isInstalled(ctx: Context, pkg: String): Boolean =

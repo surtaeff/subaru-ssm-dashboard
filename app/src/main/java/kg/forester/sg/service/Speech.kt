@@ -11,6 +11,7 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsSupertonicModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
+import kg.forester.sg.service.audio.ownSources
 import kg.forester.sg.ssm.SsmTrace
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -113,7 +114,9 @@ object Speech {
                 val cb = object : android.net.ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(n: android.net.Network) { main.post { retryNow(app) } }
                 }
-                (app.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager).registerDefaultNetworkCallback(cb)
+                val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                if (android.os.Build.VERSION.SDK_INT >= 24) cm.registerDefaultNetworkCallback(cb)
+                else cm.registerNetworkCallback(android.net.NetworkRequest.Builder().addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), cb)
                 network = cb
             }.onFailure { SsmTrace.log("speech: no network callback: $it") }
             main.removeCallbacks(retryTimed)
@@ -284,7 +287,7 @@ object Speech {
             if (code != 200) error("HTTP $code")
             break
         }
-        val total = c.contentLengthLong
+        val total = c.contentLength.toLong()
         c.inputStream.use { input ->
             tmp.outputStream().use { out ->
                 val buf = ByteArray(64 * 1024)
@@ -463,7 +466,7 @@ object Speech {
     }
 
     /** A phrase in the air: the focus it asked for, and the Bluetooth path to look at afterwards. */
-    private class Turn(val am: android.media.AudioManager?, val focus: Any?, val legacy: android.media.AudioManager.OnAudioFocusChangeListener, val bt: kg.forester.sg.service.audio.BtVoicePath?)
+    private class Turn(val am: android.media.AudioManager?, val focus: Any?, val legacy: android.media.AudioManager.OnAudioFocusChangeListener, val bt: kg.forester.sg.service.audio.BtVoicePath?, val held: Boolean)
 
     private fun beginTurn(): Turn {
         val level = kg.forester.sg.data.Repo.settings.voiceLoud
@@ -473,27 +476,40 @@ object Speech {
         val ctx = appCtx
         val am = ctx?.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
         val bt = btPath()
-        val pause = level >= 2 && bt?.noPauseForVoice != true
         if (bt?.playingNow() == true) resumeBt = true
         turns.begin()
+        val legacy = android.media.AudioManager.OnAudioFocusChangeListener { }
+        // FYT's tuner and Bluetooth module play through the MCU, not Android's mixer: a duck can't lower them, and
+        // the unit's service pauses its source on any focus loss (the radio stays off, the phone stays paused). So
+        // no focus at all then: the voice is mixed over the source like the unit's own sounds, at the cost of the
+        // source not being lowered under it.
+        val unitSource = ctx != null && kg.forester.sg.service.audio.AudioPlatforms.current(ctx).ownSources &&
+            Fyt.appId.value.let { it == 1 || it == 3 }
+        if (unitSource) {
+            SsmTrace.log("speech: no focus, the unit's source ${Fyt.appId.value} plays", keep = true)
+            return Turn(am, null, legacy, bt, held = false)
+        }
+        // an Android player: ducked, or at the loudest setting paused for a moment, and back by itself afterwards
+        val pause = level >= 2 && bt?.noPauseForVoice != true
         val gain = if (pause) android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT else android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
         // Android 7.1 has no focus requests yet, only the old call with a listener
-        val legacy = android.media.AudioManager.OnAudioFocusChangeListener { }
         val focus: Any? = if (android.os.Build.VERSION.SDK_INT >= 26) android.media.AudioFocusRequest.Builder(gain)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()).build() else null
         @Suppress("DEPRECATION")
-        runCatching {
+        val got = runCatching {
             if (android.os.Build.VERSION.SDK_INT >= 26) am?.requestAudioFocus(focus as android.media.AudioFocusRequest)
             else am?.requestAudioFocus(legacy, android.media.AudioManager.STREAM_MUSIC, gain)
-        }
-        return Turn(am, focus, legacy, bt)
+        }.getOrNull()
+        SsmTrace.log("speech: focus ${if (pause) "transient" else "transient may duck"}, answer $got", keep = true)
+        return Turn(am, focus, legacy, bt, held = true)
     }
 
     private fun endTurn(t: Turn) {
         @Suppress("DEPRECATION")
         runCatching {
-            if (android.os.Build.VERSION.SDK_INT >= 26) t.am?.abandonAudioFocusRequest(t.focus as android.media.AudioFocusRequest)
+            if (!t.held) Unit
+            else if (android.os.Build.VERSION.SDK_INT >= 26) t.am?.abandonAudioFocusRequest(t.focus as android.media.AudioFocusRequest)
             else t.am?.abandonAudioFocus(t.legacy)
         }
         leaveTurn(t.bt)

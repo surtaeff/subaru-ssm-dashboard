@@ -81,3 +81,62 @@ object Derived {
     const val MIN_VE_RPM = 800
     const val MIN_VE_MAP_KPA = 20f
 }
+
+/**
+ * [Derived.vePct] as drawn. MAF reads the air at the intake while the manifold pressure follows it only after the
+ * manifold (and on a turbo the intercooler pipes) has filled or emptied, so every pedal move throws the raw ratio up or
+ * down for a few samples, and on a lift-off (MAP under [Derived.MIN_VE_MAP_KPA]) or below [Derived.MIN_VE_RPM] there is
+ * no number at all. Here the median of the last [WINDOW_MS] drops the lone spikes, an exponential step of [TAU_MS]
+ * evens out the rest, and a gap of up to [HOLD_MS] keeps the last value instead of breaking the line.
+ *
+ * Only for the screen, the log keeps the raw number (as with [kg.forester.sg.ui.Smooth]). Fed once per ECU sample,
+ * keyed by [kg.forester.sg.ssm.EcuSnapshot.timeMs]: every card asking for the same sample gets the same answer.
+ */
+class VeFilter {
+    private val recent = ArrayDeque<Pair<Long, Float>>()
+    private var lastT = NONE
+    private var lastValidT = NONE
+    private var shown: Float? = null
+
+    @Synchronized
+    fun at(timeMs: Long, raw: Float?, rpm: Int?): Float? {
+        if (timeMs == lastT) return shown
+        if (lastT != NONE && (timeMs < lastT - RESET_MS || timeMs > lastT + RESET_MS)) reset()
+        else if (timeMs < lastT) return shown
+        lastT = timeMs
+        if (raw == null || raw.isNaN()) {
+            if (rpm == null || rpm < STOPPED_RPM || lastValidT == NONE || timeMs - lastValidT > HOLD_MS) reset()
+            return shown
+        }
+        recent.addLast(timeMs to raw)
+        while (recent.size > 1 && timeMs - recent.first().first > WINDOW_MS) recent.removeFirst()
+        val sorted = recent.map { it.second }.sorted()
+        val mid = sorted.size / 2
+        val med = if (sorted.size % 2 == 1) sorted[mid] else (sorted[mid - 1] + sorted[mid]) / 2f
+        val prev = shown
+        shown = if (prev == null || lastValidT == NONE) med else {
+            val a = 1f - kotlin.math.exp(-(timeMs - lastValidT).toFloat() / TAU_MS)
+            prev + a * (med - prev)
+        }
+        lastValidT = timeMs
+        return shown
+    }
+
+    private fun reset() {
+        recent.clear()
+        shown = null
+        lastValidT = NONE
+    }
+
+    companion object {
+        const val WINDOW_MS = 500L
+        const val TAU_MS = 300f
+        const val HOLD_MS = 2000L
+        const val RESET_MS = 3000L
+        const val STOPPED_RPM = 400
+        private const val NONE = Long.MIN_VALUE
+
+        /** The one the cards read. */
+        val shared = VeFilter()
+    }
+}

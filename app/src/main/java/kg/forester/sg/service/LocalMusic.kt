@@ -77,7 +77,8 @@ object LocalMusic {
     fun roots(ctx: Context): List<Root> {
         val sm = ctx.getSystemService(StorageManager::class.java)
         val out = ArrayList<Root>()
-        runCatching {
+        // the volume list is Android 7.0+; on Android 6 the /storage walk below finds the sticks and cards
+        if (Build.VERSION.SDK_INT >= 24) runCatching {
             for (v in sm.storageVolumes) {
                 if (v.state != Environment.MEDIA_MOUNTED && v.state != Environment.MEDIA_MOUNTED_READ_ONLY) continue
                 val dir = (if (Build.VERSION.SDK_INT >= 30) v.directory else
@@ -413,6 +414,8 @@ object LocalMusic {
 
     /** Starts playing; with «плавное начало» the music comes up over a second instead of blasting in. */
     private fun play(p: ExoPlayer) {
+        // ExoPlayer takes the media focus (GAIN) on this play, never on prepare: the radio or Bluetooth stops here
+        SsmTrace.log("player: play, media focus", keep = true)
         if (!AudioFx.cfg.value.fadeIn) { p.volume = 1f; p.play(); return }
         p.volume = 0f
         p.play()

@@ -187,7 +187,7 @@ class EcuService : Service() {
             ACTION_EXIT -> {
                 exitRequested.tryEmit(Unit)
                 stopService(Intent(this, PlayerService::class.java))
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -1789,13 +1789,15 @@ class EcuService : Service() {
         if (Repo.settings.tcuAtfOnly != tcuAtfOnly) {
             tcuAtfOnly = Repo.settings.tcuAtfOnly
             addrs = TcuParams.supported(Repo.tcuInit.value ?: return).let { all ->
-                if (tcuAtfOnly) all.filter { it == TcuParams.ATF_OLD || it == TcuParams.ATF_NEW || it == TcuParams.RANGE || it == TcuParams.GEAR }.toIntArray() else all
+                // the selector keeps its switch byte: the SportShift manual gate is bit 7 of it
+                if (tcuAtfOnly) all.filter { it == TcuParams.ATF_OLD || it == TcuParams.ATF_NEW || it == TcuParams.RANGE || it == TcuParams.GEAR ||
+                    (it == TcuParams.FWD && TcuParams.manualSwitch(Repo.tcuInit.value)) }.toIntArray() else all
             }
             tcuAddrs = addrs
         }
         val raw = EcuLink.mutex.withLock { client.read(addrs, SsmClient.TCU) } ?: return
         tcuWatch.poll(client)
-        val t = lockUp(TcuParams.decode(addrs, raw, now), Repo.live.value.rpm, now)
+        val t = lockUp(TcuParams.decode(addrs, raw, now, Repo.tcuInit.value), Repo.live.value.rpm, now)
         Repo.tcu.value = t
         Repo.tcuHistory.add(t)
     }
@@ -1906,15 +1908,44 @@ class EcuService : Service() {
         override fun onProviderDisabled(provider: String) {}
     }
 
-    private val gnssCallback = object : android.location.GnssStatus.Callback() {
-        override fun onSatelliteStatusChanged(status: android.location.GnssStatus) {
-            gpsSats = (0 until status.satelliteCount).count { status.usedInFix(it) }
-            gpsCn0 = (0 until status.satelliteCount).filter { status.usedInFix(it) }.map { status.getCn0DbHz(it) }
-                .sortedDescending().take(4).takeIf { it.size == 4 }?.average()?.toFloat()
-            Repo.gnssSats.value = gpsSats to status.satelliteCount
-            if (System.currentTimeMillis() - lastGpsFixMs > 5000) {
-                Repo.gpsStatus.value = "ищу спутники: видно ${status.satelliteCount}, в решении $gpsSats"
+    /** Satellites seen, the ones in the fix and their signal (dB-Hz), from either listener below. */
+    private fun onSatellites(seen: Int, used: List<Float>) {
+        gpsSats = used.size
+        gpsCn0 = used.sortedDescending().take(4).takeIf { it.size == 4 }?.average()?.toFloat()
+        Repo.gnssSats.value = gpsSats to seen
+        if (System.currentTimeMillis() - lastGpsFixMs > 5000) {
+            Repo.gpsStatus.value = "ищу спутники: видно $seen, в решении $gpsSats"
+        }
+    }
+
+    // GnssStatus is Android 7.0+: the field is created only there, since on Android 6 the class itself is missing
+    private val gnssCallback: Any? by lazy {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) null else object : android.location.GnssStatus.Callback() {
+            override fun onSatelliteStatusChanged(status: android.location.GnssStatus) {
+                val n = status.satelliteCount
+                onSatellites(n, (0 until n).filter { status.usedInFix(it) }.map { status.getCn0DbHz(it) })
             }
+        }
+    }
+
+    /** Android 6: the old GpsStatus listener, the same numbers (SNR in place of C/N0). */
+    @Suppress("DEPRECATION")
+    private val gpsStatusListener = android.location.GpsStatus.Listener { event ->
+        if (event != android.location.GpsStatus.GPS_EVENT_SATELLITE_STATUS) return@Listener
+        @SuppressLint("MissingPermission")
+        val sats = runCatching { (getSystemService(Context.LOCATION_SERVICE) as LocationManager).getGpsStatus(null)?.satellites?.toList() }.getOrNull() ?: return@Listener
+        onSatellites(sats.size, sats.filter { it.usedInFix() }.map { it.snr })
+    }
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("MissingPermission")
+    private fun satellitesListen(lm: LocationManager, on: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val cb = gnssCallback as android.location.GnssStatus.Callback
+            if (on) runCatching { lm.registerGnssStatusCallback(cb, android.os.Handler(gpsLooper)) }
+            else runCatching { lm.unregisterGnssStatusCallback(cb) }
+        } else {
+            if (on) runCatching { lm.addGpsStatusListener(gpsStatusListener) } else runCatching { lm.removeGpsStatusListener(gpsStatusListener) }
         }
     }
 
@@ -1927,12 +1958,12 @@ class EcuService : Service() {
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         runCatching { lm.removeUpdates(gpsListener) }
         runCatching { lm.removeUpdates(netListener) }
-        runCatching { lm.unregisterGnssStatusCallback(gnssCallback) }
+        satellitesListen(lm, false)
         runCatching {
             // as often as the receiver gives (most 1 Hz, some 5–10 Hz): the run timer goes by GPS from 4 Hz on
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 100L, 0f, gpsListener, gpsLooper)
         }.onFailure { SsmTrace.log("gps: $it") }
-        runCatching { lm.registerGnssStatusCallback(gnssCallback, android.os.Handler(gpsLooper)) }
+        satellitesListen(lm, true)
         if (lm.allProviders.contains(LocationManager.NETWORK_PROVIDER)) runCatching {
             lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 10_000L, 0f, netListener, gpsLooper)
         }
@@ -1946,7 +1977,7 @@ class EcuService : Service() {
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         runCatching { lm.removeUpdates(gpsListener) }
         runCatching { lm.removeUpdates(netListener) }
-        runCatching { lm.unregisterGnssStatusCallback(gnssCallback) }
+        satellitesListen(lm, false)
         gpsThread?.quitSafely()
         gpsThread = null
     }

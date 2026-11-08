@@ -145,6 +145,8 @@ fun TopValues(modifier: Modifier, limit: Int? = null) {
         }
     }
     }
+    // no room for a value: the free part of the header still opens the choice on a long press (it was gone with them)
+    else androidx.compose.foundation.layout.Box(modifier.fillMaxHeight().onLongPressBuzz { editing = true })
     if (editing) BarEditor("Верхняя панель", BottomBarCfg.TOP_MAX, false, Repo.topBar, BottomBarCfg.TOP_DEFAULT, { Repo.settings.topBar = it }) { editing = false }
 }
 

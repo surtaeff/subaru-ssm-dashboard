@@ -93,6 +93,7 @@ object FmRadio {
     fun step(next: Boolean) {
         val radio = radio() ?: return
         val s = neighbour(radio.state.value.freq, next)
+        trace("step ${if (next) "next" else "prev"}: ${if (s != null) "own station ${s.freq}" else "the tuner's preset / seek"}")
         if (s != null) tune(s.freq, s.band) else if (RadioCap.PRESET in radio.caps) Fyt.radioPreset(next) else if (RadioCap.SEEK in radio.caps) radio.seek(next)
     }
 
@@ -105,20 +106,27 @@ object FmRadio {
      * the platform's tuning. True only when the tuner got there; false at once if one is under way or none is there.
      */
     suspend fun tuneNow(target: Int, band: Int = 65536): Boolean {
-        if (tuning) return false
-        val radio = radio()?.takeIf { RadioCap.TUNE in it.caps } ?: return false
+        if (tuning) { trace("tune $target skipped, one under way"); return false }
+        val radio = radio()?.takeIf { RadioCap.TUNE in it.caps } ?: run { trace("tune $target: no tuner"); return false }
         tuning = true
         failed = false
+        val t0 = android.os.SystemClock.uptimeMillis()
+        // which way a station change went: the radio already the source (the frequency command only) or made it first
+        trace("tune $target from ${radio.state.value.freq} (radio ${if (radio.active.value) "active" else "not active"}, type ${Fyt.radioType})")
         try {
             radio.on()
             if (target >= 8750 && !(radio.state.value.isFm || radio.state.value.band == -1)) toFm(radio, band)
             val ok = radio.tune(target)
             failed = !ok
+            trace("tune $target ${if (ok) "done" else "failed, at ${radio.state.value.freq}"} in ${android.os.SystemClock.uptimeMillis() - t0} ms")
             return ok
         } finally {
             tuning = false
         }
     }
+
+    /** Into the exchange log with the [Fyt] lines around it, so a user's log shows which route a station change took. */
+    private fun trace(msg: String) = kg.forester.sg.ssm.SsmTrace.log("fm: $msg", keep = true)
 
     fun tune(target: Int, band: Int = 65536) { scope.launch { tuneNow(target, band) } }
 
@@ -136,6 +144,7 @@ object FmRadio {
         if (tuning) return
         val radio = radio()?.takeIf { RadioCap.PRESET in it.caps } ?: return
         tuning = true
+        trace("preset $p (radio ${if (radio.active.value) "active" else "not active"}, type ${Fyt.radioType})")
         scope.launch {
             radio.on()
             if (Fyt.radio.value.preset == p) return@launch

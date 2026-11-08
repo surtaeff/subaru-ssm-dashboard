@@ -100,8 +100,10 @@ class FytRadio(private val ctx: Context) : RadioBackend {
     override suspend fun off() {}
 
     /**
-     * The frequency command; no reaction at all → the stock radio app is started (it relays our commands on radio
-     * type 3 / 4) and the command sent again; a tuner that still doesn't take a frequency gets there seek by seek.
+     * The frequency command; no reaction at all → the stock radio app is woken (it relays our commands on radio
+     * type 3 / 4) and the command sent again: by its service first, which shows nothing, and by its activity for a
+     * moment only when the tuner is still silent after that ([Fyt.wakeRadioApp]). A tuner that still doesn't take a
+     * frequency gets there seek by seek.
      */
     override suspend fun tune(f: Int): Boolean {
         val tol = tuneTolerance(f)
@@ -109,7 +111,8 @@ class FytRadio(private val ctx: Context) : RadioBackend {
         val f0 = Fyt.radio.value.freq
         if (direct(f, tol)) return true
         // not a single update: the command went nowhere
-        if (Fyt.radio.value.freq == f0 && Fyt.wakeRadioApp()) {
+        for (step in 0 until 2) {
+            if (Fyt.radio.value.freq != f0 || !Fyt.wakeRadioApp()) break
             withTimeoutOrNull(5000) { Fyt.appId.first { it == 1 } }
             // it comes up on its own last station: let it, then ours
             Fyt.radio.awaitUpdate(Fyt.radio.value.freq, 1500, 400)

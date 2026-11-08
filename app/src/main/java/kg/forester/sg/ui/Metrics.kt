@@ -113,7 +113,8 @@ object Metrics {
         Indicator("wideband_lambda", "λ ШДК (USB)", "λ ШДК", Lucide.Flame, "λ", "%.3f", 0.5f, 1.6f, "ШДК USB") { it.wideband.lambda(it.elapsedMs) },
         // on a turbo car the IAT is read before the intercooler, so the number is relative (compare runs, not engines)
         Indicator("ve", "Наполнение VE (расчётное)", "VE", Lucide.Wind, "%", "%.0f", 0f, 130f, "Топливо") { c ->
-            Derived.vePct(c.e.mafGs, c.e.rpm, c.e.intakeC, c.e.mapKpa, RulesHost.displacementNow())
+            // filtered: the raw ratio leaps on every pedal move and has no number on a lift-off (see VeFilter)
+            kg.forester.sg.data.VeFilter.shared.at(c.e.timeMs, Derived.vePct(c.e.mafGs, c.e.rpm, c.e.intakeC, c.e.mapKpa, RulesHost.displacementNow()), c.e.rpm)
         },
         Indicator("afcorr", "Коррекция A/F", "Корр. A/F", Lucide.SlidersHorizontal, "%", "%+.1f", -25f, 25f, "Топливо", warnAbs = Warn.of("afcorr").abs) { it.e.afCorrPct },
         Indicator("aflearn", "Обучение A/F", "Обуч. A/F", Lucide.Brain, "%", "%+.1f", -25f, 25f, "Топливо", warnAbs = Warn.of("aflearn").abs) { it.e.afLearnPct },

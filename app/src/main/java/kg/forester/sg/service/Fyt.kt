@@ -205,6 +205,7 @@ object Fyt {
         override fun onUpdate(code: Int, ints: IntArray?, strs: Array<String?>?) {
             val v = ints?.getOrNull(0) ?: return
             trace("radio update $code = $v")
+            if (code == 1) radioHeardMs = SystemClock.uptimeMillis()
             val r = radio.value
             radio.value = when (code) {
                 0 -> r.copy(band = v)
@@ -486,6 +487,10 @@ object Fyt {
     @Volatile private var radioServiceUseless = false
     /** The radio's start still to come; another source picked meanwhile cancels it, it would take the source back. */
     @Volatile private var radioPending: Runnable? = null
+    /** [wakeRadioApp] started the radio's service (nothing shows): its activity follows only if the tuner stays silent. */
+    @Volatile private var radioWakeServiceMs = -120_000L
+    /** The tuner's last frequency report (uptime): the radio answers, on type 3 / 4 through its app. */
+    @Volatile private var radioHeardMs = -120_000L
 
     /** Also into the exchange log (Настройки → «Журнал обмена»), where a radio that won't switch can be seen. */
     private fun trace(msg: String) {
@@ -561,34 +566,71 @@ object Fyt {
         hopToRadioApp(ctx)
     }
 
-    /** The stock radio's activity for a moment (it comes up on its own last station), then our screen back. */
+    /**
+     * The stock radio's activity for a moment (it comes up on its own last station), then our screen back: without
+     * the slide animations, and on a tuner the app drives as soon as the radio answers (the app is up then), at most
+     * after 900 ms as before. The owner saw it as "the stock radio opens and minimizes" on a station change.
+     */
     private fun hopToRadioApp(ctx: Context) {
-        trace("radio: activity for a moment (source ${appId.value})")
-        radioLaunchMs = SystemClock.uptimeMillis()
+        trace("radio: activity for a moment (source ${appId.value}, type $radioType)")
+        val t0 = SystemClock.uptimeMillis()
+        radioLaunchMs = t0
         runCatching {
-            ctx.startActivity(Intent().setClassName("com.syu.radio", "com.syu.radio.Launch").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            ctx.startActivity(Intent().setClassName("com.syu.radio", "com.syu.radio.Launch")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION))
         }
         cmd(main, 0, intArrayOf(1))
-        handler.postDelayed({
-            ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)?.let {
-                it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT); runCatching { ctx.startActivity(it) }
+        // the MCU's own tuner (type 1) reports without the app: no sign that the app is up, the full 900 ms
+        val early = radioType != "1"
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                val t = SystemClock.uptimeMillis() - t0
+                if (t < 900 && !(early && radioHeardMs >= t0)) { handler.postDelayed(this, 100); return }
+                trace("radio: our screen back after $t ms (radio answered ${radioHeardMs >= t0})")
+                ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)?.let {
+                    it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                    runCatching { ctx.startActivity(it) }
+                }
             }
-        }, 900)
+        }, 400)
     }
 
     /**
      * The tuner didn't react to a command while the radio is the source. On radio type 3 / 4 ms only passes our
      * commands on to the stock radio app, and once Android has killed that app they go nowhere until the driver
-     * opens it by hand: that was "the saved stations stopped working". Started again, at most every 20 s;
-     * false when it was started just now (the caller waits for it and sends the command again).
+     * opens it by hand: that was "the saved stations stopped working". Woken at most every 20 s; false when it was
+     * woken just now (the caller waits for it and sends the command again).
+     *
+     * This used to be the activity hop straight away, so a station picked after a while flashed the stock radio up
+     * ("при переключении радиостанции ... открывает родное радио и сразу сворачивает"). Now the radio's exported
+     * service first, which shows nothing; the caller tries again, and only a tuner still silent after that gets the
+     * activity (called again within 15 s), and the service is not tried again this run.
      */
     fun wakeRadioApp(): Boolean {
         val ctx = app ?: return false
         // the MCU's own tuner needs no app; a frequency it ignores is not a dead app
-        if (radioType == "1" || SystemClock.uptimeMillis() - radioLaunchMs < 20_000) return false
-        trace("radio: no reaction (type $radioType, source ${appId.value}), starting the radio app")
+        if (radioType == "1") return false
+        val now = SystemClock.uptimeMillis()
+        // the service a moment ago and not a word from the tuner since: it doesn't relay on this unit
+        val serviceFailed = now - radioWakeServiceMs < 15_000 && radioHeardMs < radioWakeServiceMs
+        if (!serviceFailed && now - radioLaunchMs < 20_000) return false
         // the radio is the source here and its app is dead: the source can't tell whether a service helped
         radioPending?.let { handler.removeCallbacks(it); radioPending = null }
+        if (serviceFailed) {
+            radioServiceUseless = true
+            trace("radio: the service didn't wake it, the activity")
+        } else {
+            val service = radioService(ctx)
+            if (radioWakeStep(service != null, radioServiceUseless) == RadioWake.SERVICE && service != null) {
+                val c = ComponentName(service.packageName, service.name)
+                val started = runCatching { ctx.startService(Intent().setComponent(c)) }.getOrNull() != null
+                trace("radio: no reaction (type $radioType, source ${appId.value}), service ${c.flattenToShortString()} started $started")
+                if (started) { radioWakeServiceMs = now; radioLaunchMs = now; return true }
+                radioServiceUseless = true
+            }
+            trace("radio: no reaction (type $radioType, source ${appId.value}, service ${if (service == null) "none" else "useless"}), starting the radio app")
+        }
+        radioWakeServiceMs = -120_000L
         hopToRadioApp(ctx)
         return true
     }

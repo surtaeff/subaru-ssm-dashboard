@@ -146,8 +146,9 @@ fun CompactScreen(chrome: CompactChrome, onMenu: () -> Unit) {
                         val selector by remember { derivedStateOf(structuralEqualityPolicy()) { tcu.value?.range to tcu.value?.gear } }
                         AnimatedContent(selector, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "g") { (r, g) ->
                             val txt = when (r) {
-                                null -> "—"
-                                "D", "3", "2", "1" -> if (g != null) "$r$g" else r
+                                // no valid position (two range bits at once): the gear the unit holds
+                                null -> g?.toString() ?: "—"
+                                "D", "3", "2", "1", "M" -> if (g != null) "$r$g" else r
                                 else -> r
                             }
                             T(txt, if (txt.length > 2) car.label else car.value, C.Violet, FontWeight.Bold, maxLines = 1)

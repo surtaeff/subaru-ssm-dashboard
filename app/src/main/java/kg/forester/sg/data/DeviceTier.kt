@@ -319,6 +319,7 @@ object DeviceTier {
 
     /** Watches this window's frames, off the main thread. */
     fun watchFrames(window: Window, refreshHz: Float) {
+        if (android.os.Build.VERSION.SDK_INT < 24) return // FrameMetrics is Android 7.0+: no frame watch on Android 6
         val w = FrameBudgetWatch(frameBudgetMs(refreshHz))
         watch = w
         window.addOnFrameMetricsAvailableListener({ _, m, _ ->

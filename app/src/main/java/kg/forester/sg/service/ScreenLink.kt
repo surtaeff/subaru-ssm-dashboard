@@ -21,13 +21,13 @@ import kotlinx.coroutines.launch
  */
 object ScreenLink {
     /** Devices being flashed: their sessions stop, nobody opens them. */
-    private val flashing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val flashing = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
     /** Devices with a session running. */
-    private val active = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val active = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
     /** Espressif boards that answered as a screen, while they are plugged in: the box loop leaves them alone. */
-    val knownScreens: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    val knownScreens: MutableSet<String> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
     /** Espressif boards that answered as the SensorBox: not asked again while they are plugged in. */
-    private val boxes = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val boxes = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
     /** Espressif's vendor id: the colour screen, or the SensorBox on an ESP32-S3 (told apart by the answer to «?»). */
     fun isScreen(vid: Int) = vid == 0x303A

@@ -124,8 +124,8 @@ MAP минус атмосферное давление, оба из ЭБУ по 
 Абсолютное давление во впуске (MAP) и атмосферное давление через дробь, кПа.	Absolute intake pressure (MAP) and atmospheric pressure separated by a slash, kPa.
 Оба значения из ЭБУ по SSM. Разница между ними — наддув (плюс) или разрежение (минус).	Both values from the ECU over SSM. The difference is boost (plus) or vacuum (minus).
 Холостой ход — MAP около 30–40 кПа (ориентировочно); атмосферное ~101 кПа на уровне моря и на ~1 кПа меньше на каждые 80–90 м высоты. Мотор заглушен — оба числа почти равны.	Idle: MAP about 30–40 kPa (approximate); atmospheric ~101 kPa at sea level and ~1 kPa less every 80–90 m of altitude. Engine off: both numbers almost equal.
-Положение селектора АКПП (P/N, R, D, 3, 2, 1) и текущая передача.	Transmission selector position (P/N, R, D, 3, 2, 1) and current gear.
-Блок АКПП по SSM: селектор — по битам байта положения, передача — номер из блока + 1. Передача показывается только в D, 3, 2, 1. Блок опрашивается каждый третий цикл, поэтому реагирует с небольшой задержкой.	Transmission unit over SSM: selector by the bits of the position byte, gear is the number from the unit + 1. Gear shows only in D, 3, 2, 1. The unit is polled every third cycle, so it responds with a small delay.
+Положение селектора АКПП (P/N, R, D, 3, 2, 1, M — ручной режим SportShift) и текущая передача.	Transmission selector position (P/N, R, D, 3, 2, 1, M: SportShift manual mode) and current gear.
+Блок АКПП по SSM: селектор — по битам байта положения, передача — номер из блока + 1. Передача показывается в D, 3, 2, 1 и M. M — рычаг в ручном коридоре SportShift: по выключателю ручного режима, если блок его поддерживает, иначе когда передача выше положения рычага. Блок опрашивается каждый третий цикл, поэтому реагирует с небольшой задержкой.	Transmission unit over SSM: selector by the bits of the position byte, gear is the number from the unit + 1. Gear shows in D, 3, 2, 1 and M. M: the lever in the SportShift manual gate, by the manual mode switch when the unit has one, otherwise when the gear is above the lever position. The unit is polled every third cycle, so it responds with a small delay.
 P и N блок не различает — показывается «P/N». Расшифровка селектора проверена не на всех блоках: если положение неверное, ориентируйтесь на номер передачи.	The unit doesn't tell P from N: shows “P/N”. Selector decoding is not verified on all units: if the position is wrong, go by the gear number.
 Температура масла (ATF) в автоматической коробке с оценкой: холодная, норма, горячая, перегрев.	Oil (ATF) temperature in the automatic transmission with a rating: cold, normal, hot, overheated.
 Блок АКПП по SSM (новые блоки — байт − 50, старые — по таблице). Ниже 40 °C — «холодная, не нагружайте», 40–100 — «норма», 101–115 — «горячая», выше 115 — «перегрев!». Шкала 0…130 °C; на стрелочном виде красная зона с 110.	Transmission unit over SSM (new units byte − 50, old by table). Below 40 °C “cold, don't load”, 40–100 “normal”, 101–115 “hot”, above 115 “overheated!”. Scale 0…130 °C; on the needle view the red zone starts at 110.
@@ -258,7 +258,7 @@ MP-T: в ровном круизе скважность небольшая, ра
 Мотор работает: 13,5–14,7 В. Заглушен: 12,4–12,7 В (ориентировочно). Процент заряда — грубая оценка из-за шага измерения ЭБУ.	Engine running: 13.5–14.7 V. Off: 12.4–12.7 V (approximate). The charge percent is a rough estimate because of the ECU's measuring step.
 Покой (зажигание, двигатель заглушен)	At rest (ignition on, engine off)
 Напряжение аккумулятора без работающего двигателя — главный показатель его заряженности.	Battery voltage with the engine not running is the main indicator of its charge.
-Пока обороты 0, копятся последние 40 измерений; набралось 20 (около 5 с) — берётся медиана. От 12,5 В — «заряжен», от 12,2 В — «заряжен частично», ниже — «разряжен». Первое значение после включения зажигания пишется в журнал.	While rpm is 0 the last 40 readings collect; at 20 (about 5 s) the median is taken. From 12.5 V “charged”, from 12.2 V “partly charged”, below “discharged”. The first value after ignition on goes in the log.
+Пока обороты 0, копятся измерения за 10 с; через 5 с берётся медиана. Если пуск раньше, берутся хотя бы два измерения между зажиганием и стартером. Приложение подключается к ЭБУ через несколько секунд после ключа: если сразу крутить стартер, замера не будет, на карточке останется старый с датой. От 12,5 В — «заряжен», от 12,2 В — «заряжен частично», ниже — «разряжен». Первое значение после включения зажигания пишется в журнал.	While rpm is 0 the readings of the last 10 s collect; after 5 s the median is taken. If the engine is started sooner, at least two readings between the key and the starter are used. The app connects to the ECU a few seconds after the key: crank at once and there is no reading, the card keeps the old one with its date. From 12.5 V “charged”, from 12.2 V “partly charged”, below “discharged”. The first value after ignition on goes in the log.
 Мерить лучше после нескольких часов стоянки: сразу после поездки поверхностный заряд завышает значение, а включённые фары и магнитола занижают. Ниже 12,2 В — зарядите аккумулятор.	Better measure after several hours parked: right after a trip the surface charge inflates the value, and headlights and the head unit lower it. Below 12.2 V: charge the battery.
 Просадка при пуске	Drop on cranking
 Минимальное напряжение при прокрутке стартером и время запуска.	Minimum voltage while cranking and the start time.
@@ -981,6 +981,7 @@ FLKC (обучение)	FLKC (learning)
 Наддув (отн. атмосферы)	Boost (rel. atmosphere)
 Целевой наддув	Target boost
 Двигатель	Engine
+Двигатель / турбина	Engine / turbine
 Зажигание и детонация	Ignition and knock
 Наддув	Boost
 Основные	General
@@ -1410,6 +1411,8 @@ AFR ШДК	Wideband AFR
 показано {} из {}  ·  ведите пальцем	showing {} of {}  ·  drag with a finger
 ведите пальцем по графику	drag a finger along the chart
 Выберите параметры слева.	Choose parameters on the left.
+Все #	All #
+ещё ниже	more below
 мин {} · ср {} · макс {}	min {} · avg {} · max {}
 Авто	Auto
 KKL-кабель	KKL cable
@@ -1721,6 +1724,7 @@ MAF, г/с	MAF, g/s
 напряжение сети	vehicle voltage
 заряд в покое: 	charge at rest: 
 мотор заглушен	engine off
+до пуска подождите 3 с	wait 3 s before cranking
 просадка	voltage drop
 крутил стартер # с	cranked # s
 не вернулось к 13.2 В за минуту	didn't return to 13.2 V within a minute
@@ -4631,3 +4635,11 @@ G-радар	G-radar
 На стоянке	Parked
 Средний за всё время	Average, all time
 Каньон	Canyon
+// ui/FuelScreen.kt: «Текущий» as an editable board, short names where the whole ones do not fit
+Остаток и средний расход	Fuel left and averages
+За всё время	All time
+О поездке	Trip
+Смеш.	Mixed
+Разгоны	Accelerations
+Торможения	Brakings
+Холостые	Idling

@@ -50,7 +50,7 @@ object CanEcu {
     /** The unit of what [role] gives from the Link's stream. */
     fun roleUnit(role: String) = when (role) { "oilP" -> "бар"; "oil" -> "°C"; else -> "" }
 
-    private val wired = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val wired = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
     fun reset() { wired.clear() }
 }

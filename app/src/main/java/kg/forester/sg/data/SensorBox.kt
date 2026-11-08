@@ -502,7 +502,7 @@ object SensorBox {
      */
     fun pinOwners(b: BoxBoard, except: String = ""): Map<String, String> {
         val m = LinkedHashMap<String, String>()
-        fun put(pin: String, who: String, key: String) { if (pin.isNotEmpty() && key != except) m.putIfAbsent(pin, who) }
+        fun put(pin: String, who: String, key: String) { if (pin.isNotEmpty() && key != except) m.getOrPut(pin) { who } }
         Relays.channels.value.forEach { put(it.pin, "выход ${it.ch}: ${it.name}", "out:${it.ch}") }
         Displays.list.value.forEach { d ->
             val name = "дисплей " + d.kind.title.substringBefore(" с ").substringBefore(" 0,96")

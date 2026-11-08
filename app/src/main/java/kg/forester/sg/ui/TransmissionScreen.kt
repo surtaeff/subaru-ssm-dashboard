@@ -90,7 +90,8 @@ fun TransmissionScreen() {
             "range" -> Panel(m) {
                 CardHeader(Lucide.Cog, "Селектор", C.Violet, info)
                 val range = t?.range
-                val driving = range == "D" || range == "3" || range == "2" || range == "1"
+                // M: the SportShift manual gate (TcuParams.selector); no position at all still shows the gear
+                val driving = range == "D" || range == "3" || range == "2" || range == "1" || range == "M" || (range == null && t?.gear != null)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         AnimatedContent(
@@ -117,7 +118,7 @@ fun TransmissionScreen() {
                 }
                 // the selector strip, the current position lit
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    listOf("P", "R", "N", "D", "3", "2", "1").forEach { pos ->
+                    (if (range == "M") listOf("P", "R", "N", "D", "M") else listOf("P", "R", "N", "D", "3", "2", "1")).forEach { pos ->
                         val on = range == pos
                         Box(Modifier.weight(1f).height(26.dp).clip(RoundedCornerShape(7.dp))
                             .background(if (on) C.Violet else C.CardHi), contentAlignment = Alignment.Center) {
@@ -139,25 +140,22 @@ fun TransmissionScreen() {
                     LockState.LOCKED -> C.Green
                     LockState.SLIPPING -> C.Orange
                 }
-                val stText = lock.text
-                Row(Modifier.clip(RoundedCornerShape(8.dp)).background(stColor.copy(alpha = 0.15f)).padding(horizontal = 10.dp, vertical = 5.dp),
+                // with no TCU data the pill says why (waiting, no answer): a status line of its own under the rows
+                // was pushed off a short tile together with the last row
+                val why = t == null && status.isNotEmpty()
+                val stText = if (why) status else lock.text
+                Row(Modifier.clip(RoundedCornerShape(8.dp)).background((if (why) C.Orange else stColor).copy(alpha = 0.15f)).padding(horizontal = 10.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (locked) Lucide.Lock else Lucide.LockOpen, null, tint = stColor, modifier = Modifier.size(14.dp))
+                    Icon(if (why) Lucide.Info else if (locked) Lucide.Lock else Lucide.LockOpen, null, tint = if (why) C.Orange else stColor, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(6.dp))
-                    T(stText, 14.sp, stColor, FontWeight.SemiBold)
+                    T(stText, 14.sp, if (why) C.Orange else stColor, FontWeight.SemiBold, maxLines = 1)
                 }
                 // the rows share what is left: on a head unit's three-row board the tile is short, and the slip row
                 // and the status line under it were cut off
                 Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.SpaceEvenly) {
-                    ConvRow(Lucide.Gauge, "Двигатель", if (rpm > 0) "$rpm" else "—", "об/мин")
-                    ConvRow(Lucide.Fan, "Турбина", t?.turbineRpm?.toString() ?: "—", "об/мин")
+                    // engine and turbine in one row: three rows did not fit a short tile at the parked text size
+                    ConvRow(Lucide.Fan, "Двигатель / турбина", "${if (rpm > 0) "$rpm" else "—"} / ${t?.turbineRpm?.toString() ?: "—"}", "об/мин")
                     ConvRow(Lucide.Percent, "Проскальзывание", fmtF(slip, 0), "%", if (lock == LockState.SLIPPING) C.Orange else C.Text)
-                }
-                // only why there is nothing (the TCU's ROM while it answers is no news here)
-                if (t == null && status.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Lucide.Info, null, tint = if (t == null) C.Orange else C.Sub, modifier = Modifier.size(13.dp))
-                    Spacer(Modifier.width(6.dp))
-                    T(status, 12.sp, if (t == null) C.Orange else C.Sub, maxLines = 2)
                 }
             }
             "lockup" -> Small(Lucide.Lock, if (LocalCar.current.small) "Блокировка" else "Блокировка (Lock-up)", t?.lockUpPct, "%")
@@ -207,25 +205,42 @@ private fun AtfCard(atf: Int?, modifier: Modifier) {
     Panel(modifier) {
         CardHeader(Lucide.ThermometerSun, "Температура ATF", C.Orange, "tcu.atf")
         RingGauge((atf ?: 0) / 130f, atf?.let { "$it°" } ?: "—", label, Modifier.weight(1f).fillMaxWidth(), unitColor = color)
+        Spacer(Modifier.height(4.dp))
         // zones: cold (do not load it) / normal / hot / overheating
         val zones = listOf(40f to C.Blue, 60f to C.Green, 15f to C.Orange, 15f to C.Red)
         Row(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))) {
             zones.forEach { (w, c) -> Box(Modifier.weight(w).fillMaxHeight().background(c.copy(alpha = 0.7f))) }
         }
-        Box(Modifier.fillMaxWidth().height(18.dp)) {
-            listOf(0f to "0", 40f to "40", 100f to "100", 115f to "115").forEach { (v, l) ->
-                androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
-                    val x = maxWidth * (v / 130f)
-                    T(l, 10.sp, C.Sub, modifier = Modifier.padding(start = (x - if (v == 0f) 0.dp else if (v == 130f) 20.dp else 9.dp).coerceAtLeast(0.dp)))
-                }
-            }
+        ScaleLabels(listOf(0f to "0", 40f to "40", 100f to "100", 115f to "115"), 130f)
+    }
+}
+
+/**
+ * Numbers under a zone bar, each centred on its value and kept inside the bar. With the text floor of a parked
+ * screen the labels are wide: one that would touch the label before it is left out (100 and 115 ran into «100115»),
+ * and the row is as tall as the text instead of a fixed 18 dp that cut it off.
+ */
+@Composable
+private fun ScaleLabels(marks: List<Pair<Float, String>>, max: Float) {
+    androidx.compose.ui.layout.Layout(
+        content = { marks.forEach { (_, l) -> T(l, 10.sp, C.Sub, maxLines = 1) } },
+        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+    ) { measurables, constraints ->
+        val w = constraints.maxWidth
+        val ps = measurables.map { it.measure(androidx.compose.ui.unit.Constraints()) }
+        val gap = 6.dp.roundToPx()
+        var lastEnd = Int.MIN_VALUE
+        val xs = ps.mapIndexed { i, p ->
+            val x = ((w * (marks[i].first / max)).toInt() - p.width / 2).coerceIn(0, (w - p.width).coerceAtLeast(0))
+            if (x < lastEnd + gap) null else x.also { lastEnd = x + p.width }
         }
+        layout(w, ps.maxOfOrNull { it.height } ?: 0) { ps.forEachIndexed { i, p -> xs[i]?.let { p.placeRelative(it, 0) } } }
     }
 }
 
 @Composable
 private fun ConvRow(icon: ImageVector, label: String, value: String, unit: String, color: androidx.compose.ui.graphics.Color = C.Text) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, tint = C.Sub, modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(8.dp))
         FitText(label, LocalCar.current.secondary, Modifier.weight(1f), C.Sub)

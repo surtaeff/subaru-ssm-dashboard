@@ -169,7 +169,7 @@ object Obdb {
                 val a = runCatching { link.requestTo(c.tx, c.rx, c.req) }.getOrNull()
                 // the answer must be to this PID: 62 hi lo / 61 pid
                 if (a == null || a.size < c.skip || (1 until c.skip).any { a[it] != c.req[it] }) {
-                    if ((fails.merge(c, 1, Int::plus) ?: 0) >= 3) SsmTrace.log("OBDb: %03X %s gets no answer, dropped".format(c.tx, c.req.toHex()))
+                    if (((fails[c] ?: 0) + 1).also { fails[c] = it } >= 3) SsmTrace.log("OBDb: %03X %s gets no answer, dropped".format(c.tx, c.req.toHex()))
                     continue
                 }
                 fails[c] = 0

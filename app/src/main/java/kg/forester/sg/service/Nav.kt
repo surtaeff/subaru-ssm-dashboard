@@ -66,9 +66,11 @@ object Nav {
 
     private fun open(ctx: Context, pkg: String?, uri: String) {
         // bring the navigator up the way its button does (split screen), then hand it the link
-        if (pkg != null) Shortcuts.list.value.firstOrNull { it.pkg == pkg }?.let { Shortcuts.launch(ctx, it) }
         val i = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         if (pkg != null) i.setPackage(pkg)
+        // the link goes with the launch, after the navigator is in its half (sent at once it docked as a strip)
+        val sc = if (pkg != null) Shortcuts.list.value.firstOrNull { it.pkg == pkg } else null
+        if (sc != null && Shortcuts.isInstalled(ctx, pkg!!)) { Shortcuts.launch(ctx, sc, then = i); return }
         runCatching { ctx.startActivity(i) }.onFailure {
             runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + enc(uri))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         }

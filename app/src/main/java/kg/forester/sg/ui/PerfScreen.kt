@@ -87,9 +87,15 @@ private fun runLine(r: kg.forester.sg.service.PerfRun, keys: List<String>) =
 
 private fun lapTime(sec: Float) = "%d:%05.2f".format((sec / 60).toInt(), sec % 60)
 
-/** «Замеры»: acceleration timer, series and A/B, spool test, power estimate, lap timer, G-meter and tilt. */
+/**
+ * «Замеры»: acceleration timer, series and A/B, spool test, power estimate, lap timer, G-meter and tilt. Read parked like
+ * the other screens of cards and lists: the text's floor ([Parked]) keeps its 10 to 15 sp from being the smallest in the app.
+ */
 @Composable
-fun PerfScreen() {
+fun PerfScreen() = Parked { PerfBody() }
+
+@Composable
+private fun PerfBody() {
     var tab by remember { mutableStateOf(0) }
     // a run's or a lap's log on the charts, with its map
     var open by remember { mutableStateOf<java.io.File?>(null) }

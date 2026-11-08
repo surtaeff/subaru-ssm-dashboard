@@ -18,18 +18,19 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +54,7 @@ import androidx.core.content.FileProvider
 import com.composables.icons.lucide.*
 import kg.forester.sg.service.LogColumns
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -342,9 +344,19 @@ fun LogViewer(file: File, onClose: () -> Unit) {
             else Track(DoubleArray(n) { la.v[it].toDouble() }, DoubleArray(n) { lo.v[it].toDouble() }).takeIf { it.any }
         }
 
+        var pickAll by remember(file) { mutableStateOf(false) }
+        fun toggle(key: String) {
+            val i = picked.indexOf(key)
+            picked = if (i >= 0) picked - key else (picked + key).takeLast(4)
+        }
+        if (pickAll) SeriesDialog(d.series, picked, ::toggle) { pickAll = false }
+
         Row(Modifier.fillMaxSize()) {
-            Column(Modifier.width(300.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (track != null) Panel(Modifier.fillMaxWidth().height(250.dp), padding = 8.dp) {
+            // on a 600-high screen the 250 dp map left the parameters a strip of two rows: it gives way on low screens
+            androidx.compose.foundation.layout.BoxWithConstraints(Modifier.width(300.dp).fillMaxHeight()) {
+            val mapHeight = (maxHeight * 0.42f).coerceIn(150.dp, 250.dp)
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (track != null) Panel(Modifier.fillMaxWidth().height(mapHeight), padding = 8.dp) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Lucide.Map, null, tint = C.Violet, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
@@ -373,30 +385,28 @@ fun LogViewer(file: File, onClose: () -> Unit) {
                 }
                 // parameters to show
                 Panel(Modifier.fillMaxWidth().weight(1f), padding = 12.dp) {
+                    // a driver did not notice the list scrolls: the whole list opens wide on a tap, a bar and «ещё ниже» mark the rest
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        T("Параметры", 15.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                        T("на графике ${picked.size} из 4", 12.sp, if (picked.size >= 4) C.Orange else C.Sub)
+                        Column(Modifier.weight(1f)) {
+                            T("Параметры", 15.sp, weight = FontWeight.SemiBold)
+                            T("на графике ${picked.size} из 4", 12.sp, if (picked.size >= 4) C.Orange else C.Sub)
+                        }
+                        Chip("Все ${d.series.size}", false, { pickAll = true }, Lucide.LayoutGrid)
                     }
-                    T("Нажмите, чтобы показать или убрать. Сразу видно до четырёх графиков; пятый заменит первый.", 11.sp, C.Sub)
-                    Spacer(Modifier.height(6.dp))
-                    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        d.series.groupBy { it.group }.forEach { (g, list) ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(groupIcon(g), null, tint = C.Violet, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                T(g, 13.sp, C.Sub, weight = FontWeight.Medium)
-                            }
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                list.forEach { s ->
-                                    val i = picked.indexOf(s.key)
-                                    SeriesChip(s.title, if (i >= 0) COLORS[i] else null) {
-                                        picked = if (i >= 0) picked - s.key else (picked + s.key).takeLast(4)
-                                    }
-                                }
-                            }
+                    Spacer(Modifier.height(8.dp))
+                    val list = rememberScrollState()
+                    val scope = rememberCoroutineScope()
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        Column(Modifier.fillMaxSize().cueScroll(null, list), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SeriesGroups(d.series, picked, ::toggle)
+                        }
+                        // gone at the end of the list, so it never hides the last chips
+                        if (list.value < list.maxValue) MoreBelow(Modifier.align(Alignment.BottomCenter)) {
+                            scope.launch { list.animateScrollTo(list.value + (list.viewportSize * 0.7f).toInt()) }
                         }
                     }
                 }
+            }
             }
             Spacer(Modifier.width(12.dp))
             Panel(Modifier.weight(1f).fillMaxHeight(), padding = 12.dp) {
@@ -633,16 +643,75 @@ private fun DrawScope.drawSeries(
     drawPath(path, color, style = Stroke(2.5f))
 }
 
+/** The log's parameters by group, a chip each; a picked one in the colour of its chart. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun SeriesGroups(series: List<LogSeries>, picked: List<String>, onToggle: (String) -> Unit) {
+    series.groupBy { it.group }.forEach { (g, list) ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(groupIcon(g), null, tint = C.Violet, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            T(g, 13.sp, C.Sub, weight = FontWeight.Medium)
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            list.forEach { s ->
+                val i = picked.indexOf(s.key)
+                SeriesChip(s.title, if (i >= 0) COLORS[i] else null) { onToggle(s.key) }
+            }
+        }
+    }
+}
+
+/** All the parameters on the width of the screen, where most logs fit without scrolling. */
+@Composable
+private fun SeriesDialog(series: List<LogSeries>, picked: List<String>, onToggle: (String) -> Unit, onClose: () -> Unit) {
+    CarAlertDialog(
+        onDismissRequest = onClose, textScrolls = false,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Lucide.ChartLine, null, tint = C.Violet, modifier = Modifier.size(24.dp))
+                Spacer(Modifier.width(10.dp))
+                T("Параметры", 20.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                T("на графике ${picked.size} из 4", 13.sp, if (picked.size >= 4) C.Orange else C.Sub)
+            }
+        },
+        text = {
+            Column(Modifier.cueScroll(C.Card), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                T("Нажмите, чтобы показать или убрать. Сразу видно до четырёх графиков; пятый заменит первый.", 13.sp, C.Sub)
+                SeriesGroups(series, picked, onToggle)
+            }
+        },
+        confirmButton = { androidx.compose.material3.TextButton(onClose) { Text("Готово", color = C.Violet) } },
+        containerColor = C.Card, titleContentColor = C.Text, textContentColor = C.Text,
+    )
+}
+
+/** A button over the bottom of a list that has more below: a tap scrolls on. */
+@Composable
+private fun MoreBelow(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val shape = CircleShape
+    Row(
+        modifier.padding(bottom = 2.dp).heightIn(min = LocalMinTap.current).clip(shape).background(C.Card)
+            .border(1.dp, C.Violet, shape).tapClickable(onClick = onClick).padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        T("ещё ниже", 13.sp, C.Text, FontWeight.Medium)
+        Spacer(Modifier.width(6.dp))
+        Icon(Lucide.ChevronsDown, null, tint = C.Violet, modifier = Modifier.size(18.dp))
+    }
+}
+
 @Composable
 private fun SeriesChip(text: String, color: Color?, onClick: () -> Unit) {
     val shape = RoundedCornerShape(10.dp)
     Row(
-        Modifier.clip(shape).background(if (color != null) color.copy(alpha = 0.18f) else C.CardHi)
-            .border(1.dp, color ?: C.Border, shape).clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 7.dp),
+        // a finger's target on a car screen: 48 dp high at least (it was about 30)
+        Modifier.heightIn(min = LocalMinTap.current).clip(shape).background(if (color != null) color.copy(alpha = 0.18f) else C.CardHi)
+            .border(1.dp, color ?: C.Border, shape).tapClickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (color != null) { Box(Modifier.size(8.dp).clip(CircleShape).background(color)); Spacer(Modifier.width(6.dp)) }
-        T(text, 12.sp, if (color != null) C.Text else C.Sub)
+        T(text, 13.sp, if (color != null) C.Text else C.Sub)
     }
 }

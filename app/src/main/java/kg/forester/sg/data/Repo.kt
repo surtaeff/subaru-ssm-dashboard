@@ -890,10 +890,12 @@ object Repo {
     val driveTiles = MutableStateFlow("")
     val myTiles = MutableStateFlow("")
     val tcuTiles = MutableStateFlow("")
+    val fuelTiles = MutableStateFlow("")
     fun boardFlow(key: String) = when (key) {
         "driveTiles" -> driveTiles
         "myTiles" -> myTiles
         "tcuTiles" -> tcuTiles
+        "fuelTiles" -> fuelTiles
         else -> homeTiles
     }
     /** tachometer style id to speedometer style id */
@@ -1001,6 +1003,7 @@ object Repo {
             driveTiles.value = settings.board("driveTiles")
             myTiles.value = settings.board("myTiles")
             tcuTiles.value = settings.board("tcuTiles")
+            fuelTiles.value = settings.board("fuelTiles")
             dialStyles.value = settings.tachStyle to settings.speedoStyle
             clusterSize.value = settings.clusterSize
             kg.forester.sg.ui.C.applyPalette(settings.uiTheme)
