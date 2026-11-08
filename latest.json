@@ -1,8 +1,8 @@
 {
- "tag": "v1.0-beta1",
- "name": "1.0-beta1",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta1/subaru-ssm-dashboard.apk",
- "size": 125229715,
- "notes": "Английский язык, 13 тем, новые датчики и панели, значок ошибок, мини-плеер, настройка меню, мили, заметно быстрее работа.",
+ "tag": "v1.0-beta2",
+ "name": "1.0-beta2",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta2/subaru-ssm-dashboard.apk",
+ "size": 125695951,
+ "notes": "Android 6, ручной режим АКПП (M3), напряжение покоя АКБ, разделённый экран, радио FYT без мигания, голос не ставит музыку на паузу, просмотр лога, Расход и АКПП на 7-8 дюймах.",
  "logUrl": "https://script.google.com/macros/s/AKfycbyItYtasioVogj8klr_jO6DD3v2052wrEYNdCeyKa0b5J9jsX2sAIYam7JFS9xnCrmYkA/exec"
 }
