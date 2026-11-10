@@ -1,8 +1,8 @@
 {
- "tag": "v1.0-beta2",
- "name": "1.0-beta2",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta2/subaru-ssm-dashboard.apk",
- "size": 125695951,
- "notes": "Android 6, ручной режим АКПП (M3), напряжение покоя АКБ, разделённый экран, радио FYT без мигания, голос не ставит музыку на паузу, просмотр лога, Расход и АКПП на 7-8 дюймах.",
+ "tag": "v1.0-beta3",
+ "name": "1.0-beta3",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta3/subaru-ssm-dashboard.apk",
+ "size": 125695946,
+ "notes": "Пробег при пропусках связи, без 0 В в АКБ, ЭБУ с коротким запросом (Legacy GT), надёжнее K-Line и АКПП, откат детонации с FLKC, Bluetooth через штатное приложение.",
  "logUrl": "https://script.google.com/macros/s/AKfycbyItYtasioVogj8klr_jO6DD3v2052wrEYNdCeyKa0b5J9jsX2sAIYam7JFS9xnCrmYkA/exec"
 }
