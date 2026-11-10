@@ -288,7 +288,8 @@ fun DtcScreen() {
             val defs = withContext(Dispatchers.IO) { tableOf() }
             val r = withContext(Dispatchers.IO) { if (obdMode) DtcRepo.readObd(ctx) else DtcRepo.read(defs, dest) }
             hits = r
-            kg.forester.sg.service.CodeWatch.ask()
+            // no second look right after: that was another ECU+TCU read in a row on the same wire (the next
+            // regular one comes within 5 min); after clearing codes it still asks
             // readiness, freeze frame and the unit's ids come along on OBD-II
             if (obdMode && r != null) diag = withContext(Dispatchers.IO) { DtcRepo.readObdDiag() }
             status = when {

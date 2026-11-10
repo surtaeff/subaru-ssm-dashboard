@@ -55,11 +55,13 @@ fun playerState(c: android.media.session.MediaController): PlayerState {
 
 /**
  * Units with two modules (TS18 and others) have Android's own stack on the OBD one: its session is there, idle, and
- * nothing sent to it reaches the phone. A Bluetooth session counts when it plays, shows a track or a phone is connected.
+ * nothing sent to it reaches the phone. A Bluetooth session counts when it plays or shows a track; a head unit's own
+ * Bluetooth app (com.qf.bluetooth…) also when paused, its phone isn't on Android's A2DP; Android's own only with a
+ * phone connected to it. 1.0-beta1 asked A2DP of all of them, and the stock app's paused music vanished from the player.
  */
 internal fun <T> pickBtSession(all: List<T>, playing: (T) -> Boolean, hasTrack: (T) -> Boolean, system: (T) -> Boolean, a2dp: () -> Boolean): T? =
-    all.firstOrNull(playing) ?: all.firstOrNull(hasTrack)
-        ?: if (a2dp()) all.firstOrNull { !system(it) } ?: all.firstOrNull() else null
+    all.firstOrNull(playing) ?: all.firstOrNull(hasTrack) ?: all.firstOrNull { !system(it) }
+        ?: if (a2dp()) all.firstOrNull() else null
 
 /** The session that plays, else the latest one that isn't such an idle Bluetooth session ([pickBtSession]). */
 internal fun <T> pickSession(all: List<T>, playing: (T) -> Boolean, hasTrack: (T) -> Boolean, isBt: (T) -> Boolean, a2dp: () -> Boolean): T? =

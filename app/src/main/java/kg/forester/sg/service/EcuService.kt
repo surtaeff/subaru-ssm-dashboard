@@ -111,6 +111,8 @@ class EcuService : Service() {
     private var mafDropLogged = false
     private var tcuAddrs: IntArray? = null
     private var tcuNextTryMs = 0L
+    private var tcuMisses = 0
+    private var tcuAnswered = false
     private var tcuAtfOnly = false
     private var logger: CsvLogger? = null
     private var triedHostFix = false
@@ -917,7 +919,7 @@ class EcuService : Service() {
             if (skip.isNotEmpty()) SsmTrace.log("not supported by this ECU, ignored: ${skip.joinToString(" ") { "%02X".format(it) }}")
             var failures = 0
             var cycle = 0
-            tcuAddrs = null
+            tcuAddrs = null; tcuMisses = 0; tcuAnswered = false
             tcuNextTryMs = 0
             SsmTrace.polling = true
             // «fast poll» (K-line): the ECU sends the values by itself, three times as often; off for this connection
@@ -1754,9 +1756,13 @@ class EcuService : Service() {
     private suspend fun checkCodes(now: Long) {
         if (!codeWatch.due(now)) return
         codeWatch.done(now)
-        val ecu = Repo.ecuInit.value?.let { kg.forester.sg.ui.DtcRepo.readCurrent(kg.forester.sg.ui.DtcRepo.defs(this, it), SsmClient.ECU) }
-        val tcu = if (Repo.settings.gearbox == "mt") 0
-            else Repo.tcuInit.value?.let { kg.forester.sg.ui.DtcRepo.readCurrent(kg.forester.sg.ui.DtcRepo.defs(this, it), SsmClient.TCU) }
+        // a failed look is only a missed check-engine icon, never a reason to drop the polling
+        val ecu = runCatching { Repo.ecuInit.value?.let { kg.forester.sg.ui.DtcRepo.readCurrent(kg.forester.sg.ui.DtcRepo.defs(this, it), SsmClient.ECU) } }
+            .onFailure { SsmTrace.log("codes: ECU read failed: ${it.message}") }.getOrNull()
+        // the transmission only after the engine answered: two more long requests on a line that just lost one
+        val tcu = if (Repo.settings.gearbox == "mt") 0 else if (ecu == null) null
+            else runCatching { Repo.tcuInit.value?.let { kg.forester.sg.ui.DtcRepo.readCurrent(kg.forester.sg.ui.DtcRepo.defs(this, it), SsmClient.TCU) } }
+                .onFailure { SsmTrace.log("codes: TCU read failed: ${it.message}") }.getOrNull()
         if (ecu == null && tcu == null) return
         val old = Repo.checkEngine.value
         Repo.checkEngine.value = CheckEngine(ecu ?: old?.engine ?: 0, tcu ?: old?.gearbox ?: 0)
@@ -1795,7 +1801,19 @@ class EcuService : Service() {
             }
             tcuAddrs = addrs
         }
-        val raw = EcuLink.mutex.withLock { client.read(addrs, SsmClient.TCU) } ?: return
+        val raw = EcuLink.mutex.withLock { client.read(addrs, SsmClient.TCU) }
+        if (raw == null) {
+            // 1.0-beta2 added the SportShift switch byte 0x6A wherever the init lists bit 7 of it: a unit that lists
+            // it but refuses a request with it timed out on every turn. Two misses before any answer: drop it
+            tcuMisses++
+            if (!tcuAnswered && tcuMisses >= 2 && TcuParams.FWD in addrs) {
+                tcuAddrs = addrs.filter { it != TcuParams.FWD }.toIntArray()
+                SsmTrace.log("TCU: no answer with 0x6A, reading without it")
+            }
+            return
+        }
+        tcuMisses = 0
+        tcuAnswered = true
         tcuWatch.poll(client)
         val t = lockUp(TcuParams.decode(addrs, raw, now, Repo.tcuInit.value), Repo.live.value.rpm, now)
         Repo.tcu.value = t

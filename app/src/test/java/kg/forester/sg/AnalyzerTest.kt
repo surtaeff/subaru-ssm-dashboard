@@ -561,5 +561,9 @@ class AnalyzerTest {
         // no FBKC to read: P23 as it is
         assertEquals(-2.8f, EngineGuard.livePull(-2.8f, null, true)!!, 0f)
         assertEquals(null, EngineGuard.livePull(null, null, true))
+        // a learned FLKC held by the ECU is a pull as well, as up to 0.9-beta32
+        assertEquals(-2.8f, EngineGuard.livePull(0f, 0f, true, -2.8f)!!, 0f)
+        assertEquals(-4.2f, EngineGuard.livePull(0f, -1.4f, true, -2.8f)!!, 1e-4f)
+        assertEquals(0f, EngineGuard.livePull(0f, 0f, true, 0.5f)!!, 0f)
     }
 }

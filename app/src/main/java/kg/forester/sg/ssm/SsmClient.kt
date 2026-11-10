@@ -194,11 +194,11 @@ abstract class KLineTransport : SsmTransport {
      * again while the ECU keeps talking.
      */
     @Synchronized
-    fun stopStream() {
-        if (streamSink == null) return
+    fun stopStream(): Boolean {
+        if (streamSink == null) return true
         streamSink = null
         // another tester's request has already stopped it, and ours would garble his
-        if (passive) return
+        if (passive) return true
         ioError?.let { throw IOException(it) }
         val stop = packet(SsmClient.ECU, byteArrayOf(0xA8.toByte(), 0x00))
         repeat(3) {
@@ -210,20 +210,23 @@ abstract class KLineTransport : SsmTransport {
                 if (System.currentTimeMillis() - lastRxMs > 120) {
                     synchronized(lock) { inbox.reset(); stream.reset() }
                     SsmTrace.log("stream stopped")
-                    return
+                    return true
                 }
             }
         }
         synchronized(lock) { inbox.reset() }
         SsmTrace.log("stream: the ECU keeps sending")
+        return false
     }
 
     @Synchronized
     override fun exchange(dest: Int, body: ByteArray): ByteArray? {
         // someone else has the line: asking now would garble both
         if (passive) return null
-        // the ECU streams (the trouble codes screen, the transmission asking in between): stop it first
-        stopStream()
+        // the ECU streams (the trouble codes screen, the transmission asking in between): stop it first. Still
+        // talking: our request would only collide with its frames on the one wire, and a stream frame taken for
+        // the answer gave made-up trouble codes and a silent TCU
+        if (!stopStream()) return null
         val packet = packet(dest, body)
 
         ioError?.let { throw IOException(it) }
@@ -364,8 +367,34 @@ class SsmClient(val transport: SsmTransport) {
         )
     }
 
+    /** The engine unit's own limit of addresses per request, learnt this connection; 0 while it takes the cable's. */
+    @Volatile var ecuReadLimit = 0
+        private set
+    private var longMisses = 0
+
+    private fun step(dest: Int): Int {
+        val max = transport.maxReadAddrs.coerceAtLeast(1)
+        return if (dest == ECU && ecuReadLimit > 0) minOf(ecuReadLimit, max) else max
+    }
+
+    /**
+     * Some engine units take only so many addresses in one request and never answer a longer one: a Legacy GT 2004
+     * (ROM 3C04504316) let all 64 of 1.0's list pass in silence, every cycle a 2 s timeout, while one by one they all
+     * answered. Two such misses in a row: half as many per request, down to [MIN_SPLIT], for this connection.
+     */
     fun read(addresses: IntArray, dest: Int = ECU): ByteArray? {
-        val step = transport.maxReadAddrs.coerceAtLeast(1)
+        val step = step(dest)
+        readSplit(addresses, dest, step)?.let { if (dest == ECU && minOf(addresses.size, step) > MIN_SPLIT) longMisses = 0; return it }
+        val size = minOf(addresses.size, step)
+        if (dest != ECU || transport.passive || size <= MIN_SPLIT || transport.maxReadAddrs <= MIN_SPLIT) return null
+        if (++longMisses < 2) return null
+        longMisses = 0
+        ecuReadLimit = (size / 2).coerceAtLeast(MIN_SPLIT)
+        SsmTrace.log("ECU: no answer to $size addresses in one request, reading by $ecuReadLimit")
+        return readSplit(addresses, dest, ecuReadLimit)
+    }
+
+    private fun readSplit(addresses: IntArray, dest: Int, step: Int): ByteArray? {
         if (addresses.size <= step) return readChunk(addresses, dest)
         val out = java.io.ByteArrayOutputStream(addresses.size)
         for (i in addresses.indices step step) {
@@ -376,7 +405,8 @@ class SsmClient(val transport: SsmTransport) {
 
     private fun readChunk(addresses: IntArray, dest: Int): ByteArray? {
         val data = transport.exchange(dest, readBody(addresses, 0x00)) ?: return null
-        if (data.isEmpty() || data[0] != 0xE8.toByte() || data.size < 1 + addresses.size) return null
+        // exactly one byte per address: a longer E8 frame is the stream's or another request's answer, not ours
+        if (data.isEmpty() || data[0] != 0xE8.toByte() || data.size != 1 + addresses.size) return null
         return data.copyOfRange(1, 1 + addresses.size)
     }
 
@@ -402,7 +432,7 @@ class SsmClient(val transport: SsmTransport) {
         val kt = transport as? KLineTransport ?: return false
         if (addresses.isEmpty() || addresses.size > kt.maxReadAddrs) return false
         return kt.startStream(ECU, readBody(addresses, 0x01)) { b ->
-            if (b.size >= 1 + addresses.size && b[0] == 0xE8.toByte()) onValues(b.copyOfRange(1, 1 + addresses.size))
+            if (b.size == 1 + addresses.size && b[0] == 0xE8.toByte()) onValues(b.copyOfRange(1, 1 + addresses.size))
         }
     }
 
@@ -427,6 +457,8 @@ class SsmClient(val transport: SsmTransport) {
     companion object {
         const val ECU = 0x10
         const val TCU = 0x18
+        /** The fewest addresses per request [read] goes down to. */
+        const val MIN_SPLIT = 8
     }
 }
 

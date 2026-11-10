@@ -221,7 +221,10 @@ class EngineGuard {
         // (with the base advance in it), so it hides a pull on some ROMs (a 16-bit 572 keeps it at 0) and shows one
         // from the learned FLKC alone on others
         val fbkc = v("fbkc")?.takeIf { it in -16f..2f }
-        val knock = livePull(e.knockDeg, fbkc, roles["fbkc"]?.desc?.startsWith(kg.forester.sg.ssm.RomRaider.SIBLING_NOTE) != true)
+        // plus the learned FLKC, as up to 0.9-beta32: a pull the ECU keeps holding is a pull too, and the FLKC alarms
+        // fired while the widget sat at 0 (kubek19, Forester XT)
+        val flkc = v("flkc")?.takeIf { it in -16f..2f }
+        val knock = livePull(e.knockDeg, fbkc, roles["fbkc"]?.desc?.startsWith(kg.forester.sg.ssm.RomRaider.SIBLING_NOTE) != true, flkc)
         // the driver's own values for what the ECU doesn't give or gives wrong (old JECS units); a reading out of
         // range is a wrong address or formula and leaves the ECU's value
         val afr = v("afr")?.takeIf { it in 6f..25f }
@@ -556,12 +559,13 @@ class EngineGuard {
         /** The direct pressure [withDirectMap] takes over the MAP byte: read it as fresh as the byte, or its old value freezes the boost. */
         fun <T> fastMap(roles: Map<String, T>): T? = roles["mapAbs"] ?: roles["mapRel"] ?: roles["mapRelSea"]
 
-        fun livePull(p23: Float?, fbkc: Float?, own: Boolean): Float? = when {
+        fun livePull(p23: Float?, fbkc: Float?, own: Boolean, flkc: Float? = null): Float? = when {
             fbkc == null -> p23
             // assumption: an address taken from a sibling ROM (RomRaider.sibling) may be wrong and read a constant 0,
             // which would hide a real pull in P23, so the deeper of the two stays as before
             !own -> if (fbkc < (p23 ?: 0f)) fbkc else p23
-            else -> fbkc.coerceAtMost(0f)
+            // the whole knock correction without the advance KA: the live FBKC and the learned FLKC
+            else -> (fbkc + (flkc ?: 0f).coerceAtMost(0f)).coerceAtMost(0f)
         }
 
         /**

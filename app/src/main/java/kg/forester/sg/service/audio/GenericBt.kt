@@ -126,6 +126,12 @@ internal data class SinkFacts(
     val heard: Boolean,
     /** A voice or a call is on: the navigator's phrase is not to be cut. */
     val voiceBusy: Boolean = false,
+    /**
+     * The session is Android's own sink (com.android.bluetooth): only its sound shows in [heard] and only it waits for
+     * the focus. A head unit's own module app plays through the unit's audio path, invisible to Android: a focus
+     * pulse would only stop it, and its play/pause is a plain toggle, as up to 0.9-beta32.
+     */
+    val androidSink: Boolean = true,
 )
 
 internal enum class FocusStep { NONE, PULSE, AFTER_VOICE }
@@ -149,7 +155,7 @@ private const val OUTCOME_AFTER_MS = 2000L
  * and after the navigator's phrase, not over it.
  */
 internal fun focusStep(f: SinkFacts): FocusStep = when {
-    !f.session || !(f.sdk < 29 || f.playing) -> FocusStep.NONE
+    !f.session || !f.androidSink || !(f.sdk < 29 || f.playing) -> FocusStep.NONE
     f.voiceBusy -> FocusStep.AFTER_VOICE
     f.heard -> FocusStep.NONE
     else -> FocusStep.PULSE
@@ -171,7 +177,7 @@ internal fun enterPlan(byUser: Boolean, f: SinkFacts): SinkPlan = if (byUser && 
  */
 internal fun pressPlan(f: SinkFacts, sincePulseMs: Long, soundInvisible: Boolean = false): SinkPlan = when {
     !f.playing -> wakePlan(f, soundInvisible)
-    f.heard || soundInvisible || provesSoundInvisible(f, sincePulseMs) -> SinkPlan(pause = true)
+    f.heard || !f.androidSink || soundInvisible || provesSoundInvisible(f, sincePulseMs) -> SinkPlan(pause = true)
     else -> wakePlan(f)
 }
 

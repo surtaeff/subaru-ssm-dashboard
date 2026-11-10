@@ -90,7 +90,8 @@ object BtAudio {
             ctx.packageManager.getInstalledPackages(0).map { it.packageName }.filter { p -> families.any { p.startsWith(it) } }
         }.getOrDefault(emptyList())
         SsmTrace.log("bt pick: mcu_current_source=${src ?: "—"} sdk=${android.os.Build.VERSION.SDK_INT} " +
-            "session=${c?.packageName ?: "—"}/${c?.playbackState?.state ?: "—"} packages(${pkgs.size})=${pkgs.joinToString(",")}", keep = true)
+            "session=${c?.packageName ?: "—"}/${c?.playbackState?.state ?: "—"} track=${!c?.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE).isNullOrEmpty()} " +
+            "a2dp=${runCatching { MediaSessions.a2dpConnected(ctx) }.getOrDefault(false)} packages(${pkgs.size})=${pkgs.joinToString(",")}", keep = true)
     }
 
     private var kickedAt = 0L
@@ -124,6 +125,7 @@ object BtAudio {
             playing = c?.playbackState?.state == PlaybackState.STATE_PLAYING,
             heard = am.isMusicActive,
             voiceBusy = voiceBusy(ctx),
+            androidSink = c == null || c.packageName == "com.android.bluetooth" || c.packageName == "com.google.android.bluetooth",
         )
     }
 

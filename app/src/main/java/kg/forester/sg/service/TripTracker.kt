@@ -70,6 +70,20 @@ object FuelCalc {
     fun sampleDt(lastMs: Long, now: Long): Double =
         if (lastMs == 0L) 0.0 else ((now - lastMs) / 1000.0).coerceIn(0.0, 2.0)
 
+    /** Longest silence between two running samples that is bridged: the engine ran all along, only answers were lost. */
+    const val BRIDGE_MAX_S = 15.0
+
+    /**
+     * Seconds to count between two samples that both had the engine running when the line was silent for more than
+     * the 2 s of [sampleDt] but at most [BRIDGE_MAX_S]: some ECUs (Legacy BP) skip answers for 4-9 s while the car
+     * drives on, and capping those at 2 s lost about a third of the km. Null when there is nothing to bridge.
+     */
+    fun bridgeDt(lastMs: Long, now: Long, wasRunning: Boolean, running: Boolean): Double? {
+        if (lastMs == 0L || !wasRunning || !running) return null
+        val gap = (now - lastMs) / 1000.0
+        return if (gap > 2.0 && gap <= BRIDGE_MAX_S) gap else null
+    }
+
     /** Distance the range's average consumption covers: the trips before this one too, not just this one. */
     const val RANGE_KM = 300.0
 
@@ -161,6 +175,8 @@ class TripTracker(ctx: android.content.Context, private val onNewTrip: (Long) ->
     private var lastSampleMs = 0L
     private var lastEngineOnMs = 0L
     private var lastSpeed = 0.0
+    private var lastLh = 0.0
+    private var lastSampleRunning = false
     private var lastHardEventMs = 0L
     private var accelFromMs = 0L
     private var accelFromSpeed = 0.0
@@ -204,9 +220,11 @@ class TripTracker(ctx: android.content.Context, private val onNewTrip: (Long) ->
         // a garbled answer (bad line, an address this ECU maps elsewhere) must not end up in the trip and fuel totals
         if ((e.rpm ?: 0) > 10_000 || (e.speedKmh ?: 0) > 300 || (e.mafGs ?: 0f) > kg.forester.sg.ssm.MAF_CEIL) return
         tick(now) // closes the trip after 2 min with the engine off, even while the ECU keeps answering
+        val engineOn = (e.rpm ?: 0) > 300
+        val bridge = FuelCalc.bridgeDt(lastSampleMs, now, lastSampleRunning, engineOn)
         val dt = FuelCalc.sampleDt(lastSampleMs, now)
         lastSampleMs = now
-        val engineOn = (e.rpm ?: 0) > 300
+        lastSampleRunning = engineOn
 
         val gpsFresh = gps != null && now - gps.timeMs < 3000 && gps.accuracyM < 15
         learnSpeed(e, gps, gpsFresh, now, dt)
@@ -217,8 +235,9 @@ class TripTracker(ctx: android.content.Context, private val onNewTrip: (Long) ->
         }
 
         val lh = if (engineOn) FuelCalc.litersPerHour(e, s.fuelK) else 0.0
-        val dFuel = lh * dt / 3600.0
-        val dKm = speed * dt / 3600.0
+        // a bridged gap: the mean of both ends over the whole silence, not 2 s at the new sample's rate
+        val dFuel = if (bridge != null) (lastLh + lh) / 2 * bridge / 3600.0 else lh * dt / 3600.0
+        val dKm = if (bridge != null) (lastSpeed + speed) / 2 * bridge / 3600.0 else speed * dt / 3600.0
 
         if (engineOn) {
             lastEngineOnMs = now
@@ -257,7 +276,7 @@ class TripTracker(ctx: android.content.Context, private val onNewTrip: (Long) ->
                 hwyL = t.hwyL + if (moving && avg >= 75) dFuel else 0.0,
                 mixKm = t.mixKm + if (moving && avg >= 45.0 && avg < 75.0) dKm else 0.0,
                 mixL = t.mixL + if (moving && avg >= 45.0 && avg < 75.0) dFuel else 0.0,
-                idleS = t.idleS + if (engineOn && !moving) dt else 0.0,
+                idleS = t.idleS + if (engineOn && !moving) (bridge ?: dt) else 0.0,
                 idleL = t.idleL + if (!moving) dFuel else 0.0,
                 hardAccel = t.hardAccel + hardA,
                 hardBrake = t.hardBrake + hardB,
@@ -267,6 +286,7 @@ class TripTracker(ctx: android.content.Context, private val onNewTrip: (Long) ->
             trip = t
         }
         lastSpeed = speed
+        lastLh = lh
 
         if (dFuel > 0) {
             pendingFuel += dFuel // written to the settings every 30 s, not 4 times a second (flash wear)

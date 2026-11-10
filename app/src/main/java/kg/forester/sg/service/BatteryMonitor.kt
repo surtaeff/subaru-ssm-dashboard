@@ -57,7 +57,9 @@ class BatteryMonitor(private val ctx: Context) {
     }
 
     fun process(s: EcuSnapshot) {
-        val v = s.batteryV ?: return
+        // below 5 V the ECU itself would be off: a dead or garbled answer read as volts, not the battery (0.00 V
+        // resting and crank on a Legacy GT whose link kept dropping)
+        val v = s.batteryV?.takeIf { it >= MIN_VALID_V && it <= 20f } ?: return
         val rpm = s.rpm ?: 0
         val now = s.timeMs
         val running = rpm > 500
@@ -302,6 +304,8 @@ class BatteryMonitor(private val ctx: Context) {
         private const val CHARGE_MS = 150_000L
         /** Longer without a sample: the ignition was off in between (a lost answer or two are a second). */
         const val SESSION_GAP_MS = 30_000L
+        /** Lowest voltage taken as a reading: the ECU resets below about 6 V, so anything lower is a bad answer. */
+        const val MIN_VALID_V = 5f
 
         /**
          * The resting voltage from the 0 rpm samples (time, volts; oldest first) of a stop too short for the 5 s

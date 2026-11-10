@@ -67,6 +67,15 @@ class FuelRangeTest {
         assertEquals(0.0, FuelCalc.sampleDt(0, 31_000), 0.0)
     }
 
+    @Test fun lostAnswersWhileDrivingStillCountKm() {
+        // Legacy BP: 4-9 s without an answer while driving on, the engine running at both ends
+        assertEquals(6.5, FuelCalc.bridgeDt(1_000, 7_500, wasRunning = true, running = true)!!, 0.0)
+        assertEquals(null, FuelCalc.bridgeDt(1_000, 2_500, wasRunning = true, running = true)) // a normal step
+        assertEquals(null, FuelCalc.bridgeDt(1_000, 31_000, wasRunning = true, running = true)) // ignition off
+        assertEquals(null, FuelCalc.bridgeDt(1_000, 7_500, wasRunning = false, running = true)) // a start
+        assertEquals(null, FuelCalc.bridgeDt(0, 7_500, wasRunning = true, running = true))
+    }
+
     @Test fun missingLambdaEnrichesOnBoost() {
         // MAF 120 g/s at full throttle and 80 kPa of boost, no wideband: the real AFR is ~11.5 (50.4 L/h), not 14.7 (39.4)
         val s = EcuSnapshot(rpm = 5500, mafGs = 120f, throttlePct = 100f, boostKpa = 80f, mapKpa = 180f, atmKpa = 100f)

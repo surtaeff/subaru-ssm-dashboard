@@ -81,6 +81,9 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "forester.db", null, 4) {
     /** Removes implausible crank records (a real start always pulls the battery well below 11.5 V). */
     fun purgeBogusCranks() {
         writableDatabase.delete("battery", "type='crank' AND value>11.5", null)
+        // 0 V and the like: a dead line read as volts (1.0-beta2), no battery reads that with the ECU awake
+        writableDatabase.delete("battery", "type IN ('crank','resting','charging') AND value<${kg.forester.sg.service.BatteryMonitor.MIN_VALID_V}", null)
+        writableDatabase.delete("volts", "v<${kg.forester.sg.service.BatteryMonitor.MIN_VALID_V}", null)
     }
 
     fun batteryEvents(limit: Int = 100): List<BatteryEvent> =
