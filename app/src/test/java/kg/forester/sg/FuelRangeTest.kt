@@ -71,7 +71,8 @@ class FuelRangeTest {
         // Legacy BP: 4-9 s without an answer while driving on, the engine running at both ends
         assertEquals(6.5, FuelCalc.bridgeDt(1_000, 7_500, wasRunning = true, running = true)!!, 0.0)
         assertEquals(null, FuelCalc.bridgeDt(1_000, 2_500, wasRunning = true, running = true)) // a normal step
-        assertEquals(null, FuelCalc.bridgeDt(1_000, 31_000, wasRunning = true, running = true)) // ignition off
+        assertEquals(30.0, FuelCalc.bridgeDt(1_000, 31_000, wasRunning = true, running = true)!!, 0.0) // a mute ECU, the car drove on
+        assertEquals(null, FuelCalc.bridgeDt(1_000, 46_000, wasRunning = true, running = true)) // ignition off
         assertEquals(null, FuelCalc.bridgeDt(1_000, 7_500, wasRunning = false, running = true)) // a start
         assertEquals(null, FuelCalc.bridgeDt(0, 7_500, wasRunning = true, running = true))
     }

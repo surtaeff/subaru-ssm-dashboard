@@ -230,8 +230,12 @@ class EngineGuard {
         val afr = v("afr")?.takeIf { it in 6f..25f }
             // a wideband on the SensorBox stands in for the ECU's own only where it has none (or sends a constant 14.7)
             ?: kg.forester.sg.data.SensorBox.role("afr")?.takeIf { (e.lambda == null || RulesHost.noWideband.value) && it in 6f..25f }
+        val map = abs ?: e.mapKpa
+        // with the engine stopped the manifold sits at the atmosphere: the best stand-in for a missing barometer
+        if ((e.rpm ?: 0) < 100 && map != null && map in ATM_OK) stillMapKpa = map
+        val atm = atmOf(v("atm") ?: e.atmKpa, stillMapKpa, Repo.gps.value?.altitudeM)
         val out = e.copy(
-            mapKpa = abs ?: e.mapKpa,
+            mapKpa = map,
             knockDeg = knock,
             mafGs = v("maf")?.takeIf { it in 0f..600f } ?: e.mafGs,
             intakeC = v("iat")?.takeIf { it in -40f..150f }?.let { kotlin.math.round(it).toInt() } ?: e.intakeC,
@@ -239,11 +243,14 @@ class EngineGuard {
             throttlePct = v("throttle")?.takeIf { it in 0f..100f } ?: e.throttlePct,
             injPwMs = v("injPw")?.takeIf { it in 0f..50f } ?: e.injPwMs,
             timingDeg = v("timing")?.takeIf { it in -30f..70f } ?: e.timingDeg,
-            atmKpa = v("atm")?.takeIf { it in 50f..110f } ?: e.atmKpa,
+            atmKpa = atm,
             lambda = afr?.let { it / 14.7f } ?: e.lambda,
         )
         return if (out == e) e else out
     }
+
+    /** The manifold pressure last seen with the engine stopped, kPa: the atmosphere where the ECU's barometer is missing. */
+    private var stillMapKpa: Float? = null
 
     /** Since when the standard MAP byte sits at its top (0 = it doesn't). */
     private var mapTopMs = 0L
@@ -551,6 +558,23 @@ class EngineGuard {
     }
 
     companion object {
+        /** What a barometer on the ground can read, kPa (sea level storms to about 4 km up). */
+        val ATM_OK = 60f..110f
+
+        /**
+         * The atmosphere for the boost. Some cars read nonsense here (Tribe: emissions parts removed, 150 kPa), and the
+         * boost then sat at 0 for good. A reading out of range is replaced with the manifold seen with the engine
+         * stopped, then with the GPS altitude, then with sea level.
+         */
+        fun atmOf(raw: Float?, stillMap: Float?, altM: Double?): Float? {
+            // no barometer at all: the boost then comes from the ECU's own relative pressure, as before
+            if (raw == null) return null
+            if (raw in ATM_OK) return raw
+            stillMap?.takeIf { it in ATM_OK }?.let { return it }
+            altM?.takeIf { it in -400.0..5000.0 }?.let { return (101.325 * Math.pow(1 - 2.25577e-5 * it, 5.25588)).toFloat() }
+            return 101.3f
+        }
+
         /**
          * The live timing pull. The standard byte 0x22 (P23) is the knock correction advance, KA x IAM + FBKC + FLKC:
          * it can read positive while timing is pulled, and negative from the learned FLKC alone. The pull is the

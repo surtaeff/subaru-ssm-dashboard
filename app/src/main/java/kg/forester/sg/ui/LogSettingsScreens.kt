@@ -621,6 +621,7 @@ private fun BackgroundSettings() {
     var bg by remember { mutableStateOf(s.backgroundWork) }
     var auto by remember { mutableStateOf(s.autostartService) }
     var app by remember { mutableStateOf(s.autostartApp) }
+    var music by remember { mutableStateOf(s.musicOnStart) }
     // re-read the system permissions when coming back from the system settings screens
     var resumed by remember { mutableStateOf(0) }
     val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -644,6 +645,9 @@ private fun BackgroundSettings() {
     }
     SwitchRow("Открывать приложение при включении", "Показывать приборы сразу после включения", app) {
         app = it; s.autostartApp = it
+    }
+    SwitchRow("Включать музыку при запуске", "При включении магнитолы и при открытии приложения играет то, что выбрано в Медиа: USB, Bluetooth, радио или плеер", music) {
+        music = it; s.musicOnStart = it
     }
     if (app && !overlay) {
         T("Для автооткрытия Android требует разрешение «Поверх других приложений».", 12.sp, C.Orange)

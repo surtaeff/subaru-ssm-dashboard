@@ -70,8 +70,11 @@ object FuelCalc {
     fun sampleDt(lastMs: Long, now: Long): Double =
         if (lastMs == 0L) 0.0 else ((now - lastMs) / 1000.0).coerceIn(0.0, 2.0)
 
-    /** Longest silence between two running samples that is bridged: the engine ran all along, only answers were lost. */
-    const val BRIDGE_MAX_S = 15.0
+    /**
+     * Longest silence between two running samples that is bridged: the engine ran all along, only answers were lost.
+     * 40 s: a Legacy BP ECU (Серёга) went fully mute for about 30 s every two minutes until the line was reset.
+     */
+    const val BRIDGE_MAX_S = 40.0
 
     /**
      * Seconds to count between two samples that both had the engine running when the line was silent for more than
@@ -83,6 +86,14 @@ object FuelCalc {
         val gap = (now - lastMs) / 1000.0
         return if (gap > 2.0 && gap <= BRIDGE_MAX_S) gap else null
     }
+
+    /**
+     * How far the unit's clock went back between two samples, ms (negative), or null when it didn't. Some units lose
+     * the time on the way and come back with a date a year old; a trip then ended before it began (Enderold: a trip
+     * of -11614 h). A step back of a few seconds is the clock being trimmed, not a jump.
+     */
+    fun clockBackMs(lastMs: Long, now: Long): Long? =
+        if (lastMs != 0L && now < lastMs - 5_000L) now - lastMs else null
 
     /** Distance the range's average consumption covers: the trips before this one too, not just this one. */
     const val RANGE_KM = 300.0
@@ -162,6 +173,32 @@ object FuelCalc {
     }
 }
 
+/**
+ * The fuel left as shown, from a sender that swings by litres on a slope and in turns (Ruen16, SG: 38, 34, 38 again
+ * over a week). It goes down by the fuel counted as burnt and is pulled to the sender slowly (about 10 min), so a
+ * dip doesn't show; a rise of over [REFILL_L] that holds a minute is a refill and is taken at once.
+ */
+class FuelLevelFilter {
+    var shown: Double? = null
+        private set
+    private var highS = 0.0
+
+    fun feed(sender: Double?, burntL: Double, dtS: Double): Double? {
+        if (sender == null) { shown = null; highS = 0.0; return null }
+        val was = shown ?: return sender.also { shown = it }
+        var v = (was - burntL).coerceAtLeast(0.0)
+        if (sender > v + REFILL_L) {
+            highS += dtS
+            if (highS >= 60.0) { highS = 0.0; shown = sender; return sender }
+        } else highS = 0.0
+        v += (sender - v) * (dtS / 600.0).coerceIn(0.0, 1.0)
+        shown = v
+        return v
+    }
+
+    companion object { const val REFILL_L = 5.0 }
+}
+
 /** The SensorBox fuel line's learning: points ready, share of the tank covered (null: no such input). */
 val boxProgress = kotlinx.coroutines.flow.MutableStateFlow<Pair<Int, Double>?>(null)
 
@@ -203,6 +240,7 @@ class TripTracker(ctx: android.content.Context, private val onNewTrip: (Long) ->
         s.currentTripId = 0
     }
     private var sensorLeftL: Double? = null
+    private val levelFilter = FuelLevelFilter()
     private var lhShown = 0.0
     private var pendingFuel = 0.0
 
@@ -219,6 +257,7 @@ class TripTracker(ctx: android.content.Context, private val onNewTrip: (Long) ->
         val now = e.timeMs
         // a garbled answer (bad line, an address this ECU maps elsewhere) must not end up in the trip and fuel totals
         if ((e.rpm ?: 0) > 10_000 || (e.speedKmh ?: 0) > 300 || (e.mafGs ?: 0f) > kg.forester.sg.ssm.MAF_CEIL) return
+        FuelCalc.clockBackMs(lastSampleMs, now)?.let { shiftClock(it) }
         tick(now) // closes the trip after 2 min with the engine off, even while the ECU keeps answering
         val engineOn = (e.rpm ?: 0) > 300
         val bridge = FuelCalc.bridgeDt(lastSampleMs, now, lastSampleRunning, engineOn)
@@ -318,12 +357,30 @@ class TripTracker(ctx: android.content.Context, private val onNewTrip: (Long) ->
             } else null
             boxProgress.value = if (line == null) null else boxCal.progress(s.tankL)
         }
+        sensorLeftL = levelFilter.feed(sensorLeftL, dFuel, dt)
 
         if (now - lastSaveMs > 30_000) save(now)
         // the number on screen is smoothed over ~1.5 s; the trip totals above use the raw flow. By time, not per
         // sample: the fast poll's 12 samples a second would make it three times as jumpy
         lhShown += (lh - lhShown) * (dt / 0.8).coerceAtMost(1.0)
         publish(lhShown, speed)
+    }
+
+    /**
+     * The clock went back by -[d] ms mid-trip: move every time kept here by the same step, so the trip goes on with
+     * its length intact instead of ending before it began, and the 2 min engine-off timer still runs.
+     */
+    private fun shiftClock(d: Long) {
+        trip = trip?.let { it.copy(startMs = it.startMs + d, endMs = it.endMs + d) }
+        lastSampleMs += d
+        if (lastEngineOnMs != 0L) lastEngineOnMs += d
+        if (lastHardEventMs != 0L) lastHardEventMs += d
+        if (accelFromMs != 0L) accelFromMs += d
+        lastSaveMs += d
+        lastSpeedKSave += d
+        val w = speedWindow.map { (it.first + d) to it.second }
+        speedWindow.clear(); speedWindow.addAll(w)
+        flushBucket()
     }
 
     /** Called periodically even without ECU data so trips close when the engine stops. */

@@ -493,8 +493,10 @@ private fun PhoneMenu(onClose: () -> Unit, onSelect: (Screen) -> Unit) {
 fun App() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var screen by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = ScreenSaver) {
-        mutableStateOf(if (kg.forester.sg.ui.isDefaultHome(ctx)) Screen.Home else Screen.Fuel)
+        // where the driver left it; the first time the Home screen (it used to be Расход unless the app was the launcher)
+        mutableStateOf(screenRestored(Repo.settings.lastScreen)?.takeIf { it != Screen.Settings } ?: Screen.Home)
     }
+    LaunchedEffect(screen) { Repo.settings.lastScreen = screen.name }
     // Back goes to the Home screen first; as the home app we never close ourselves.
     val menuShown = visibleScreens()
     // home, or the first in the menu with Главная hidden

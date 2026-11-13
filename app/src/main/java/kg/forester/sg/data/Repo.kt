@@ -357,6 +357,16 @@ class Settings(ctx: Context) {
         get() = p.getString("mediaSource", "files")!!
         set(v) = p.edit().putString("mediaSource", v).apply()
 
+    /** Media's source starts on its own when the unit or the app comes on (Ruen16, Михаил: Медиа, play, back each time). */
+    var musicOnStart: Boolean
+        get() = p.getBoolean("musicOnStart", false)
+        set(v) = p.edit().putBoolean("musicOnStart", v).apply()
+
+    /** The screen the dashboard was on: it opens there again after the unit's sleep or a restart. */
+    var lastScreen: String
+        get() = p.getString("lastScreen", "")!!
+        set(v) = p.edit().putString("lastScreen", v).apply()
+
     /** The last «Обучение» reading (LearnedValues.Result as JSON), shown until the next one. */
     var learnedLast: String
         get() = p.getString("learnedLast", "")!!

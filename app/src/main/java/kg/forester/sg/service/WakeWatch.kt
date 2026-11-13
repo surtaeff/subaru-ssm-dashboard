@@ -47,7 +47,11 @@ class WakeWatch(private val ctx: Context, private val onSleptWake: () -> Unit, p
         override fun onReceive(c: Context, i: Intent) = wake(i.action ?: "?")
     }
 
+    private var scope: CoroutineScope? = null
+
     fun start(scope: CoroutineScope) {
+        this.scope = scope
+        MusicOnStart.start(ctx, scope, "start")
         val f = IntentFilter().apply {
             ACTIONS.forEach { addAction(it) }
         }
@@ -78,6 +82,7 @@ class WakeWatch(private val ctx: Context, private val onSleptWake: () -> Unit, p
         lastWakeMs = now
         SsmTrace.log("wake: $why")
         onWake(why)
+        scope?.let { MusicOnStart.start(ctx, it, "wake") }
     }
 
     companion object {

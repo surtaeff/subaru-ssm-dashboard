@@ -764,6 +764,12 @@ class EcuService : Service() {
     private fun openOp2(op2: OpenPort2, kline: Boolean): SsmTransport =
         if (kline) Op2KLineTransport(op2).also { it.open() } else Op2CanTransport(op2).also { it.open(Repo.settings.canListen) }
 
+    /** Addresses per request each ECU (by ROM) took this run of the service: kept over reconnects (see SsmClient.presetReadLimit). */
+    private val ecuReadLimits = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** A plain KKL cable, the engine unit mute on it although the line is live: hold the line low at once. */
+    private fun ecuMuteOnLine(t: SsmTransport?) = t is kg.forester.sg.ssm.KklTransport && t.ecuMute()
+
     /**
      * One adapter session: find the bus the ECU answers on, init it, then poll until the cable or ECU goes away.
      * [open] makes a transport for the K-line (true) or CAN (false). [obd], when the adapter can do it, makes a
@@ -791,6 +797,8 @@ class EcuService : Service() {
         var roundEcho = false
         // the K-line already held low once for that silent ECU: the next silent round reopens the cable
         var lineHeldLow = false
+        // the polling stopped because the ECU went mute on a live line (KLineTransport.ecuMute): hold it low at once
+        var muteHold = false
         var transport: SsmTransport? = null
         var transportKline = true
         // demo switched on: leave the car (the demo loop takes over)
@@ -882,6 +890,7 @@ class EcuService : Service() {
             val capsSeen = Repo.capsVersion.value
             val init = kg.forester.sg.data.EcuCaps.apply(answer)
             if (init !== answer) SsmTrace.log("capability bits set by hand: ${kg.forester.sg.data.EcuCaps.forced(init.romId).joinToString(" ") { "${it.first}.${it.second}" }}")
+            ecuReadLimits[init.romId]?.let { client.presetReadLimit(it); SsmTrace.log("ECU: reading by ${client.ecuReadLimit}, as learnt earlier") }
             Repo.ecuInitRaw.value = answer
             Repo.ecuInit.value = init
             runCatching { carFromEcu(init.romId) }
@@ -937,8 +946,9 @@ class EcuService : Service() {
             var fastShort = false
             /** What the stream reads, or last read, when it isn't the short list. */
             var fullAddrs: IntArray = addrs
-            /** Plain requests: the ticked parameters go in the regular read until that is refused once. */
+            /** Plain requests: the ticked parameters go in the regular read until that is refused (see joinRefused). */
             var joinWatch = true
+            var joinRefused = 0
             try { while (scope.isActive && failures < 5 && !Repo.settings.demo && capsSeen == Repo.capsVersion.value &&
                 SensorBoxLink.ecuLease?.permitted != false) {
                 if (transport.passive) {
@@ -965,7 +975,11 @@ class EcuService : Service() {
                         val now = System.currentTimeMillis()
                         if (whole == null) {
                             // refused with the ticked ones: without them from now on, as the plain requests do
-                            if (read.size > addrs.size) fullAddrs = addrs else { failures++; tracker.tick(now) }
+                            if (read.size > addrs.size) fullAddrs = addrs else {
+                                failures++
+                                tracker.tick(now)
+                                if (ecuMuteOnLine(transport)) { muteHold = true; break }
+                            }
                             continue
                         }
                         failures = 0
@@ -1017,13 +1031,16 @@ class EcuService : Service() {
                         // stopped by another request in between (trouble codes, a write): start it again
                         if (!client.streaming) continue
                         EcuLink.mutex.withLock { client.stopStream() }
-                        // no answers, or one or two as to a plain request: this ECU doesn't stream
-                        if (fastRun < 3) {
+                        // no answers, or one or two as to a plain request: this ECU doesn't stream. One that has streamed
+                        // in this connection does: its silence now is the ECU's, not the stream's (an alps unit lost
+                        // the stream for the connection this way, the ECU mute a moment)
+                        if (fastRun < 3 && !fastFrameSeen) {
                             fast = false
                             SsmTrace.log("fast poll: no stream from this ECU ($fastRun answers), plain requests")
                         } else {
                             failures++
                             tracker.tick(now)
+                            if (ecuMuteOnLine(transport)) { muteHold = true; break }
                         }
                         continue
                     }
@@ -1043,10 +1060,9 @@ class EcuService : Service() {
                         onSnapshot(snap, now)
                     }
                     cycle++
-                    // the transmission in between, about as often as with plain requests (N engine reads of ~250 ms
-                    // between two of its own); its request stops the stream, the next round starts it again. The gap
-                    // counts from the end of the last one, so the stream always runs N × 250 ms in between
-                    if (!fastShort && Repo.settings.gearbox != "mt" && now - fastTcuMs >= Repo.settings.tcuEvery.coerceAtLeast(1) * 250L) {
+                    // the transmission in between; its request stops the stream, the next round starts it again. The gap
+                    // counts from the end of the last one, so the stream always runs [fastTcuGapMs] in between
+                    if (!fastShort && Repo.settings.gearbox != "mt" && now - fastTcuMs >= fastTcuGapMs(Repo.settings.tcuEvery)) {
                         pollTcu(client, now)
                         fastTcuMs = System.currentTimeMillis()
                     }
@@ -1075,16 +1091,21 @@ class EcuService : Service() {
                 var read = addrs + extra
                 var raw = EcuLink.mutex.withLock { client.read(read) }
                 if (raw == null && extra.isNotEmpty() && !transport.passive) {
-                    joinWatch = false
-                    SsmTrace.log("watched addresses refused together with the regular ones: read apart")
                     read = addrs
                     raw = EcuLink.mutex.withLock { client.read(read) }
-                }
+                    // refused together only when the regular ones then answer on their own, twice running: one lost
+                    // answer, or the ECU going mute, read the ticked ones apart for good on a Legacy BP and an alps unit
+                    if (raw != null && ++joinRefused >= 2) {
+                        joinWatch = false
+                        SsmTrace.log("watched addresses refused together with the regular ones: read apart")
+                    }
+                } else if (raw != null && extra.isNotEmpty()) joinRefused = 0
                 val now = System.currentTimeMillis()
                 if (raw == null && transport.passive) continue
                 if (raw == null) {
                     failures++
                     tracker.tick(now)
+                    if (ecuMuteOnLine(transport)) { muteHold = true; break }
                     continue
                 }
                 failures = 0
@@ -1093,7 +1114,7 @@ class EcuService : Service() {
                 // SSM answers any address; an A/F byte from an ECU without the wideband sensor would fake
                 // "enrichment" in the fuel calculation
                 if (!afSensor) snap = snap.copy(lambda = null)
-                if (read.size > addrs.size) ecuWatch.take(read, raw) else ecuWatch.poll(client)
+                if (read.size > addrs.size) ecuWatch.take(read, raw) else ecuWatch.pollAlongside(client, read, raw)
                 dynoPoll.noteFull(snap, now)
                 onSnapshot(snap, now)
                 // not in a pull: its turn would cost the short list one more request
@@ -1103,6 +1124,7 @@ class EcuService : Service() {
                 // the ECU would go on sending to nobody; whoever comes next starts from a quiet line (a cable taken
                 // from us has no line left to quiet)
                 if (client.streaming && SensorBoxLink.ecuLease?.permitted != false) runCatching { client.stopStream() }
+                if (client.ecuReadLimit > 0) ecuReadLimits[init.romId] = client.ecuReadLimit
             }
             SsmTrace.polling = false
             if (capsSeen != Repo.capsVersion.value) {
@@ -1127,6 +1149,19 @@ class EcuService : Service() {
             Repo.link.value = LinkState.NO_ECU
             Repo.linkMessage.value = "Связь с ЭБУ потеряна"
             logger?.close(); logger = null
+            // mute on a live line: the K-line held low now, not after five silent cycles and a round of DTR/RTS levels
+            // (a Legacy BP lost 30 s each time, answering only once the line had been low; the cable just worked, so
+            // its levels are right). Still silent after it: the round below, with its own hold and the reopen
+            if (muteHold) {
+                muteHold = false
+                Repo.linkMessage.value = "ЭБУ молчит, сбрасываю K-линию…"
+                val kl = transport as? kg.forester.sg.ssm.KLineTransport
+                if (kl?.holdLineLow(2500) == true) {
+                    SsmTrace.log("ECU mute while the cable echoes: K-line held low 2.5 s at once")
+                    kl.heardEcho = false
+                    delay(500)
+                }
+            }
         }
     }
 
@@ -1595,6 +1630,26 @@ class EcuService : Service() {
             answers = false
             publishWatch()
             return true
+        }
+
+        /**
+         * [poll] after a read of [have] ([haveRaw] in its order): only the addresses that read lacks are asked for. A
+         * Legacy BP read 0x09 0x0A 0x0E 0x0F 0x1C 0x3A 0x3C twice a cycle, in the regular list and again here.
+         */
+        suspend fun pollAlongside(client: SsmClient, have: IntArray, haveRaw: ByteArray) {
+            refresh()
+            if (addrs.isEmpty()) return
+            val missing = addrs.filter { it !in have }.toIntArray()
+            if (missing.size == addrs.size) return poll(client)
+            val raw = if (missing.isEmpty()) ByteArray(0) else EcuLink.mutex.withLock { client.read(missing, dest) }
+            if (raw == null) {
+                answers = false
+                if (++fails >= 3) prune(client)
+                return
+            }
+            fails = 0
+            answers = true
+            take(have + missing, haveRaw + raw)
         }
 
         suspend fun poll(client: SsmClient) {
@@ -2100,6 +2155,14 @@ class EcuService : Service() {
     companion object {
         /** The charts' step (see addHistory): every sample of the plain polling, every third of the fast poll. */
         private const val HISTORY_STEP_MS = 200L
+
+        /**
+         * The stream's run between two transmission reads: N × 250 ms as with plain requests, but at least 3 s. Each
+         * read stops the stream, and starting it again takes its whole request on the line (44 addresses, ~0.3 s at
+         * 4800 baud): every 1.1 s that left a 0.7 s hole in the engine values each second on an FYT unit.
+         */
+        internal fun fastTcuGapMs(tcuEvery: Int): Long = maxOf(tcuEvery.coerceAtLeast(1) * 250L, 3000L)
+
         const val CHANNEL = "ecu"
         const val ACTION_USB_PERMISSION = "kg.forester.sg.USB_PERMISSION"
         const val ACTION_RESET_TRIP = "kg.forester.sg.RESET_TRIP"

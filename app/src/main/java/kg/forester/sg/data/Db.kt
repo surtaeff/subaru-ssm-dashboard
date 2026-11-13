@@ -24,7 +24,8 @@ data class Trip(
     val maxRpm: Int = 0,
     val idleL: Double = 0.0,
 ) {
-    val durationS: Long get() = (endMs - startMs) / 1000
+    /** Never negative: trips saved before the clock-jump fix can end before they began. */
+    val durationS: Long get() = ((endMs - startMs) / 1000).coerceAtLeast(0)
     val per100: Double? get() = if (distanceKm > 0.5) fuelL / distanceKm * 100 else null
     val avgSpeed: Double get() = if (durationS > 0) distanceKm / (durationS / 3600.0) else 0.0
 }
