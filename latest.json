@@ -1,8 +1,8 @@
 {
- "tag": "v1.0-beta3",
- "name": "1.0-beta3",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta3/subaru-ssm-dashboard.apk",
- "size": 125695946,
- "notes": "Пробег при пропусках связи, без 0 В в АКБ, ЭБУ с коротким запросом (Legacy GT), надёжнее K-Line и АКПП, откат детонации с FLKC, Bluetooth через штатное приложение.",
+ "tag": "v1.0-beta4",
+ "name": "1.0-beta4",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta4/subaru-ssm-dashboard.apk",
+ "size": 125696056,
+ "notes": "ЭБУ будится сразу, когда замолкает на K-Line, пропуски до 40 с в поездке, наддув при кривом датчике атмосферы, без отрицательного времени поездки, ровный остаток топлива, музыка при включении, открытие на последнем экране.",
  "logUrl": "https://script.google.com/macros/s/AKfycbyItYtasioVogj8klr_jO6DD3v2052wrEYNdCeyKa0b5J9jsX2sAIYam7JFS9xnCrmYkA/exec"
 }
