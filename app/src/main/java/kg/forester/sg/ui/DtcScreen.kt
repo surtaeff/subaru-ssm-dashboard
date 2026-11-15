@@ -231,10 +231,13 @@ object DtcRepo {
     }
 
     /**
-     * SSM2 "clear memory": write 0x40 to 0x000060 (also resets learned values); the unit echoes the byte it took.
-     * The codes are gone only after the ignition has been off for a few seconds (FreeSSM asks for the same).
+     * SSM2 "clear memory" (FreeSSM's level 1): write 0x40 to 0x000060; the unit echoes the byte it took. It clears the
+     * codes and the adjustments, on the engine unit its learned values too; the transmission's learned shift values go
+     * only with level 2 (see TcuReset). The codes are gone only after the ignition has been off for a few seconds
+     * (FreeSSM asks for the same).
      */
-    suspend fun clear(dest: Int): Boolean = EcuLink.use { it.write(0x000060, 0x40, dest) } == 0x40
+    suspend fun clear(dest: Int): Boolean =
+        EcuLink.use { it.write(kg.forester.sg.ssm.TcuReset.ADDR, kg.forester.sg.ssm.TcuReset.CLEAR_MEMORY, dest) } == kg.forester.sg.ssm.TcuReset.CLEAR_MEMORY
 }
 
 @Composable
@@ -304,7 +307,8 @@ fun DtcScreen() {
         }
     }
 
-    ScrollWhenLow(500.dp) {
+    // the transmission's column has the adaptation reset under its codes: scrolls on a lower screen than the engine's
+    ScrollWhenLow(if (unitTcu) 640.dp else 500.dp) {
     Row(Modifier.fillMaxSize()) {
         Panel(Modifier.width(if (LocalCar.current.small) 390.dp else 320.dp).fillMaxHeight()) {
             var manual by remember { mutableStateOf(false) }
@@ -364,9 +368,13 @@ fun DtcScreen() {
                     T("В держатель FWD вставлен предохранитель: блок АКПП отключил задний мост, на приборке горит лампа FWD. " +
                         "Это режим, а не неисправность, кода ошибки в памяти не будет.", 12.sp, C.Orange)
                 }
+                // FreeSSM's «Clear Memory 2», kept apart from the codes' own clear above
+                TcuResetSection()
             }
             Spacer(Modifier.weight(1f))
-            T("Сброс стирает и адаптации ЭБУ (топливные коррекции, обучение детонации и холостого хода). После сброса выключите зажигание на 5–10 с.", 11.sp, C.Sub)
+            if (unitTcu) T("Сброс ошибок АКПП стирает коды и поправки (Adjustments), адаптации переключений, как и в FreeSSM, " +
+                "сбрасываются отдельно. После сброса выключите зажигание на 5–10 с.", 11.sp, C.Sub)
+            else T("Сброс стирает и адаптации ЭБУ (топливные коррекции, обучение детонации и холостого хода). После сброса выключите зажигание на 5–10 с.", 11.sp, C.Sub)
         }
         Spacer(Modifier.width(12.dp))
         Panel(Modifier.weight(1f).fillMaxHeight()) {
@@ -431,7 +439,9 @@ fun DtcScreen() {
             title = { Text("Сбросить ошибки?") },
             text = {
                 Text(
-                    if (unitTcu) "Блок АКПП сотрёт коды и, скорее всего, сбросит адаптации переключений — первое время переключения могут быть жёстче, пока коробка обучится."
+                    // FreeSSM's level 1 on the transmission: codes and adjustments, the learned values stay (ClearMemoryDlg)
+                    if (unitTcu) "Блок АКПП сотрёт коды ошибок и вернёт к заводским поправки (Adjustments в FreeSSM), если их меняли. " +
+                        "Адаптации переключений, по FreeSSM и инструкции Subaru, стирает только «Clear Memory 2»: кнопка «Сбросить адаптации АКПП»."
                     else "ЭБУ сотрёт коды ошибок и сбросит адаптации (топливные коррекции, обучение холостого хода). Первые километры двигатель может работать чуть иначе, пока ЭБУ заново обучится."
                 )
             },

@@ -15,8 +15,8 @@ android {
         applicationId = "kg.forester.sg"
         minSdk = 23
         targetSdk = 34
-        versionCode = 45
-        versionName = "1.0-beta5"
+        versionCode = 46
+        versionName = "1.0-beta6"
     }
 
     // head units and phones are 32 or 64-bit ARM; the other copies of the native libraries only made the APK bigger
@@ -26,7 +26,8 @@ android {
     // installs older than that function only look for it. Debug builds make the universal one alone.
     splits {
         abi {
-            isEnable = gradle.startParameter.taskNames.any { it.contains("Release") }
+            // -PnoSplits: only the universal APK (the one released), when the disk is tight
+            isEnable = gradle.startParameter.taskNames.any { it.contains("Release") } && !project.hasProperty("noSplits")
             reset()
             include("arm64-v8a", "armeabi-v7a")
             isUniversalApk = true

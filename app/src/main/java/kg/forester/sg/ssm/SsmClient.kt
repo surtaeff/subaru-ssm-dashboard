@@ -252,17 +252,6 @@ abstract class KLineTransport : SsmTransport {
     /** Our own request has come back at the start of the answer before: this cable echoes. */
     @Volatile private var cableEchoes = false
 
-    private fun packet(dest: Int, body: ByteArray): ByteArray {
-        val packet = ByteArray(body.size + 5)
-        packet[0] = 0x80.toByte()
-        packet[1] = dest.toByte()
-        packet[2] = 0xF0.toByte()
-        packet[3] = body.size.toByte()
-        body.copyInto(packet, 4)
-        packet[packet.size - 1] = checksum(packet, packet.size - 1)
-        return packet
-    }
-
     /**
      * Sends a read request with the continuous flag (A8 01, RomRaider's «fast poll»): the ECU then answers it again
      * and again without waiting to be asked, about three times as often as request and answer in turn. Each answer's
@@ -466,6 +455,18 @@ abstract class KLineTransport : SsmTransport {
             var s = 0
             for (i in 0 until len) s += b[i].toInt() and 0xFF
             return s.toByte()
+        }
+
+        /** One request as it goes out on the K-line: 80 <dest> F0 <len> <body> <checksum>. */
+        fun packet(dest: Int, body: ByteArray): ByteArray {
+            val packet = ByteArray(body.size + 5)
+            packet[0] = 0x80.toByte()
+            packet[1] = dest.toByte()
+            packet[2] = 0xF0.toByte()
+            packet[3] = body.size.toByte()
+            body.copyInto(packet, 4)
+            packet[packet.size - 1] = checksum(packet, packet.size - 1)
+            return packet
         }
     }
 }
@@ -673,13 +674,9 @@ class SsmClient(val transport: SsmTransport) {
     /** The stream still runs: no other request has stopped it. */
     val streaming: Boolean get() = (transport as? KLineTransport)?.streaming == true
 
+    /** SSM2 single write (B8): the byte the unit says it took (the F8 answer), null with no or a malformed answer. */
     fun write(address: Int, value: Int, dest: Int = ECU): Int? {
-        val body = byteArrayOf(
-            0xB8.toByte(),
-            (address shr 16).toByte(), (address shr 8).toByte(), address.toByte(),
-            value.toByte(),
-        )
-        val data = transport.exchange(dest, body) ?: return null
+        val data = transport.exchange(dest, writeBody(address, value)) ?: return null
         if (data.size < 2 || data[0] != 0xF8.toByte()) return null
         return data[1].toInt() and 0xFF
     }
@@ -691,6 +688,13 @@ class SsmClient(val transport: SsmTransport) {
         const val TCU = 0x18
         /** The fewest addresses per request [read] goes down to. */
         const val MIN_SPLIT = 8
+
+        /** B8 <address, 3 bytes> <value>: one byte written, the way FreeSSM's writeDatabyte sends it. */
+        fun writeBody(address: Int, value: Int) = byteArrayOf(
+            0xB8.toByte(),
+            (address shr 16).toByte(), (address shr 8).toByte(), address.toByte(),
+            value.toByte(),
+        )
     }
 }
 

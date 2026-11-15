@@ -1578,6 +1578,7 @@ AFR под наддувом	AFR under boost
 Лампа AT OIL TEMP горит. Горит постоянно — перегрев ATF. Мигает после пуска (16 вспышек) — блок АКПП записал неисправность: прочитайте ошибки здесь.	AT OIL TEMP lamp is on. Steady: ATF overheated. Flashing after start (16 flashes): the transmission unit recorded a fault: read the codes here.
 В держатель FWD вставлен предохранитель: блок АКПП отключил задний мост, на приборке горит лампа FWD. Это режим, а не неисправность, кода ошибки в памяти не будет.	A fuse is in the FWD holder: the transmission unit disconnected the rear axle, the FWD lamp is on. This is a mode, not a fault, no code is stored.
 Сброс стирает и адаптации ЭБУ (топливные коррекции, обучение детонации и холостого хода). После сброса выключите зажигание на 5–10 с.	Clearing also erases ECU adaptations (fuel trims, knock and idle learning). After clearing, switch the ignition off for 5–10 s.
+Сброс ошибок АКПП стирает коды и поправки (Adjustments), адаптации переключений, как и в FreeSSM, сбрасываются отдельно. После сброса выключите зажигание на 5–10 с.	Clearing the transmission codes erases the codes and the adjustments; shift adaptations are reset separately, as in FreeSSM. After clearing, switch the ignition off for 5–10 s.
 Код	Code
 Описание	Description
 Текущая	Current
@@ -1589,7 +1590,7 @@ AFR под наддувом	AFR under boost
 норма	normal
 не прошёл	failed
 Сбросить ошибки?	Clear codes?
-Блок АКПП сотрёт коды и, скорее всего, сбросит адаптации переключений — первое время переключения могут быть жёстче, пока коробка обучится.	The transmission unit erases the codes and likely resets shift adaptations: shifts may be harder for a while until it learns again.
+Блок АКПП сотрёт коды ошибок и вернёт к заводским поправки (Adjustments в FreeSSM), если их меняли. Адаптации переключений, по FreeSSM и инструкции Subaru, стирает только «Clear Memory 2»: кнопка «Сбросить адаптации АКПП».	The transmission unit erases the codes and puts the adjustments (FreeSSM's Adjustments) back to factory values if they were changed. Shift adaptations, per FreeSSM and the Subaru manual, are cleared only by «Clear Memory 2»: the «Reset transmission adaptations» button.
 ЭБУ сотрёт коды ошибок и сбросит адаптации (топливные коррекции, обучение холостого хода). Первые километры двигатель может работать чуть иначе, пока ЭБУ заново обучится.	The ECU erases trouble codes and resets adaptations (fuel trims, idle learning). For the first kilometres the engine may run a little differently until the ECU relearns.
 Сброс…	Clearing…
 Блок принял команду. Теперь выключите зажигание минимум на 5–10 секунд, включите снова, дождитесь связи и прочитайте ошибки: до этого коды могут ещё показываться.	The unit took the command. Now switch the ignition off for at least 5–10 seconds, on again, wait for the link and read the codes: until then codes may still show.
@@ -4728,3 +4729,58 @@ K-линия занята другим прибором: только слуша
 Катализатор снят (отмечено в «Доработки машины»): эта ошибка ожидаема, задний зонд теперь переключается так же, как передний. Надёжно её убирает только прошивка с отключённым монитором катализатора	Catalyst removed (ticked in «Car mods»): this code is expected, the rear sensor now switches like the front one. Only a tune with the catalyst monitor off clears it for good
 Катализатор снят (отмечено в «Доработки машины»): коррекция смеси по заднему зонду уходит, это ожидаемо. Без прошивки ошибка вернётся{}	Catalyst removed (ticked in «Car mods»): the mixture trim by the rear sensor drifts, this is expected. Without a tune the code comes back{}
 . Если катализатор на месте: {}	. If the catalyst is in place: {}
+// ui/TcuResetUi.kt ssm/TcuReset.kt: the transmission's adaptation reset (FreeSSM's Clear Memory 2)
+Адаптации АКПП	Transmission adaptations
+Сбросить адаптации АКПП	Reset transmission adaptations
+Нет связи с адаптером: сброс не отправлен	No link to the adapter: the reset was not sent
+Блок АКПП не ответил: сброс не отправлен	The transmission unit did not answer: the reset was not sent
+Блок АКПП не подтвердил сброс (ответа нет). Принял ли он команду, неизвестно: выключите зажигание на 10 секунд, включите и попробуйте снова	The transmission unit did not confirm the reset (no answer). Whether it took the command is unknown: switch the ignition off for 10 seconds, on again and retry
+Блок АКПП ответил {} вместо 0x20: сброс не принят	The transmission unit answered {} instead of 0x20: the reset was not taken
+После включения ответил другой блок АКПП (ROM {}). FreeSSM в таком случае с блоком больше не работает, поэтому прежние поправки не возвращались.	After the ignition came on, a different transmission unit answered (ROM {}). FreeSSM stops working with the unit in that case, so the previous adjustments were not put back.
+Прежние поправки возвращены, блок принял все значения.	The previous adjustments are back, the unit took every value.
+Не все поправки вернулись: блок не принял часть значений. Проверьте их в FreeSSM («Adjustments»).	Not all adjustments came back: the unit refused some values. Check them in FreeSSM («Adjustments»).
+Сбросить адаптации АКПП?	Reset transmission adaptations?
+Сброс не выполнен	Reset not done
+Блок принял сброс	The unit took the reset
+Вернуть прежние поправки?	Put the previous adjustments back?
+Адаптации АКПП сброшены	Transmission adaptations reset
+Читаю поправки и отправляю «Clear Memory 2» блоку АКПП…	Reading the adjustments and sending «Clear Memory 2» to the transmission unit…
+Подождите	Please wait
+Поправки оставлены заводскими.	The adjustments stay at factory values.
+Оставить заводские	Keep factory values
+Что делает	What it does
+Блок АКПП стирает выученные значения переключений (адаптации), коды ошибок и поправки (Adjustments в FreeSSM). Это «Clear Memory 2» из FreeSSM: запись 0x20 по адресу 0x000060, блок должен ответить тем же байтом.	The transmission unit erases its learned shift values (adaptations), the trouble codes and the adjustments (FreeSSM's Adjustments). This is FreeSSM's «Clear Memory 2»: 0x20 written to address 0x000060, the unit must answer with the same byte.
+Риски	Risks
+Пока блок заново не обучится, переключения могут быть жёстче или с задержкой. Поправки, если их выставляли в FreeSSM, вернутся к заводским; после сброса приложение предложит вернуть прежние, как это делает FreeSSM.	Until the unit has learned again, shifts may be harsher or delayed. Adjustments set in FreeSSM go back to factory values; after the reset the app offers to put the previous ones back, as FreeSSM does.
+Перед сбросом	Before the reset
+Зажигание включено, двигатель заглушен, машина стоит, селектор в P, стояночный тормоз затянут.	Ignition on, engine off, car standing still, selector in P, parking brake applied.
+После сброса приложение попросит выключить зажигание, подождать и включить его снова.	After the reset the app asks you to switch the ignition off, wait and switch it on again.
+Блок АКПП ответил 0x20: команда принята.	The transmission unit answered 0x20: the command was taken.
+Выключите зажигание и подождите, пока пропадёт связь с машиной.	Switch the ignition off and wait until the link to the car is gone.
+Связь пропала. Подождите ещё {} с, зажигание пока не включайте.	The link is gone. Wait {} s more, do not switch the ignition on yet.
+Включите зажигание (двигатель не заводите) и дождитесь, пока блок АКПП снова ответит.	Switch the ignition on (do not start the engine) and wait until the transmission unit answers again.
+Так же делает FreeSSM: после сброса блок должен остаться без питания, а после включения приложение проверит, что ответил тот же блок.	FreeSSM does the same: after the reset the unit must lose power, and after the ignition comes on the app checks that the same unit answered.
+До сброса в блоке были выставлены поправки, сброс вернул их к заводским. FreeSSM в этом месте спрашивает то же самое.	The unit had adjustments set before the reset, and the reset put them back to factory values. FreeSSM asks the same at this point.
+Что дальше	What next
+Пока блок не обучится заново, переключения могут быть жёстче или с задержкой: он учится по ходу езды.	Until the unit has learned again, shifts may be harsher or delayed: it learns as you drive.
+Ускоренное обучение по сервисной инструкции Subaru (раздел 4AT(diag), Subaru Select Monitor, обучение после Clear Memory 2). Делается на подъёмнике, колёса вывешены:	Quick learning per the Subaru service manual (section 4AT(diag), Subaru Select Monitor, learning after Clear Memory 2). Done on a lift, wheels off the ground:
+1. Селектор P, стояночный тормоз. Проверьте, что кодов ошибок АКПП нет.	1. Selector in P, parking brake on. Check that the transmission has no trouble codes.
+2. Прогрейте двигатель, пока ATF не станет 60–90 °C (видно на экране «АКПП»).	2. Warm the engine up until the ATF is at 60–90 °C (shown on the «Transmission» screen).
+3. Селектор в R. Выключите фары, кондиционер, подогрев сидений, обогрев стекла и другие потребители.	3. Selector in R. Switch off the headlights, air conditioning, seat heaters, rear defogger and other loads.
+4. Выключите зажигание не меньше чем на 30 с, нажмите педаль тормоза до упора и держите её до конца обучения.	4. Switch the ignition off for at least 30 s, press the brake pedal fully and hold it until the learning is complete.
+5. Включите зажигание. Селектор по очереди в P, R, N, D, N, в каждом положении больше 3 с.	5. Switch the ignition on. Move the selector through P, R, N, D, N, more than 3 s in each position.
+6. Медленно нажмите газ до упора и медленно полностью отпустите.	6. Slowly press the accelerator to full throttle and slowly release it completely.
+7. Заведите двигатель, пусть работает на холостых. Селектор в D.	7. Start the engine and let it idle. Selector in D.
+8. Лампа AT OIL TEMP (в инструкции Legacy это SPORT) мигает 2 раза в секунду: обучение идёт. Частое мигание прекратилось: обучение закончено. Лампа не мигает или мигает 4 раза в секунду: выключите зажигание и начните снова со сброса.	8. The AT OIL TEMP lamp (SPORT in the Legacy manual) blinks twice a second: learning is in progress. The fast blinking has stopped: learning is complete. The lamp does not blink, or blinks 4 times a second: switch the ignition off and start again from the reset.
+9. Селектор в N, выключите зажигание, затем селектор в P.	9. Selector in N, switch the ignition off, then selector in P.
+В демо-режиме блока АКПП нет	There is no transmission unit in demo mode
+В режиме OBD-II блок АКПП недоступен	The transmission unit is not available in OBD-II mode
+Через ELM327 сброс не делается: нужен KKL-кабель или OpenPort	Not done through an ELM327: a KKL cable or an OpenPort is needed
+Включено «На линии другой прибор»: приложение ничего не шлёт на K-линию	«Another device on the line» is on: the app sends nothing on the K-line
+На K-линии работает другой прибор: дождитесь, пока он замолчит	Another device is talking on the K-line: wait until it goes quiet
+Нет связи с машиной	No link to the car
+Блок АКПП не ответил по SSM	The transmission unit did not answer over SSM
+Этот блок АКПП не сообщает о «Clear Memory 2»: FreeSSM для него этот сброс тоже не предлагает	This transmission unit does not list «Clear Memory 2»: FreeSSM does not offer this reset for it either
+Остановите машину	Stop the car
+Заглушите двигатель, зажигание оставьте включённым	Switch the engine off, keep the ignition on
+Поставьте селектор в P	Put the selector in P
