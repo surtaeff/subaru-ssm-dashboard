@@ -151,6 +151,9 @@ class EngineGuard {
             pick("flkc", "P91", "E41", "E95", "E101", "E12")?.takeIf { knock }?.let { "flkc" to it },
             pick("learned", "P29", "P153")?.takeIf { knock }?.let { "learned" to it },
             pick("target", "E36", "E90", "E120", "E6")?.let { "target" to it },
+            // the AFR the ECU asks for (Final Fueling Base, else the primary open-loop enrichment): shown beside the
+            // measured one when the mixture goes lean on boost; 2–4 bytes more per poll, so a turbo car only
+            pick("afrTarget", "E123", "E124", "E115", "E84", "E85", "E74")?.takeIf { Repo.carTurbo.value }?.let { "afrTarget" to it },
             // another car's own oil sensor, if its unit reports the standard PID 5C
             pick("oil", "P122", "OBD_5C")?.let { "oil" to it },
             pick("latG", "P172")?.let { "latG" to it },
@@ -487,6 +490,7 @@ class EngineGuard {
         if (rules) runCatching {
             analyzer?.process(RuleInput(e, tFresh, now, skippedMerged, iam = if (fKnock) iam else null, fbkc = if (fKnock) fbkc else null, flkc = if (fKnock) flkc else null,
                 iamInitial = romIam.initial, iamBoostCut = romIam.boostCut, oilC = oil, turbo = turboCar, targetBoostKpa = target, sportEcu = sport, box = boxInput(),
+                targetAfr = roles["afrTarget"]?.let { p -> v("afrTarget")?.let { afrOf(it, p.units) } }, mods = s.carMods,
                 boostNormCar = if (otherState == kg.forester.sg.data.TurboState.TURBO) s.otherTurbo.car else null,
                 fanLow = v("fan1")?.let { it >= 0.5f }, fan = listOf("fan1", "fan2", "fan3").mapNotNull { v(it) }.takeIf { it.isNotEmpty() }?.any { it >= 0.5f } ?: v("fanPct")?.let { it > 5f },
                 ac = v("ac")?.let { it >= 0.5f }, knockSums = (1..4).map { v("ks$it") ?: return@map null }.takeIf { l -> l.all { it != null } }?.filterNotNull(),
@@ -607,6 +611,20 @@ class EngineGuard {
                 else -> raw * k - atmKpa
             }
             return kpa.takeIf { it in -50f..300f }
+        }
+
+        /**
+         * AFR from a fueling parameter read in its [units]: RomRaider gives "estimated AFR", "lambda" or the
+         * "fuel-air equivalence ratio" (1 / lambda). Null outside what any map asks for (a wrong address).
+         */
+        fun afrOf(v: Float, units: String): Float? {
+            val u = units.lowercase()
+            val afr = when {
+                "equivalence" in u -> if (v > 0f) 14.7f / v else return null
+                "lambda" in u -> v * 14.7f
+                else -> v
+            }
+            return afr.takeIf { it in 8f..20f }
         }
 
         /** The estimated oil temperature with the driver's correction («Поправка оценки масла», -15..+15 °C); real sensors never get it. */

@@ -59,13 +59,58 @@ abstract class KLineTransport : SsmTransport {
 
     protected abstract fun writeRaw(packet: ByteArray)
 
-    /** Holds the K-line low for [ms] (the serial chip's break); false when this cable cannot. */
-    open fun holdLineLow(ms: Long): Boolean = false
+    /** The serial chip's break: the K-line held low for [ms]; false when this cable cannot. */
+    protected open fun breakLine(ms: Long): Boolean = false
+
+    /**
+     * Holds the K-line low for [ms] (see [breakLine]); false when this cable cannot, or the line is another device's
+     * ([listenOnly]). Whatever was half heard before goes: after the break a Legacy BP log had our own init parsed
+     * late, behind a half frame, and taken for another tester's request (quiet mode, then one more reconnect).
+     */
+    fun holdLineLow(ms: Long): Boolean {
+        if (listenOnly || !breakLine(ms)) return false
+        // the chip's last bytes of the break come a USB packet or two later
+        Thread.sleep(BREAK_SETTLE_MS)
+        synchronized(lock) { inbox.reset(); stream.reset(); sent.clear() }
+        // held low for an ECU silent to our echoed requests: one that goes mute so
+        longGapOn()
+        return true
+    }
+
+    /**
+     * Another device owns the K-line (a Blitz gauge on an OBD splitter, a laptop): nothing at all is sent, no init,
+     * no stop, no break. The values are only what that device asks for (see [sniffed]).
+     */
+    @Volatile var listenOnly = false
+
+    /**
+     * Plain cables: this much quiet line before each request. A Legacy BP went mute (until the line was held low) on
+     * requests sent 2-8 ms after the last answer, most after the transmission's; ISO 14230 asks 55 ms (P3min), but
+     * that everywhere cost every KKL car a sixth of its poll rate. So [longGapMs] only after another unit's answer, and
+     * on every request once this ECU has gone mute ([longGap]).
+     */
+    protected open val requestGapMs: Long get() = 0L
+    protected open val longGapMs: Long get() = 0L
+
+    /** This ECU has gone mute on our requests (see [ecuMute], [holdLineLow]): [longGapMs] before each one from now on. */
+    @Volatile var longGap = false
+
+    private fun longGapOn() {
+        if (longGap || longGapMs <= 0) return
+        longGap = true
+        SsmTrace.log("K-line: the ECU went mute, $longGapMs ms of quiet line before each request from now on")
+    }
+
+    /** The unit whose answer the line carried last (0 before any). */
+    @Volatile private var lastFrom = 0
 
     // ---- the line as a whole
     private val stream = java.io.ByteArrayOutputStream()
-    /** Our request on its way: its echo is ours, any other request is someone else's. */
-    @Volatile private var sending: ByteArray? = null
+    /**
+     * Our latest requests (under [lock]): an echo of any of them is ours, any other request is someone else's. Not only
+     * the last one: a frame parsed late (behind a garbled half) comes when the next request is already on its way.
+     */
+    private val sent = ArrayDeque<Pair<ByteArray, Long>>()
     @Volatile private var lastForeignMs = 0L
     /** What the other tester asked last, per unit: the addresses whose values come back in that order. */
     private val pending = HashMap<Int, IntArray>()
@@ -77,11 +122,14 @@ abstract class KLineTransport : SsmTransport {
     /** The ECU answering one request over and over by itself (see [startStream]): each answer's body goes here. */
     @Volatile private var streamSink: ((ByteArray) -> Unit)? = null
     @Volatile private var lastRxMs = 0L
+    @Volatile private var lastTxMs = 0L
+    /** Whole frames from the engine unit so far: [stopStream] goes right after one. */
+    @Volatile private var ecuFrames = 0
 
     /** The ECU is sending its answers by itself; any other request stops that (see [exchange]). */
     val streaming: Boolean get() = streamSink != null
 
-    override val passive: Boolean get() = System.currentTimeMillis() - lastForeignMs < QUIET_MS
+    override val passive: Boolean get() = listenOnly || System.currentTimeMillis() - lastForeignMs < QUIET_MS
 
     override fun sniffed(addrs: IntArray, maxAgeMs: Long): Pair<IntArray, ByteArray>? {
         val now = System.currentTimeMillis()
@@ -108,6 +156,9 @@ abstract class KLineTransport : SsmTransport {
         while (true) {
             while (i < b.size && b[i] != 0x80.toByte()) i++
             if (b.size - i < 4) break
+            // a real header has a unit on one end: a stray 0x80 (a collision, the break) with a made-up length held
+            // up every frame behind it, our own echoes then parsed late
+            if (!plausible(b[i + 1].toInt() and 0xFF, b[i + 2].toInt() and 0xFF)) { i++; continue }
             val total = 5 + (b[i + 3].toInt() and 0xFF)
             if (b.size - i < total) break
             if (checksum(b.copyOfRange(i, i + total), total - 1) != b[i + total - 1]) { i++; continue }
@@ -119,16 +170,21 @@ abstract class KLineTransport : SsmTransport {
         if (i < b.size) stream.write(b, i, minOf(b.size - i, 300))
     }
 
+    private fun isUnit(a: Int) = a == SsmClient.ECU || a == SsmClient.TCU
+
+    private fun plausible(dst: Int, src: Int) = dst != src && (isUnit(dst) || isUnit(src))
+
     private fun frame(f: ByteArray) {
         val dst = f[1].toInt() and 0xFF
         val src = f[2].toInt() and 0xFF
         val body = f.copyOfRange(4, f.size - 1)
         if (body.isEmpty()) return
         val now = System.currentTimeMillis()
-        if (src == 0xF0 && (dst == SsmClient.ECU || dst == SsmClient.TCU)) {
-            val mine = sending
-            if (mine != null && mine.contentEquals(f)) { // our own echo
-                sending = null
+        // a request to a unit from any tester address, not only F0 (another device may use its own)
+        if (isUnit(dst) && !isUnit(src)) {
+            val k = sent.indexOfFirst { it.first.contentEquals(f) && now - it.second < SENT_MAX_AGE_MS }
+            if (k >= 0) { // our own echo; the ones before it never came back whole
+                repeat(k + 1) { sent.removeFirst() }
                 if (dst == SsmClient.ECU) ecuEchoes++
                 return
             }
@@ -148,16 +204,20 @@ abstract class KLineTransport : SsmTransport {
             if (lastForeignMs - lastLoggedMs > 30_000) { lastLoggedMs = lastForeignMs; SsmTrace.log("another tester on the K-line: listening", f) }
             return
         }
-        if (dst == 0xF0 && src == SsmClient.ECU) {
+        if (isUnit(src) && !isUnit(dst)) lastFrom = src
+        // the engine unit to any tester: us, or the other device at whatever address it has
+        if (src == SsmClient.ECU && !isUnit(dst)) {
             ecuAnsweredMs = now
             ecuEchoes = 0
+            ecuFrames++
             when (body[0].toInt() and 0xFF) {
-                0xFF -> if (now - lastForeignMs < QUIET_MS) sniffedInit = body
+                0xFF -> if (passive) sniffedInit = body
                 0xE8, 0xE0 -> {
-                    if (now - lastForeignMs >= QUIET_MS) { streamSink?.invoke(body); return }
-                    // an answer to the other tester, not to us
-                    val asked = pending.remove(SsmClient.ECU) ?: return
-                    for (k in asked.indices) if (1 + k < body.size) seen[asked[k]] = body[1 + k] to now
+                    if (!passive) { streamSink?.invoke(body); return }
+                    // an answer to the other tester, not to us. Its request stays: one with the continuous flag
+                    // (A8 01) is answered over and over; a new request of his replaces it
+                    val asked = pending[SsmClient.ECU] ?: return
+                    if (body.size == 1 + asked.size) for (k in asked.indices) seen[asked[k]] = body[1 + k] to now
                 }
             }
         }
@@ -178,6 +238,9 @@ abstract class KLineTransport : SsmTransport {
      */
     fun ecuMute(now: Long = System.currentTimeMillis()): Boolean =
         ecuAnsweredMs > 0 && ecuEchoes >= ECU_MUTE_ECHOES && now - ecuAnsweredMs >= ECU_MUTE_MS
+
+    /** Our requests to the engine unit heard back off the line since it last sent anything: the line is live, it lets them pass. */
+    val ignoredRequests: Int get() = ecuEchoes
 
     /**
      * A plain cable answers as fast as the line carries it: a read the unit has answered before gets a timeout for its
@@ -210,11 +273,13 @@ abstract class KLineTransport : SsmTransport {
         if (passive) return false
         ioError?.let { throw IOException(it) }
         val packet = packet(dest, body)
+        // the restart right after the transmission's answer is where a Legacy BP fell silent most
+        keepGap(dest)
+        if (passive) return false
         synchronized(lock) { inbox.reset() }
         SsmTrace.log("TX stream", packet)
         streamSink = sink
-        sending = packet
-        writeRaw(packet)
+        send(packet)
         return true
     }
 
@@ -232,12 +297,14 @@ abstract class KLineTransport : SsmTransport {
         ioError?.let { throw IOException(it) }
         val stop = packet(SsmClient.ECU, byteArrayOf(0xA8.toByte(), 0x00))
         repeat(3) {
-            sending = stop
-            writeRaw(stop)
+            // into the pause after a whole frame: the line is busy nearly all the time (a 33-address frame takes 81 ms
+            // at 4800 baud, one comes every 80 ms), and a stop sent at any moment landed inside one every time
+            afterFrame(STOP_WAIT_MS)
+            send(stop)
             val deadline = System.currentTimeMillis() + 600
             while (System.currentTimeMillis() < deadline) {
                 Thread.sleep(15)
-                if (System.currentTimeMillis() - lastRxMs > 120) {
+                if (System.currentTimeMillis() - lastRxMs > STREAM_QUIET_MS) {
                     synchronized(lock) { inbox.reset(); stream.reset() }
                     SsmTrace.log("stream stopped")
                     return true
@@ -247,6 +314,43 @@ abstract class KLineTransport : SsmTransport {
         synchronized(lock) { inbox.reset() }
         SsmTrace.log("stream: the ECU keeps sending")
         return false
+    }
+
+    /** Waits (at most [maxMs]) for the engine unit to finish a frame; at once when the line is quiet. */
+    private fun afterFrame(maxMs: Long) {
+        val n = ecuFrames
+        val until = System.currentTimeMillis() + maxMs
+        while (ecuFrames == n) {
+            val now = System.currentTimeMillis()
+            if (now >= until || now - lastRxMs > STREAM_QUIET_MS) return
+            Thread.sleep(1)
+        }
+    }
+
+    /**
+     * Quiet since the last byte either way before a request to [dest]: [requestGapMs], or [longGapMs] after another
+     * unit's answer (0x18 → 0x10 and back) or for an ECU that has gone mute. At most [GAP_WAIT_MAX_MS] when the line
+     * keeps talking.
+     */
+    private fun keepGap(dest: Int) {
+        val gap = if (longGap || (lastFrom != 0 && lastFrom != dest)) maxOf(longGapMs, requestGapMs) else requestGapMs
+        if (gap <= 0) return
+        val until = System.currentTimeMillis() + GAP_WAIT_MAX_MS
+        while (true) {
+            val now = System.currentTimeMillis()
+            val wait = minOf(maxOf(lastRxMs, lastTxMs) + gap, until) - now
+            if (wait <= 0) return
+            Thread.sleep(wait)
+        }
+    }
+
+    private fun send(packet: ByteArray) {
+        synchronized(lock) {
+            sent.addLast(packet to System.currentTimeMillis())
+            while (sent.size > SENT_KEPT) sent.removeFirst()
+        }
+        writeRaw(packet)
+        lastTxMs = System.currentTimeMillis()
     }
 
     @Synchronized
@@ -260,10 +364,11 @@ abstract class KLineTransport : SsmTransport {
         val packet = packet(dest, body)
 
         ioError?.let { throw IOException(it) }
+        keepGap(dest)
+        if (passive) return null
         synchronized(lock) { inbox.reset() }
         SsmTrace.log("TX", packet)
-        sending = packet
-        writeRaw(packet)
+        send(packet)
 
         // 2 s like RomRaider and FreeSSM: older (16-bit) ECUs can be slow with the first answer. A plain read that this
         // unit has answered before, on a plain cable: as long as the line needs plus a margin (they come in 60-250 ms;
@@ -295,6 +400,7 @@ abstract class KLineTransport : SsmTransport {
         }
         SsmTrace.log("timeout, got ${all.size} bytes: ${all.toHex(" ")}")
         if (all.size >= packet.size && all.copyOf(packet.size).contentEquals(packet)) heardEcho = true
+        if (dest == SsmClient.ECU && ecuMute()) longGapOn()
         return null
     }
 
@@ -336,6 +442,18 @@ abstract class KLineTransport : SsmTransport {
         const val ECU_MUTE_ECHOES = 3
         /** The margin of a quick read over the time its bytes take on the line. */
         const val QUICK_MARGIN_MS = 600L
+        /** A plain cable's quiet line before a request, and the long one (see [requestGapMs]). */
+        const val REQUEST_GAP_MS = 15L
+        const val LONG_GAP_MS = 55L
+        const val GAP_WAIT_MAX_MS = 500L
+        /** The longest wait for a stream frame to end before the stop goes anyway (two frames of 64 addresses). */
+        const val STOP_WAIT_MS = 300L
+        /** No byte this long: the stream has stopped. */
+        const val STREAM_QUIET_MS = 120L
+        const val BREAK_SETTLE_MS = 50L
+        /** Our requests kept for their echoes (see [sent]), and for how long. */
+        const val SENT_KEPT = 8
+        const val SENT_MAX_AGE_MS = 10_000L
 
         /**
          * The wait for the answer to a plain read of [addrs] addresses sent as [packetBytes]: the request's echo and the
@@ -374,6 +492,8 @@ class KklTransport(private val port: UsbSerialPort, private val openPort13: Bool
             if (mode == 0) "" else modes[mode].let { (d, r) -> ", DTR ${if (d) 1 else 0} RTS ${if (r) 1 else 0}" }
     override val lineModes get() = modes.size
     override val quickAnswers get() = true
+    override val requestGapMs get() = REQUEST_GAP_MS
+    override val longGapMs get() = LONG_GAP_MS
     private var io: SerialInputOutputManager? = null
 
     override fun setLineMode(i: Int) {
@@ -397,7 +517,7 @@ class KklTransport(private val port: UsbSerialPort, private val openPort13: Bool
 
     override fun writeRaw(packet: ByteArray) = port.write(packet, 1000)
 
-    override fun holdLineLow(ms: Long): Boolean = runCatching {
+    override fun breakLine(ms: Long): Boolean = runCatching {
         port.setBreak(true)
         try { Thread.sleep(ms) } finally { port.setBreak(false) }
         true
@@ -431,7 +551,7 @@ class SsmClient(val transport: SsmTransport) {
         private set
     private var longMisses = 0
     /** The most addresses one request to the engine unit has had answered on this client (see [readChunk]'s retry). */
-    private var provenChunk = 0
+    @Volatile private var provenChunk = 0
 
     /**
      * The limit learnt on an earlier connection to the same ECU this session ([SsmClient] is made anew for each one):
@@ -458,20 +578,43 @@ class SsmClient(val transport: SsmTransport) {
         readSplit(addresses, dest, step)?.let { if (dest == ECU && minOf(addresses.size, step) > MIN_SPLIT) longMisses = 0; return it }
         val size = minOf(addresses.size, step)
         if (dest != ECU || transport.passive || size <= MIN_SPLIT || transport.maxReadAddrs <= MIN_SPLIT) return null
+        // a mute ECU lets every request pass, short or long: nothing to learn from it (a Legacy BP went 25 → 12 → 8
+        // this way and read by 8 for the rest of the drive, although its 33-address stream worked)
+        if ((transport as? KLineTransport)?.ecuMute() == true) { longMisses = 0; return null }
         if (++longMisses < 2) return null
         longMisses = 0
-        ecuReadLimit = (size / 2).coerceAtLeast(MIN_SPLIT)
+        val limit = (size / 2).coerceAtLeast(MIN_SPLIT)
+        // kept only when the shorter requests do get answers: an ECU silent to them too is not over a limit
+        val parts = readSplit(addresses, dest, limit) ?: return null
+        ecuReadLimit = limit
         SsmTrace.log("ECU: no answer to $size addresses in one request, reading by $ecuReadLimit")
-        return readSplit(addresses, dest, ecuReadLimit)
+        return parts
     }
 
+    /** In even parts of at most [step]: 33 by 12 is 11+11+11, by 8 it is 6+6+7+7+7 (not 8+8+8+8+1). */
     private fun readSplit(addresses: IntArray, dest: Int, step: Int): ByteArray? {
         if (addresses.size <= step) return readChunk(addresses, dest)
+        val parts = (addresses.size + step - 1) / step
         val out = java.io.ByteArrayOutputStream(addresses.size)
-        for (i in addresses.indices step step) {
-            out.write(readChunk(addresses.copyOfRange(i, minOf(i + step, addresses.size)), dest) ?: return null)
+        var from = 0
+        for (p in 0 until parts) {
+            val n = (addresses.size - from) / (parts - p)
+            out.write(readChunk(addresses.copyOfRange(from, from + n), dest) ?: return null)
+            from += n
         }
         return out.toByteArray()
+    }
+
+    /**
+     * [n] addresses answered in one request (a stream frame): a lower limit learnt earlier was wrong, the ECU mute
+     * a moment then. Requests go whole again; a real limit is learnt anew.
+     */
+    private fun proven(n: Int) {
+        if (n > provenChunk) provenChunk = n
+        if (ecuReadLimit in 1 until n) {
+            SsmTrace.log("ECU: $n addresses answered in one request, no longer reading by $ecuReadLimit")
+            ecuReadLimit = 0
+        }
     }
 
     /**
@@ -518,7 +661,10 @@ class SsmClient(val transport: SsmTransport) {
         val kt = transport as? KLineTransport ?: return false
         if (addresses.isEmpty() || addresses.size > kt.maxReadAddrs) return false
         return kt.startStream(ECU, readBody(addresses, 0x01)) { b ->
-            if (b.size == 1 + addresses.size && b[0] == 0xE8.toByte()) onValues(b.copyOfRange(1, 1 + addresses.size))
+            if (b.size == 1 + addresses.size && b[0] == 0xE8.toByte()) {
+                proven(addresses.size)
+                onValues(b.copyOfRange(1, 1 + addresses.size))
+            }
         }
     }
 

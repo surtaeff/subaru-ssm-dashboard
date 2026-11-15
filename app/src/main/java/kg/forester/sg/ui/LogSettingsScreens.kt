@@ -101,7 +101,29 @@ fun LogScreen() {
             SettingHint("Старые файлы удаляются автоматически раз в час, папка не больше 200 МБ. Графики расхода хранятся 35 дней, поездки и заправки — всегда.")
             Spacer(Modifier.height(8.dp))
             var pick by remember { mutableStateOf(false) }
-            Chip("Что писать в лог…", false, { pick = true })
+            // a CSV from elsewhere (a laptop logger, a spreadsheet, a friend's log) opens in the same charts
+            val openCsv = androidx.activity.compose.rememberLauncherForActivityResult(
+                androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) listScope.launch {
+                    val f = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching {
+                            val name = ctx.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "import.csv"
+                            val dir = File(ctx.cacheDir, "import").apply { deleteRecursively(); mkdirs() }
+                            File(dir, name.replace('/', '_')).also { out ->
+                                ctx.contentResolver.openInputStream(uri)!!.use { i -> out.outputStream().use { i.copyTo(it) } }
+                            }
+                        }.onFailure { kg.forester.sg.ssm.SsmTrace.log("csv open: $it") }.getOrNull()
+                    }
+                    if (f != null) viewing = f
+                    else android.widget.Toast.makeText(ctx, kg.forester.sg.data.tr("Не удалось открыть файл"), android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Chip("Что писать в лог…", false, { pick = true })
+                Spacer(Modifier.width(6.dp))
+                Chip("Открыть CSV…", false, { runCatching { openCsv.launch(arrayOf("text/*", "application/csv", "application/vnd.ms-excel", "application/octet-stream")) } }, Lucide.FolderOpen)
+            }
             if (pick) LogColumnsDialog { pick = false }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -472,8 +494,51 @@ private fun SystemSettings() {
                     "при заправках до полного бака. Если ЭБУ не передаёт уровень топлива, остаток считается от последней заправки.",
                 13.sp, C.Sub,
             )
+            SettingsSection("Доработки машины")
+            CarModsSettings()
         }
     }
+}
+
+/**
+ * «Доработки машины»: what was changed on the car, so the hints don't blame a part for what a mod does (see
+ * [kg.forester.sg.data.CarMods]). A change of the exhaust, turbo or tune starts the learned boost and spool point over.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun CarModsSettings() {
+    val s = Repo.settings
+    val ctx = LocalContext.current
+    var mods by remember { mutableStateOf(s.carMods) }
+    fun save(m: kg.forester.sg.data.CarMods) {
+        val old = s.carMods
+        s.carMods = m; mods = m
+        if (old.boostKey != m.boostKey) kg.forester.sg.service.RulesHost.forgetBoostNorms(ctx)
+    }
+    SettingHint("Подсказки и ошибки учитывают доработки: снятый катализатор, даунпайп на стоковой прошивке, другой впуск. " +
+        "После смены выпуска, турбины или прошивки обычный наддув и выход на наддув выучиваются заново.")
+    Spacer(Modifier.height(6.dp))
+    T("Катализатор снят", 14.sp)
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Chip("в апайпе", mods.catUpPipe, { save(mods.copy(catUpPipe = !mods.catUpPipe)) })
+        Chip("передний", mods.catFront, { save(mods.copy(catFront = !mods.catFront)) })
+        Chip("задний", mods.catRear, { save(mods.copy(catRear = !mods.catRear)) })
+    }
+    Spacer(Modifier.height(6.dp))
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Chip("Даунпайп", mods.downpipe, { save(mods.copy(downpipe = !mods.downpipe)) })
+        Chip("Впуск с другим корпусом ДМРВ", mods.intake, { save(mods.copy(intake = !mods.intake)) })
+        Chip("Турбина больше штатной", mods.bigTurbo, { save(mods.copy(bigTurbo = !mods.bigTurbo)) })
+    }
+    Spacer(Modifier.height(6.dp))
+    T("Прошивка ЭБУ", 14.sp)
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        kg.forester.sg.data.CarMods.Tune.entries.forEach { t -> Chip(t.title, mods.tune == t, { save(mods.copy(tune = t)) }) }
+    }
+    Spacer(Modifier.height(6.dp))
+    // set where they are used: the fuel count and the dyno
+    InfoRow("Форсунки, cc/мин («Машина и адаптер» → расход)", if (s.injectorCc > 0) "${s.injectorCc}" else "штатные")
+    InfoRow("Масса машины («Замеры» → «Диностенд»)", "${s.massKg} кг")
 }
 
 /** Where the mini player goes, or none. */
@@ -491,66 +556,37 @@ private fun MiniPlayerSetting() {
     }
 }
 
-/** Check GitHub for a newer release, show what changed, download and install it over this one. */
+/**
+ * Check GitHub for a newer release, show what changed, download and install it over this one. The check, the download
+ * and the install live in Updater, not here: leaving the screen doesn't stop them and coming back shows the same one.
+ */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun UpdateSettings() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val current = remember { kg.forester.sg.data.Updater.current(ctx) }
-    var status by remember { mutableStateOf("") }
-    var release by remember { mutableStateOf<kg.forester.sg.data.Updater.Release?>(null) }
-    var progress by remember { mutableStateOf<Float?>(null) }
-    var apk by remember { mutableStateOf<java.io.File?>(null) }
+    val st by kg.forester.sg.data.Updater.state.collectAsState()
+    val release = st.release
+    val progress = st.progress
+    val status = st.status
     T("Обновление приложения", 16.sp)
     Spacer(Modifier.height(6.dp))
     InfoRow("Установлена версия", current)
     Spacer(Modifier.height(6.dp))
     // wraps: side by side they didn't fit the panel with a bigger system font, and the button was cut off
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Chip("Проверить обновления", false, {
-            status = "Проверяю…"; release = null; apk = null
-            scope.launch {
-                val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { kg.forester.sg.data.Updater.latest() }
-                release = r?.takeIf { kg.forester.sg.data.Updater.isNewer(it.tag, current) }
-                status = when {
-                    r == null -> "Не удалось проверить: нет интернета или GitHub недоступен"
-                    // the installed one, not the release found: a build newer than the last release says so
-                    release == null && kg.forester.sg.data.Updater.isNewer(current, r.tag) ->
-                        "У вас $current, новее опубликованной (${r.tag.removePrefix("v")})"
-                    release == null -> "У вас последняя версия ($current)"
-                    else -> "Доступна версия ${r.tag.removePrefix("v")}"
-                }
-            }
-        })
-        release?.let { r ->
-            Chip(if (progress != null) "Скачиваю…" else "Скачать и установить", false, {
-                if (progress != null) return@Chip
-                apk?.let { if (kg.forester.sg.data.Updater.install(ctx, it)) return@Chip }
-                progress = 0f
-                scope.launch {
-                    val f = runCatching {
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            kg.forester.sg.data.Updater.download(ctx, r) { p -> progress = p }
-                        }
-                    }
-                    progress = null
-                    f.onSuccess { file ->
-                        apk = file
-                        status = if (kg.forester.sg.data.Updater.install(ctx, file))
-                            "Установщик открыт: подтвердите обновление. Если он пишет «конфликт пакетов» — у вас версия с другой " +
-                                "подписью (0.8 или собранная самостоятельно): сохраните резервную копию (слева), удалите приложение и поставьте заново"
-                        else "Разрешите установку из этого приложения и нажмите «Скачать и установить» ещё раз"
-                    }.onFailure { kg.forester.sg.ssm.SsmTrace.log("update: $it"); status = "Не скачалось: ${kg.forester.sg.data.Failure.text(it)}" }
-                }
-            })
+        Chip("Проверить обновления", false, { kg.forester.sg.data.Updater.check(ctx) })
+        release?.let {
+            // a second press while it downloads only keeps showing the progress: one download per process
+            Chip(if (progress != null) "Скачиваю…" else "Скачать и установить", false, { kg.forester.sg.data.Updater.downloadAndInstall(ctx) })
+            if (progress != null) Chip("Отменить", false, { kg.forester.sg.data.Updater.cancel() })
         }
     }
     progress?.let {
         Spacer(Modifier.height(6.dp))
         androidx.compose.material3.LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth(), color = C.Purple)
     }
-    if (status.isNotEmpty()) { Spacer(Modifier.height(6.dp)); T(status, 13.sp, if (status.startsWith("Не ")) C.Orange else if (release != null) C.Green else C.Sub) }
+    if (status.isNotEmpty()) { Spacer(Modifier.height(6.dp)); T(status, 13.sp, if (st.failed || status.startsWith("Не ")) C.Orange else if (release != null) C.Green else C.Sub) }
     release?.let { r ->
         Spacer(Modifier.height(6.dp))
         T(r.name, 13.sp)
@@ -863,6 +899,16 @@ private fun LogColumnsDialog(onClose: () -> Unit) {
         text = {
             Column(Modifier.cueScroll(C.DialogHi), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 SettingHint("Время пишется всегда. Отмеченные параметры ЭБУ с экрана «Датчики» добавляются в конец. Новый выбор начинает новый файл.")
+                // one tap: the tuner's usual set and nothing else (a short file the tuner reads at a glance)
+                val keys = groups.values.flatten().map { it.key }
+                val tuner = kg.forester.sg.service.LogColumns.tunerKeys(keys, kg.forester.sg.data.Wideband.config.value.enabled,
+                    Repo.carTurbo.value, Repo.settings.gearbox != "mt")
+                val tunerOn = keys.filter { it !in off } == tuner
+                Chip("Лог для настройщика", tunerOn, {
+                    off = off - tuner.toSet() + (keys - tuner.toSet()); Repo.settings.logOff = off
+                }, Lucide.Wrench)
+                if (tunerOn) SettingHint("Как снять полезный лог: прогретый мотор, минута на холостых. Затем разгон в пол на 3-й или 4-й передаче " +
+                    "от 2500 об/мин до отсечки (около 10 с) и разгон на половине газа 6–7 с. AFR пишется в единицах AFR, наддув в барах.")
                 groups.forEach { (g, cols) ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val icon = when (g) {

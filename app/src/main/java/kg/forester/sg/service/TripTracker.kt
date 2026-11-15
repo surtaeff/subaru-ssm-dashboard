@@ -23,8 +23,9 @@ object FuelCalc {
      * Fuel flow in L/h from MAF. The ECU meters fuel as MAF / target AFR and then applies the
      * A/F correction + learning trims, so the trims are included (they matter on this car: an air
      * leak shows up as large positive trims). Outside closed loop the measured AFR is used as is.
-     * An OBD-II unit with its own fuel rate (PID 5E) gives the number itself, the cuts included.
-     * [k] is learned from real refills.
+     * An OBD-II unit with its own fuel rate (PID 5E) gives the number itself, the cuts included. Without a MAF it goes
+     * by the injectors, without those too by the manifold pressure ([speedDensityGs]).
+     * [k] is learned from real refills, whichever way the number came.
      */
     fun litersPerHour(s: EcuSnapshot, k: Double, cylinders: Int = this.cylinders): Double {
         val rpm = s.rpm ?: return 0.0
@@ -33,8 +34,16 @@ object FuelCalc {
         val pw = s.injPwMs
         if (pw != null && pw < 0.2f && rpm > 1100) return 0.0 // deceleration fuel cut
         if (obdCut(s, rpm)) return 0.0
-        val maf = s.mafGs ?: return byInjectors(pw, rpm, k, s.batteryV, cylinders)
-        source = "maf"
+        s.mafGs?.let { source = "maf"; return byAir(it, s, k) }
+        if (pw != null && pw in 0.3f..40f) return byInjectors(pw, rpm, k, s.batteryV, cylinders)
+        // neither a MAF nor an injection time: the air by the manifold pressure, metered as the MAF's
+        val air = speedDensityGs(s, rpm, litres()) ?: run { source = ""; return 0.0 }
+        source = "map"
+        return byAir(air, s, k)
+    }
+
+    /** L/h of the fuel for [maf] g/s of air: the MAF's own or the one [speedDensityGs] estimates. */
+    private fun byAir(maf: Float, s: EcuSnapshot, k: Double): Double {
         val measured = s.afr?.toDouble() ?: estimatedEnrichedAfr(s)
         val closedLoop = measured == null || measured in 13.5..16.0
         val fuelGs = if (closedLoop) {
@@ -59,7 +68,10 @@ object FuelCalc {
         return (12.5 - (boost - 20.0) / 60.0).coerceIn(11.5, 12.5)
     }
 
-    /** How the last [litersPerHour] got its number: "maf", "inj" (no MAF, by the injectors), "obd" (the unit's own PID 5E) or "" (none). */
+    /**
+     * How the last [litersPerHour] got its number: "maf", "inj" (no MAF, by the injectors), "map" (no MAF and no
+     * injection time, by the manifold pressure: [speedDensityGs]), "obd" (the unit's own PID 5E) or "" (none).
+     */
     @Volatile var source = ""
         private set
 
@@ -134,8 +146,7 @@ object FuelCalc {
      * once per two turns, open for the pulse width less the time they take to open, at a typical flow for the
      * engine. The refills calibrate [k] as they do for the MAF way.
      */
-    private fun byInjectors(pw: Float?, rpm: Int, k: Double, volts: Float?, cylinders: Int): Double {
-        if (pw == null || pw !in 0.3f..40f) { source = ""; return 0.0 }
+    private fun byInjectors(pw: Float, rpm: Int, k: Double, volts: Float?, cylinders: Int): Double {
         source = "inj"
         val turbo = runCatching {
             kg.forester.sg.data.Repo.guard.value.turboCar
@@ -147,6 +158,56 @@ object FuelCalc {
             ?: DEAD_MS_14V
         return byInjectors(pw, rpm, ccPerMin, deadTimeMs(at14, volts), cylinders) * k
     }
+
+    /** Volumetric efficiency taken for [speedDensityGs]: a fair mean for a stock petrol engine over the rev range. */
+    const val SD_VE = 0.85
+    /** Displacement for [speedDensityGs] when neither the driver nor the ECU gives one, litres. */
+    const val DEFAULT_LITRES = 2.0f
+    /** The intake air temperature taken while the ECU has not sent one yet (OBD reads it every few cycles), °C. */
+    private const val SD_IAT_C = 30
+
+    /**
+     * The air for an ECU with neither a MAF nor an injection time (an old OBD-II car on MAP alone, a K-line EJ whose
+     * MAF reads 0xFFFF), g/s, by speed density: the manifold's absolute pressure (MAP, or the atmosphere plus the
+     * boost byte on SSM), the intake temperature and the revs. Null without a pressure.
+     */
+    fun speedDensityGs(s: EcuSnapshot, rpm: Int, litres: Float): Float? {
+        val map = s.mapKpa?.takeIf { it in 10f..400f }
+            ?: s.boostKpa?.let { (s.atmKpa?.takeIf { a -> a in 60f..110f } ?: 101f) + it }?.takeIf { it in 10f..400f }
+            ?: return null
+        return speedDensityGs(map, rpm, s.intakeC ?: SD_IAT_C, litres).toFloat()
+    }
+
+    /**
+     * Air mass flow, g/s, of a four-stroke of [litres] at [rpm] (one fill per two turns) with [mapKpa] absolute in the
+     * manifold at [iatC]: the density P / (R T), R = 0.287 kJ/(kg K) for air, times the swept volume, times [ve].
+     */
+    fun speedDensityGs(mapKpa: Float, rpm: Int, iatC: Int, litres: Float, ve: Double = SD_VE): Double {
+        val tK = iatC.coerceIn(-40, 120) + 273.15
+        return mapKpa * litres * rpm / 120.0 / (0.287 * tK) * ve
+    }
+
+    /**
+     * The displacement [speedDensityGs] goes by: the driver's (Машина и адаптер → Топливо), else the Subaru's by its
+     * ECU (never the last Subaru's on another make), else [DEFAULT_LITRES]. [litresGuessed] tells the screen which.
+     */
+    fun litres(): Float {
+        val own = runCatching { Repo.settings.engineLitres }.getOrDefault(0f).takeIf { it in LITRES_RANGE }
+        val ecu = if (runCatching { kg.forester.sg.data.CarKind.other.value }.getOrDefault(true)) null
+            else runCatching {
+                RulesHost.displacementNow()
+                    ?: Repo.ecuInit.value?.romId?.let { kg.forester.sg.ssm.EngineId.fromRomId(it)?.family }?.let { RulesHost.litresOf(it) }
+            }.getOrNull()
+        litresGuessed = own == null && ecu == null
+        return own ?: ecu ?: DEFAULT_LITRES
+    }
+
+    /** What the driver's displacement may be, litres. */
+    val LITRES_RANGE = 0.6f..8f
+
+    /** The last [litres] was [DEFAULT_LITRES] for want of a better one. */
+    @Volatile var litresGuessed = false
+        private set
 
     /**
      * L/h of [cylinders] injectors (one each) of [ccPerMin] open [pw] ms (less [deadMs] of opening) once per two

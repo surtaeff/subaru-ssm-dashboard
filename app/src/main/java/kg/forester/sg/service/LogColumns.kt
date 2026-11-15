@@ -84,6 +84,8 @@ object LogColumns {
         },
         // P23 as the ECU gives it: a sum (KA x IAM + FBKC + FLKC), not the live pull of knock_deg
         LogColumn("kca_deg", "P23: поправка УОЗ по детонации (сумма)", "Зажигание и детонация") { f(it.s.kcaDeg) },
+        // the same boost in bar, the unit a tuner reads a pull in («Лог для настройщика»)
+        LogColumn("boost_bar", "Наддув, бар", "Наддув") { f(it.s.gaugeKpa?.let { k -> k / 100f }, 3) },
     ) + listOf(
         // the USB wideband (Innovate LC-2): after the columns above, and only while it is switched on (see [offered]);
         // later additions go before it. Readers (LogViewer, TrackMap) find columns by header name, not by position
@@ -135,6 +137,24 @@ object LogColumns {
     fun twinOf(p: kg.forester.sg.ssm.RrParam): String? =
         (if (p.kind == kg.forester.sg.ssm.RrParam.Kind.STD && p.bit < 0) (if (p.target == 2) tcuAddr[p.addr] else ecuAddr[p.addr]) else null)
             ?: roleIdsKnown.entries.firstOrNull { p.id in it.value }?.key
+
+    /**
+     * «Лог для настройщика»: the columns a tuner asks for, in the order of [offered] (the keys there can be): load,
+     * airflow, throttle and pedal, boost in bar, the mixture (the wideband's AFR when it is on, else the front
+     * sensor's), its correction and learning, the injectors, timing and knock, the temperatures, AVCS, the speed.
+     * Wastegate duty and target boost on a turbo, the gear on an automatic (its column is the TCU's). An exhaust
+     * cam or a ROM's own gear ticked on «Датчики» is added at the end as before.
+     */
+    fun tunerKeys(offered: List<String>, widebandOn: Boolean, turbo: Boolean, automatic: Boolean): List<String> {
+        val want = buildSet {
+            addAll(listOf("rpm", "load_grev", "maf_gs", "throttle_pct", "pedal_pct", "boost_bar", "af_corr_pct", "af_learn_pct",
+                "inj_pw_ms", "inj_duty_pct", "timing_deg", "fbkc_deg", "flkc_deg", "iam", "intake_c", "coolant_c", "avcs_deg", "speed_kmh"))
+            add(if (widebandOn && "wideband_afr" in offered) "wideband_afr" else "afr")
+            if (turbo) addAll(listOf("wgdc_pct", "target_boost_kpa"))
+            if (automatic) add("gear")
+        }
+        return offered.filter { it in want }
+    }
 
     /** The columns there can be: the wideband's only while it is switched on. */
     fun offered(widebandOn: Boolean = Wideband.config.value.enabled): List<LogColumn> =

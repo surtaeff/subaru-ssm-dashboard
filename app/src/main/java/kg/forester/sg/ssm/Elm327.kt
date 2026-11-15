@@ -57,7 +57,7 @@ class Elm327(private val input: InputStream, private val output: OutputStream, p
             }
         }
         SsmTrace.log("<< timeout: ${sb.toString().trim().replace('\r', '|')}")
-        throw IOException("ELM327: нет ответа на «$line»")
+        throw ElmTimeout("ELM327: нет ответа на «$line»")
     }
 
     private fun drain() {
@@ -87,6 +87,9 @@ class Elm327(private val input: InputStream, private val output: OutputStream, p
 }
 
 /** SSM over CAN through an ELM327: 500 kbit/s 11-bit (ATSP6), ECU 7E0/7E8, TCU 7E1/7E9. */
+/** No answer within the time: the adapter or the car is slow or silent, the link itself may still be up. */
+class ElmTimeout(message: String) : IOException(message)
+
 class ElmCanTransport(private val elm: Elm327) : SsmTransport {
     override val name = "ELM327, CAN"
     override val isCan = true

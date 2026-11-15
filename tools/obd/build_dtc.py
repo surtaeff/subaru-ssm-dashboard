@@ -1318,6 +1318,16 @@ SSM_REUSE = {
     "P0731", "P0732", "P0733", "P0734", "P0735", "P0736",
 }
 
+# Camshaft actuator circuits: SAE J2012 makes camshaft A the intake one and bank 1 the side of cylinder 1; which side
+# that is depends on the make, so the generic text says it that way (the Subaru base names the side itself)
+_CAM = {"A": "впускного", "B": "выпускного"}
+_BANK = {"1": "банк 1 (ряд цилиндра 1)", "2": "банк 2 (ряд без цилиндра 1)"}
+_LEVEL = {"Low": "низкий уровень сигнала", "High": "высокий уровень сигнала"}
+RU_BY_CODE = {
+    f"P{2088 + i}": f"Клапан изменения фаз {_CAM[c]} распредвала ({c}), {_BANK[b]}, цепь управления: {_LEVEL[lv]}"
+    for i, (b, c, lv) in enumerate((b, c, lv) for b in "12" for c in "AB" for lv in ("Low", "High"))
+}
+
 QUAL_RE = [
     (re.compile(r"\s*\(Bank (\d)[, ]+Sensor (\d|[A-D])\)\s*$"), lambda m: f"банк {m[1]}, датчик {m[2]}"),
     (re.compile(r"\s*\(?Bank (\d)[, ]+Sensor (\d|[A-D])\)?\s*$"), lambda m: f"банк {m[1]}, датчик {m[2]}"),
@@ -1502,7 +1512,7 @@ def main():
         text = FIXES.get(code) or fix_text(code, src[code])
         if "Reserved" in text or "ISO/SAE" in text:
             continue
-        ru = ssm[code] if code in SSM_REUSE and code in ssm else translate(text)
+        ru = RU_BY_CODE.get(code) or (ssm[code] if code in SSM_REUSE and code in ssm else translate(text))
         if ru is None:
             missing.append((code, text))
             continue

@@ -114,6 +114,8 @@ class EcuService : Service() {
     private var tcuMisses = 0
     private var tcuAnswered = false
     private var tcuAtfOnly = false
+    /** This connection's TCU let requests with 0x6A pass (see [pollTcu]): left out after a new init too. */
+    private var tcuNoFwd = false
     private var logger: CsvLogger? = null
     private var triedHostFix = false
 
@@ -125,6 +127,8 @@ class EcuService : Service() {
             // an adapter that wakes with the car is still booting: tries from the start, not after the last sleep's pause
             Repo.autoBtPause.reset()
             kg.forester.sg.data.DeviceTier.newSession()
+            // the SensorBox may have dropped off with the USB in the sleep: every device is asked again
+            SensorBoxLink.wake()
         }) {
             scope.launch(Dispatchers.Main) {
                 runCatching { startGps() }
@@ -290,8 +294,9 @@ class EcuService : Service() {
                     triedHostFix = true
                     forceUsbHostMode()
                 }
-                if (kind == "auto") {
-                    // nothing on USB: a Wi-Fi ELM327 we are connected to, then a paired Bluetooth one
+                // nothing on USB: a Wi-Fi ELM327 we are connected to, then a paired Bluetooth one. Not on a line that is
+                // another device's: an ELM's init goes out on the K-line, it cannot only listen
+                if (kind == "auto" && !s.lineShared) {
                     if (wifiSession(explicit = false) || autoBluetooth()) { delay(1000); continue }
                 }
                 Repo.link.value = LinkState.NO_CABLE
@@ -360,7 +365,9 @@ class EcuService : Service() {
                         val baud = when (kind) {
                             "kkl" -> 0
                             "elm_usb" -> UsbStreams.probeElm(port) ?: 0
-                            else -> when (val known = s.usbKind(id)) {
+                            // another device on the K-line: no AT probe at 38400 (its bytes go out on the line), a KKL
+                            // cable that only listens
+                            else -> if (s.lineShared) 0 else when (val known = s.usbKind(id)) {
                                 null -> (UsbStreams.probeElm(port) ?: 0).also { s.setUsbKind(id, it) }
                                 0 -> UsbStreams.probeElm(port, quick = true)?.also { s.setUsbKind(id, it) } ?: 0
                                 else -> known
@@ -382,6 +389,10 @@ class EcuService : Service() {
                         }
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // the polling stopped on purpose (exit, the adapter released, settings changed): no error
+                SsmTrace.log("polling stopped")
+                throw e
             } catch (e: Exception) {
                 SsmTrace.log("error: $e")
                 // the wideband took this device (its connection was closed under us): not a cable fault
@@ -748,6 +759,9 @@ class EcuService : Service() {
                 if (kline) ElmKLineTransport(elm).also { it.open() } else ElmCanTransport(elm).also { it.open() }
             }
             return true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            SsmTrace.log("polling stopped")
+            throw e
         } catch (e: Exception) {
             SsmTrace.log("error: $e")
             Repo.link.value = LinkState.ERROR
@@ -766,6 +780,19 @@ class EcuService : Service() {
 
     /** Addresses per request each ECU (by ROM) took this run of the service: kept over reconnects (see SsmClient.presetReadLimit). */
     private val ecuReadLimits = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Stream restarts each ECU let pass in silence this run of the service (see the fast poll in [session]). */
+    private val streamRestarts = StreamRestarts()
+
+    /** ECUs (by ROM) that went mute on a plain cable this run of the service: the long gap from the next connection's start (KLineTransport.longGap). */
+    private val longGapRoms = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>()) // newKeySet needs API 24
+
+    /** The K-line is another device's (Настройки, «На линии другой прибор»): the transport only listens. */
+    private fun syncListenOnly(t: SsmTransport?) {
+        val kl = t as? kg.forester.sg.ssm.KLineTransport ?: return
+        val shared = Repo.settings.lineShared
+        if (kl.listenOnly != shared) { kl.listenOnly = shared; SsmTrace.log("K-line: ${if (shared) "listening only, another device on it" else "ours again"}") }
+    }
 
     /** A plain KKL cable, the engine unit mute on it although the line is live: hold the line low at once. */
     private fun ecuMuteOnLine(t: SsmTransport?) = t is kg.forester.sg.ssm.KklTransport && t.ecuMute()
@@ -795,6 +822,8 @@ class EcuService : Service() {
         // the ECU answered in this session, and the current silent round heard our echo: see the reopen below
         var ecuSpoke = false
         var roundEcho = false
+        // silent rounds in a row without our echo: maybe no cable at all but the SensorBox (a Nano's CH340), see below
+        var noEchoRounds = 0
         // the K-line already held low once for that silent ECU: the next silent round reopens the cable
         var lineHeldLow = false
         // the polling stopped because the ECU went mute on a live line (KLineTransport.ecuMute): hold it low at once
@@ -809,7 +838,11 @@ class EcuService : Service() {
                 transport = null
                 transport = open(kline)
                 transportKline = kline
+                syncListenOnly(transport)
+                // a laptop or a gauge already polling: heard before our first request, not garbled by it
+                if (transport is kg.forester.sg.ssm.KLineTransport && !transport.listenOnly) delay(LISTEN_FIRST_MS)
             }
+            syncListenOnly(transport)
             val client = SsmClient(transport)
             EcuLink.client = client
             // a laptop already on the line: listen to it before we even say hello
@@ -839,6 +872,9 @@ class EcuService : Service() {
                 if (roundDone) silentRounds++
                 val kl = transport as? kg.forester.sg.ssm.KLineTransport
                 if (kl?.heardEcho == true) { echo = true; roundEcho = true }
+                // no echo round after round: the box loop asks the device whether it is the SensorBox (once per wake)
+                if (roundDone && klineOnly) noEchoRounds = if (roundEcho) 0 else noEchoRounds + 1
+                if (roundDone && klineOnly && SensorBoxLink.ecuNoEcho(noEchoRounds)) return
                 // a KKL cable echoing on a live line, the ECU that spoke a minute ago silent to every request: on a
                 // Legacy BP with an FTDI cable it stayed so for minutes and answered at once after the cable was
                 // plugged in again. Reopening the USB device alone did not wake it (beta24 logs): the re-plug also leaves the
@@ -891,6 +927,9 @@ class EcuService : Service() {
             val init = kg.forester.sg.data.EcuCaps.apply(answer)
             if (init !== answer) SsmTrace.log("capability bits set by hand: ${kg.forester.sg.data.EcuCaps.forced(init.romId).joinToString(" ") { "${it.first}.${it.second}" }}")
             ecuReadLimits[init.romId]?.let { client.presetReadLimit(it); SsmTrace.log("ECU: reading by ${client.ecuReadLimit}, as learnt earlier") }
+            (transport as? kg.forester.sg.ssm.KLineTransport)?.let { kl ->
+                if (init.romId in longGapRoms && !kl.longGap) { kl.longGap = true; SsmTrace.log("K-line: the long gap before each request, this ECU went mute earlier") }
+            }
             Repo.ecuInitRaw.value = answer
             Repo.ecuInit.value = init
             runCatching { carFromEcu(init.romId) }
@@ -928,12 +967,14 @@ class EcuService : Service() {
             if (skip.isNotEmpty()) SsmTrace.log("not supported by this ECU, ignored: ${skip.joinToString(" ") { "%02X".format(it) }}")
             var failures = 0
             var cycle = 0
-            tcuAddrs = null; tcuMisses = 0; tcuAnswered = false
+            tcuAddrs = null; tcuMisses = 0; tcuAnswered = false; tcuNoFwd = false
             tcuNextTryMs = 0
             SsmTrace.polling = true
             // «fast poll» (K-line): the ECU sends the values by itself, three times as often; off for this connection
-            // when it doesn't
-            var fast = Repo.settings.fastPoll && transport is kg.forester.sg.ssm.KLineTransport
+            // when it doesn't, and for this ROM when its restarts have fallen silent (see StreamRestarts)
+            val streamOff = streamRestarts.off(init.romId)
+            var fast = Repo.settings.fastPoll && transport is kg.forester.sg.ssm.KLineTransport && !streamOff
+            if (streamOff && Repo.settings.fastPoll) SsmTrace.log("fast poll: off for ROM ${init.romId}, its stream restarts fell silent, plain requests")
             val fastFrames = Channel<ByteArray>(Channel.CONFLATED)
             var fastAddrs: IntArray = addrs
             var fastFrameSeen = false
@@ -951,6 +992,7 @@ class EcuService : Service() {
             var joinRefused = 0
             try { while (scope.isActive && failures < 5 && !Repo.settings.demo && capsSeen == Repo.capsVersion.value &&
                 SensorBoxLink.ecuLease?.permitted != false) {
+                syncListenOnly(transport)
                 if (transport.passive) {
                     // the other tester's request has stopped the stream already
                     if (client.streaming) client.stopStream()
@@ -1038,6 +1080,14 @@ class EcuService : Service() {
                             fast = false
                             SsmTrace.log("fast poll: no stream from this ECU ($fastRun answers), plain requests")
                         } else {
+                            // silent right after a restart (the transmission read in between): see StreamRestarts
+                            val ignored = (transport as? kg.forester.sg.ssm.KLineTransport)?.ignoredRequests ?: 0
+                            val n = streamRestarts.silent(init.romId, fastRun, fastFrameSeen, ignored)
+                            if (n >= StreamRestarts.MAX) {
+                                fast = false
+                                SsmTrace.log("fast poll: the ECU fell silent on a stream restart again, plain requests for ROM ${init.romId}")
+                            } else if (n > 0) SsmTrace.log("fast poll: the ECU fell silent on a stream restart, transmission every " +
+                                "${streamRestarts.tcuGapMs(init.romId, Repo.settings.tcuEvery) / 1000} s")
                             failures++
                             tracker.tick(now)
                             if (ecuMuteOnLine(transport)) { muteHold = true; break }
@@ -1062,7 +1112,7 @@ class EcuService : Service() {
                     cycle++
                     // the transmission in between; its request stops the stream, the next round starts it again. The gap
                     // counts from the end of the last one, so the stream always runs [fastTcuGapMs] in between
-                    if (!fastShort && Repo.settings.gearbox != "mt" && now - fastTcuMs >= fastTcuGapMs(Repo.settings.tcuEvery)) {
+                    if (!fastShort && Repo.settings.gearbox != "mt" && now - fastTcuMs >= streamRestarts.tcuGapMs(init.romId, Repo.settings.tcuEvery)) {
                         pollTcu(client, now)
                         fastTcuMs = System.currentTimeMillis()
                     }
@@ -1124,7 +1174,9 @@ class EcuService : Service() {
                 // the ECU would go on sending to nobody; whoever comes next starts from a quiet line (a cable taken
                 // from us has no line left to quiet)
                 if (client.streaming && SensorBoxLink.ecuLease?.permitted != false) runCatching { client.stopStream() }
-                if (client.ecuReadLimit > 0) ecuReadLimits[init.romId] = client.ecuReadLimit
+                // 0: never learnt, or proven wrong by a longer answer (SsmClient.proven)
+                if (client.ecuReadLimit > 0) ecuReadLimits[init.romId] = client.ecuReadLimit else ecuReadLimits.remove(init.romId)
+                if ((transport as? kg.forester.sg.ssm.KLineTransport)?.longGap == true) longGapRoms += init.romId
             }
             SsmTrace.polling = false
             if (capsSeen != Repo.capsVersion.value) {
@@ -1166,6 +1218,7 @@ class EcuService : Service() {
     }
 
     private var wasPassive = false
+    private var wasShared = false
 
     /** What the ECU really sends for the values some early ECUs lack (MAF, throttle, injection), skipped or not. */
     private fun logFirstRead(addrs: IntArray, raw: ByteArray) {
@@ -1190,11 +1243,15 @@ class EcuService : Service() {
      * it gets. Only what it asks for comes through; the rest stays empty until the line is ours again.
      */
     private suspend fun passiveRound(transport: kg.forester.sg.ssm.SsmTransport, addrs: IntArray, skip: Set<Int>, afSensor: Boolean = true) {
-        if (!wasPassive) {
+        // by the setting: the other device (a Blitz and the like) is always there, asking or not
+        val shared = (transport as? kg.forester.sg.ssm.KLineTransport)?.listenOnly == true
+        if (!wasPassive || shared != wasShared) {
             wasPassive = true
+            wasShared = shared
             Repo.link.value = LinkState.CONNECTED
-            Repo.linkMessage.value = "Тихий режим: на K-линии второй диагност (ноутбук). Не мешаю ему, читаю то, что он спрашивает"
-            SsmTrace.log("passive: another tester polls the ECU")
+            Repo.linkMessage.value = if (shared) "K-линия занята другим прибором: только слушаю, показываю то, что спрашивает он"
+                else "Тихий режим: на K-линии второй диагност (ноутбук). Не мешаю ему, читаю то, что он спрашивает"
+            SsmTrace.log(if (shared) "passive: listening only (another device on the line, by the setting)" else "passive: another tester polls the ECU")
         }
         val got = transport.sniffed(addrs, 1500)
         val now = System.currentTimeMillis()
@@ -1306,9 +1363,16 @@ class EcuService : Service() {
         var silentSince = 0L
         var said = 0
         val pm = getSystemService(android.os.PowerManager::class.java)
+        var lastTick = android.os.SystemClock.elapsedRealtime()
         while (scope.isActive) {
             delay(30_000)
-            val now = System.currentTimeMillis()
+            // awake time only: a unit that went to sleep after the drive did right, and the hours it slept are no
+            // «on without the ECU» (1.0-beta4 said «842 min» on waking up from a night's sleep)
+            val now = android.os.SystemClock.uptimeMillis()
+            val tick = android.os.SystemClock.elapsedRealtime()
+            val slept = tick - lastTick > 5 * 60_000L
+            lastTick = tick
+            if (slept) { ranMs = 0L; silentSince = 0L; said = 0; continue }
             if (Repo.settings.demo) { ranMs = 0L; silentSince = 0L; said = 0; continue } // the demo's engine is no drive
             if (Repo.link.value == LinkState.CONNECTED) {
                 if ((Repo.live.value.rpm ?: 0) > 400) ranMs = now
@@ -1831,8 +1895,9 @@ class EcuService : Service() {
             val init = EcuLink.mutex.withLock { client.init(SsmClient.TCU) }
             if (init == null) {
                 // MY1999–2000 (Impreza GC/GF, Forester SF, Legacy BE/BH early): the engine already speaks SSM2 on the
-                // K-line, the TCU still the old SSM1 on its own line; FreeSSM can't read those either
-                Repo.tcuStatus.value = "Блок АКПП не отвечает по SSM. На Subaru 1999–2000 годов (Impreza GC/GF, Forester SF, " +
+                // K-line, the TCU still the old SSM1 on its own line; FreeSSM can't read those either. One that has
+                // answered in this connection has only gone quiet
+                Repo.tcuStatus.value = if (tcuAnswered) TCU_QUIET else "Блок АКПП не отвечает по SSM. На Subaru 1999–2000 годов (Impreza GC/GF, Forester SF, " +
                     "ранние Legacy BE/BH) он работает по старому протоколу SSM1 на другой линии, через K-line его не прочитать " +
                     "(FreeSSM тоже не видит). У механики блока нет, а через часть Bluetooth-адаптеров он недоступен (надёжнее KKL-кабель)"
                 tcuNextTryMs = now + 60_000
@@ -1840,39 +1905,57 @@ class EcuService : Service() {
             }
             Repo.tcuInit.value = init
             tcuWatch.setup(init)
-            addrs = TcuParams.supported(init)
+            tcuAtfOnly = Repo.settings.tcuAtfOnly
+            addrs = tcuList(init)
             tcuAddrs = addrs
-            tcuAtfOnly = false
             Repo.tcuStatus.value = "АКПП: ROM ${init.romId}"
         }
         if (addrs.isEmpty()) return
-        // "only ATF": the temperature and the selector, a much shorter request
         if (Repo.settings.tcuAtfOnly != tcuAtfOnly) {
             tcuAtfOnly = Repo.settings.tcuAtfOnly
-            addrs = TcuParams.supported(Repo.tcuInit.value ?: return).let { all ->
-                // the selector keeps its switch byte: the SportShift manual gate is bit 7 of it
-                if (tcuAtfOnly) all.filter { it == TcuParams.ATF_OLD || it == TcuParams.ATF_NEW || it == TcuParams.RANGE || it == TcuParams.GEAR ||
-                    (it == TcuParams.FWD && TcuParams.manualSwitch(Repo.tcuInit.value)) }.toIntArray() else all
-            }
+            addrs = tcuList(Repo.tcuInit.value ?: return)
             tcuAddrs = addrs
         }
         val raw = EcuLink.mutex.withLock { client.read(addrs, SsmClient.TCU) }
         if (raw == null) {
+            tcuMisses++
             // 1.0-beta2 added the SportShift switch byte 0x6A wherever the init lists bit 7 of it: a unit that lists
             // it but refuses a request with it timed out on every turn. Two misses before any answer: drop it
-            tcuMisses++
-            if (!tcuAnswered && tcuMisses >= 2 && TcuParams.FWD in addrs) {
-                tcuAddrs = addrs.filter { it != TcuParams.FWD }.toIntArray()
-                SsmTrace.log("TCU: no answer with 0x6A, reading without it")
+            when (tcuMiss(tcuMisses, tcuAnswered, TcuParams.FWD in addrs)) {
+                TcuMiss.DROP_FWD -> {
+                    tcuNoFwd = true
+                    tcuMisses = 0
+                    tcuAddrs = addrs.filter { it != TcuParams.FWD }.toIntArray()
+                    SsmTrace.log("TCU: no answer with 0x6A, reading without it")
+                }
+                TcuMiss.BACK_OFF -> {
+                    tcuMisses = 0
+                    tcuAddrs = null
+                    tcuNextTryMs = now + TCU_RETRY_MS
+                    Repo.tcu.value = null
+                    Repo.tcuStatus.value = TCU_QUIET
+                    SsmTrace.log("TCU: $TCU_MISSES_MAX requests unanswered, values cleared, init again in ${TCU_RETRY_MS / 1000} s")
+                }
+                TcuMiss.NONE -> Unit
             }
             return
         }
         tcuMisses = 0
         tcuAnswered = true
-        tcuWatch.poll(client)
+        // the ticked ones this read lacks only: 0x51 and 0x6D were read twice a turn
+        tcuWatch.pollAlongside(client, addrs, raw)
         val t = lockUp(TcuParams.decode(addrs, raw, now, Repo.tcuInit.value), Repo.live.value.rpm, now)
         Repo.tcu.value = t
         Repo.tcuHistory.add(t)
+    }
+
+    /** What to read from the transmission: all it has, or with "only ATF" the temperature and the selector, a much shorter request. */
+    private fun tcuList(init: EcuInit): IntArray {
+        val all = TcuParams.supported(init).filter { !tcuNoFwd || it != TcuParams.FWD }.toIntArray()
+        if (!tcuAtfOnly) return all
+        // the selector keeps its switch byte: the SportShift manual gate is bit 7 of it
+        return all.filter { it == TcuParams.ATF_OLD || it == TcuParams.ATF_NEW || it == TcuParams.RANGE || it == TcuParams.GEAR ||
+            (it == TcuParams.FWD && TcuParams.manualSwitch(init)) }.toIntArray()
     }
 
     private var lockSlipSinceMs = 0L
@@ -2159,9 +2242,32 @@ class EcuService : Service() {
         /**
          * The stream's run between two transmission reads: N × 250 ms as with plain requests, but at least 3 s. Each
          * read stops the stream, and starting it again takes its whole request on the line (44 addresses, ~0.3 s at
-         * 4800 baud): every 1.1 s that left a 0.7 s hole in the engine values each second on an FYT unit.
+         * 4800 baud): every 1.1 s that left a 0.7 s hole in the engine values each second on an FYT unit. An ECU that has
+         * fallen silent on a restart ([restartFails], see [StreamRestarts]): every 20 s, the gearbox values a little older
+         * rather than the engine's gone for 6 s.
          */
-        internal fun fastTcuGapMs(tcuEvery: Int): Long = maxOf(tcuEvery.coerceAtLeast(1) * 250L, 3000L)
+        internal fun fastTcuGapMs(tcuEvery: Int, restartFails: Int = 0): Long =
+            maxOf(tcuEvery.coerceAtLeast(1) * 250L, if (restartFails > 0) 20_000L else 3000L)
+
+        /** A freshly opened K-line only listens this long: another tester or gauge polling is heard before our init. */
+        private const val LISTEN_FIRST_MS = 1000L
+        /** Transmission requests unanswered in a row: its values go, it is asked again later (see [tcuMiss]). */
+        internal const val TCU_MISSES_MAX = 3
+        internal const val TCU_RETRY_MS = 30_000L
+        private const val TCU_QUIET = "Блок АКПП перестал отвечать, пробую снова"
+
+        /**
+         * One more unanswered transmission read ([misses] in a row). 1.0-beta2 added the SportShift switch byte 0x6A
+         * wherever the init lists bit 7 of it: a unit that lists it but refuses a request with it timed out on every
+         * turn, so two misses before any answer drop it. [TCU_MISSES_MAX]: gone quiet, as an FYT unit's TCU that never
+         * answered again (a timeout every turn, a fifth of the stream lost, its last ATF and gear shown as live): its
+         * values go, the init is sent again in [TCU_RETRY_MS].
+         */
+        internal fun tcuMiss(misses: Int, answered: Boolean, fwdInList: Boolean): TcuMiss = when {
+            !answered && misses >= 2 && fwdInList -> TcuMiss.DROP_FWD
+            misses >= TCU_MISSES_MAX -> TcuMiss.BACK_OFF
+            else -> TcuMiss.NONE
+        }
 
         const val CHANNEL = "ecu"
         const val ACTION_USB_PERMISSION = "kg.forester.sg.USB_PERMISSION"
@@ -2183,6 +2289,39 @@ class EcuService : Service() {
         }
     }
 }
+
+/**
+ * Stream restarts each ECU (by ROM) let pass in silence, the line live, this run of the service. A Legacy BP had 104 of
+ * 117 stream drops right after a restart (the transmission read in between), one restart in seven, the ECU mute each
+ * time until the line was held low. Once: the transmission far less often ([tcuGapMs]); [MAX] times: plain requests
+ * for that ROM, which kept its line up far better. An ECU that streams through it all keeps the stream as it was.
+ */
+internal class StreamRestarts {
+    private val fails = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    fun off(rom: String) = (fails[rom] ?: 0) >= MAX
+
+    /**
+     * No frame since the stream was started again ([run] 0) though it ran in this connection ([frameSeen]), and our
+     * start and stop came back off a live line ([ignored], see KLineTransport.ignoredRequests: not the ignition off).
+     * Returns how many such restarts this ROM has had, 0 when this one is not one.
+     */
+    fun silent(rom: String, run: Int, frameSeen: Boolean, ignored: Int): Int {
+        if (run > 0 || !frameSeen || ignored < 2) return 0
+        val n = (fails[rom] ?: 0) + 1
+        fails[rom] = n
+        return n
+    }
+
+    fun tcuGapMs(rom: String, tcuEvery: Int) = EcuService.fastTcuGapMs(tcuEvery, fails[rom] ?: 0)
+
+    companion object {
+        const val MAX = 2
+    }
+}
+
+/** See [EcuService.tcuMiss]. */
+internal enum class TcuMiss { NONE, DROP_FWD, BACK_OFF }
 
 /**
  * Autostart: a real boot, a "quick boot", or ACC on after the FYT/Teyes head unit slept (those units mostly

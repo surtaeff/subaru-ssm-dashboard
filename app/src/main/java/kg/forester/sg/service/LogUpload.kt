@@ -284,25 +284,72 @@ object LogUpload {
 }
 
 /**
- * Tells a fault from a key-off: the log goes by itself only if the engine ran (above 500 rpm) within 2 s of the last
- * sample, and the link is still down 30 s later on a unit that has been running all that time. Once per connection.
+ * Tells a fault from a key-off: the log goes by itself only if the engine clearly ran up to the last sample, and the link
+ * is still down 30 s later on a unit that has been running all that time. Once per connection.
+ *
+ * On a key-off the ECU goes dark while the engine still idles, so the last samples are what tells them apart: standing
+ * at idle, the rpm falling or the voltage dropping is a shutdown; moving (above 5 km/h) or well above idle with a steady
+ * rpm is a running engine whose ECU stopped answering.
  */
-class FaultWatch {
-    private var lastSample = 0L
-    private var lastHigh = 0L
+class FaultWatch(
+    /** Speed and battery of the sample just given to [sample] (rpm, now): the service puts it in Repo.live before. */
+    private val live: () -> Triple<Int?, Int?, Float?> = {
+        kg.forester.sg.data.Repo.live.value.let { Triple(it.rpm, it.speedKmh, it.batteryV) }
+    },
+) {
+    data class Sample(val t: Long, val rpm: Int, val speedKmh: Int?, val volts: Float?)
+
+    private val recent = ArrayDeque<Sample>()
     private var fired = false
 
-    fun sample(rpm: Int?, now: Long) { lastSample = now; if ((rpm ?: 0) > 500) lastHigh = now }
+    fun sample(rpm: Int?, now: Long) {
+        val l = runCatching { live() }.getOrNull()
+        // only when it is the same sample: else speed and voltage are unknown, not wrong
+        if (l != null && l.first == rpm) sample(rpm, l.second, l.third, now) else sample(rpm, null, null, now)
+    }
 
-    fun newConnection() { lastSample = 0; lastHigh = 0; fired = false }
+    fun sample(rpm: Int?, speedKmh: Int?, volts: Float?, now: Long) {
+        recent.addLast(Sample(now, rpm ?: 0, speedKmh, volts))
+        while (recent.size > 2 && now - recent.first().t > WINDOW_MS) recent.removeFirst()
+    }
+
+    fun newConnection() { recent.clear(); fired = false }
 
     /** The data stopped: does it look like a fault (and not like the key turned off)? */
-    fun looksLikeFault(): Boolean = !fired && lastHigh > 0 && lastSample - lastHigh <= 2000
+    fun looksLikeFault(): Boolean = !fired && judge(recent.toList())
 
     /** 30 s on: still down on a running unit (not slept through: at most a minute and a half passed)? Fires once. */
     fun confirm(linkUp: Boolean, waitedMs: Long): Boolean {
         if (fired || linkUp || waitedMs < 30_000 || waitedMs > 90_000) return false
         fired = true
         return true
+    }
+
+    companion object {
+        /** How far back the last samples are looked at. */
+        const val WINDOW_MS = 3000L
+        /** A warm Subaru idles at 650 to 850 rpm; a cold one higher, hence the margin. */
+        const val IDLE_RPM = 850
+        const val RUNNING_RPM = IDLE_RPM + 300
+
+        /**
+         * The last samples of a connection (oldest first): true when the engine clearly ran when they stopped. Too old
+         * a last sample (over 2 s before the end of the window) or an rpm at 500 or below: the engine was not running.
+         */
+        fun judge(samples: List<Sample>): Boolean {
+            val last = samples.lastOrNull() ?: return false
+            val high = samples.lastOrNull { it.rpm > 500 } ?: return false
+            if (last.t - high.t > 2000 || last.rpm <= 500) return false
+            val window = samples.filter { last.t - it.t <= WINDOW_MS }
+            // the battery: the alternator stops or the ECU's supply sags as the key goes
+            val volts = window.mapNotNull { it.volts }
+            if (volts.size >= 2 && volts.max() - volts.last() >= 0.7f) return false
+            val moving = (last.speedKmh ?: 0) > 5
+            val maxRpm = window.maxOf { it.rpm }
+            val falling = maxRpm - last.rpm >= 250
+            if (moving) return true
+            // standing: rpm coming down is the engine stopping, and at idle a key-off looks the same as a hang
+            return !falling && last.rpm > RUNNING_RPM
+        }
     }
 }

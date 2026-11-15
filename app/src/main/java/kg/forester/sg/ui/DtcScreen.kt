@@ -89,7 +89,8 @@ object DtcRepo {
             }.getOrDefault(emptyMap()).also { hints = it }
         }
         val unit = if (!twoDigit) "ECU" else if (tcu) "TCU" else "ECU2"
-        return m["$unit/$code"]
+        // a removed catalyst («Доработки машины») explains its own codes
+        return if (unit == "ECU") Repo.settings.carMods.dtcHint(code, m["$unit/$code"]) else m["$unit/$code"]
     }
 
     /** Every OBD-II-style code (engine and transmission share it); also the descriptions for plain OBD-II. */

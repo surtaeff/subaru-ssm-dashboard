@@ -14,15 +14,22 @@ import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.pow
 
-/** One raw sample of a pull: the speed as the ECU gave it, before the correction learned from GPS. */
-data class DynoSample(val tMs: Long, val rpm: Int, val kmh: Float, val gas: Float?, val boostKpa: Float?)
+/**
+ * One raw sample of a pull: the speed as the ECU gave it, before the correction learned from GPS. [mafGs] is only
+ * for the run's peak airflow ([DynoCalc.mafPeak]), never written to the samples' file.
+ */
+data class DynoSample(val tMs: Long, val rpm: Int, val kmh: Float, val gas: Float?, val boostKpa: Float?, val mafGs: Float? = null)
 
 /**
  * A pull kept for comparing: what it was driven in, its samples in their own file (see [DynoStore]). [speedK] is the
  * speedometer correction then, [rpmPerKmh] tells the gear, [algoVersion] the [DynoCalc.ALGO] it was saved with.
  */
 data class DynoRun(val startMs: Long, val massKg: Float, val speedK: Float, val gear: Int?, val rpmPerKmh: Float,
-    val label: String?, val iatC: Int?, val baroKpa: Float?, val coolantC: Int?, val iam: Float?, val algoVersion: Int)
+    val label: String?, val iatC: Int?, val baroKpa: Float?, val coolantC: Int?, val iam: Float?, val algoVersion: Int,
+    /** The pull's peak MAF, g/s, when it was read during the pull (see [DynoCalc.mafPeak]); null = not read. */
+    val mafPeakGs: Float? = null,
+    /** «Доработки машины» at the pull ([kg.forester.sg.data.CarMods.encode]); null = from before they were kept. */
+    val mods: String? = null)
 
 /** A round step for [n] divisions of [range]: 1, 2, 2.5, 5 or 10 × 10^n. */
 fun niceStep(range: Float, n: Int): Float {
@@ -69,6 +76,32 @@ object DynoCalc {
 
     private fun omega(rpm: Int) = 2 * PI * rpm / 60.0
 
+    /** The owners' rule of thumb for a turbo petrol engine: crank hp ≈ MAF g/s × 1.25 (rough). */
+    const val HP_PER_GS = 1.25f
+
+    /**
+     * The pull's peak MAF, g/s, or null when the pull did not read it. The dyno's fast poll leaves the MAF out (a
+     * merged frame repeats the last full read's value), so a pull needs three different values of its own besides
+     * the first sample's: else its peak is the MAF from before the pull, far too low.
+     */
+    fun mafPeak(samples: List<DynoSample>): Float? {
+        val first = samples.firstOrNull()?.mafGs
+        val own = samples.mapNotNull { it.mafGs }.filter { it > 0f && it != first }.distinct()
+        return if (own.size >= 3) own.max() else null
+    }
+
+    /** Crank power from the airflow, hp, by [HP_PER_GS]. */
+    fun airflowHp(mafGs: Float): Float = mafGs * HP_PER_GS
+
+    /**
+     * The share of the crank's power the drivetrain takes, an estimate: about 20 % with a manual and all-wheel drive,
+     * 25 % with an automatic (its converter and pump).
+     */
+    fun drivetrainLoss(automatic: Boolean): Float = if (automatic) 0.25f else 0.20f
+
+    /** Crank power from the wheels' [wheelHp] with the [loss] share taken by the drivetrain. */
+    fun crankHp(wheelHp: Float, loss: Float): Float = wheelHp / (1f - loss.coerceIn(0f, 0.5f))
+
     /** The gear's factor: v = k·ω, the regression through zero of the speed in m/s on the crank's rad/s over the run. */
     fun gearK(samples: List<DynoSample>, speedK: Float): Double {
         var vw = 0.0; var ww = 0.0
@@ -95,7 +128,7 @@ object DynoCalc {
      * coarse for an acceleration; rpm has 0.25 steps, so a = k·dω/dt and v = k·ω ([gearK]). [slopePct] is the road's
      * grade, + uphill: a downhill's help comes off, a hill's load goes on (without it, it counts as flat).
      */
-    fun raw(samples: List<DynoSample>, massKg: Float, speedK: Float, slopePct: Float? = null): List<Raw> {
+    fun raw(samples: List<DynoSample>, massKg: Float, speedK: Float, slopePct: Float? = null, rho: Double = RHO): List<Raw> {
         val k = gearK(samples, speedK)
         if (k <= 0.0) return emptyList()
         val half = windowMs(samples)
@@ -126,7 +159,7 @@ object DynoCalc {
             val w = omega(rpm)
             if (w <= 0.0) continue
             val v = k * w
-            val force = m * a * PerfCalc.rotatingMass(rpm, v) + 0.5 * 1.2 * CDA * v * v + 0.015 * m * 9.81 + grade
+            val force = m * a * PerfCalc.rotatingMass(rpm, v) + 0.5 * rho * CDA * v * v + 0.015 * m * 9.81 + grade
             val watts = force * v
             out += Raw(rpm, (watts / 735.5).toFloat(), (watts / w).toFloat())
         }
@@ -147,8 +180,22 @@ object DynoCalc {
         }
     }
 
-    fun curve(samples: List<DynoSample>, massKg: Float, speedK: Float, slopePct: Float? = null): List<DynoPoint> =
-        cells(raw(samples, massKg, speedK, slopePct))
+    fun curve(samples: List<DynoSample>, massKg: Float, speedK: Float, slopePct: Float? = null, rho: Double = RHO): List<DynoPoint> =
+        cells(raw(samples, massKg, speedK, slopePct, rho))
+
+    /** Air density at sea level and 15–20 °C, kg/m³: what a pull without its pressure or air temperature counts with. */
+    const val RHO = 1.2
+
+    /**
+     * The air's density for the drag, kg/m³, from the pull's atmospheric pressure and intake air temperature (the EJ's
+     * sensor sits in the MAF housing, before the turbo: outside air on a pull): p / (R·T), R = 287.05 J/(kg·K).
+     * [RHO] when either is missing or out of what a road has.
+     */
+    fun airDensity(baroKpa: Float?, iatC: Int?): Double {
+        val p = baroKpa?.takeIf { it in 50f..110f } ?: return RHO
+        val t = iatC?.takeIf { it in -40..60 } ?: return RHO
+        return p * 1000.0 / (287.05 * (t + 273.15))
+    }
 
     /** A pull cut at each shift: the revs falling by more than 200, or rpm/v leaving its value by more than 8 %. */
     fun split(samples: List<DynoSample>): List<List<DynoSample>> {
@@ -461,7 +508,7 @@ object DynoStore {
     fun view(r: DynoRun): View = views.getOrPut(r.startMs) {
         val f = read(r)
         if (f == null) View(emptyList(), null, 0f)
-        else View(DynoCalc.curve(f.samples, r.massKg, r.speedK, f.slopePct), f.slopePct, DynoCalc.hz(f.samples))
+        else View(DynoCalc.curve(f.samples, r.massKg, r.speedK, f.slopePct, DynoCalc.airDensity(r.baroKpa, r.iatC)), f.slopePct, DynoCalc.hz(f.samples))
     }
 
     @Synchronized
@@ -484,7 +531,7 @@ object DynoStore {
         if (demoRuns.isNotEmpty()) return
         listOf(Triple(now - 86_400_000L, 0, 24.5), Triple(now - 7_200_000L, 0, 35.0), Triple(now - 3_600_000L, 250, 35.0)).forEachIndexed { i, (t, shift, ratio) ->
             val s = Demo.dynoPull(t, shift, ratio)
-            save(DynoRun(t, 1550f, 1f, if (ratio > 30) 3 else 4, DynoCalc.rpmPerKmh(s, 1f), listOf(null, "95", "98")[i], 25, 99f, 90, 1f, DynoCalc.ALGO), s, demo = true)
+            save(DynoRun(t, 1550f, 1f, if (ratio > 30) 3 else 4, DynoCalc.rpmPerKmh(s, 1f), listOf(null, "95", "98")[i], 25, 99f, 90, 1f, DynoCalc.ALGO, DynoCalc.mafPeak(s)), s, demo = true)
         }
     }
 
@@ -558,7 +605,8 @@ object DynoStore {
         runs.forEach { r ->
             arr.put(JSONObject().put("t", r.startMs).put("m", r.massKg.toDouble()).put("k", r.speedK.toDouble()).put("g", r.gear)
                 .put("rk", r.rpmPerKmh.toDouble()).put("lb", r.label).put("iat", r.iatC).put("baro", r.baroKpa?.toDouble())
-                .put("ect", r.coolantC).put("iam", r.iam?.toDouble()).put("av", r.algoVersion))
+                .put("ect", r.coolantC).put("iam", r.iam?.toDouble()).put("av", r.algoVersion).put("maf", r.mafPeakGs?.toDouble())
+                .put("mods", r.mods))
         }
         return arr.toString()
     }
@@ -570,7 +618,7 @@ object DynoStore {
             fun int(k: String) = if (o.has(k) && !o.isNull(k)) o.getInt(k) else null
             fun fl(k: String) = if (o.has(k) && !o.isNull(k)) o.getDouble(k).toFloat() else null
             DynoRun(o.getLong("t"), fl("m") ?: 0f, fl("k") ?: 1f, int("g"), fl("rk") ?: 0f, if (o.isNull("lb")) null else o.getString("lb"),
-                int("iat"), fl("baro"), int("ect"), fl("iam"), o.optInt("av", 1))
+                int("iat"), fl("baro"), int("ect"), fl("iam"), o.optInt("av", 1), fl("maf"), if (o.isNull("mods")) null else o.optString("mods"))
         }.associateBy { it.startMs }
     }.getOrDefault(emptyMap())
 

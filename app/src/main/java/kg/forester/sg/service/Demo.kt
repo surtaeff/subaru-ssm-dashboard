@@ -175,7 +175,9 @@ object Demo {
         // in a tall gear the air stops it short of the top: 40 seconds at most
         while (kmh * ratio < 6400 && out.size < 1200) {
             val rpm = kmh * ratio
-            out += DynoSample(t, rpm.toInt(), kmh.toInt().toFloat(), 100f, ((rpm - 2500) / 15).coerceAtMost(85.0).toFloat())
+            // the airflow that rule of thumb (crank hp ≈ MAF × 1.25) would give this torque at the crank
+            val maf = nm(rpm) * rpm * 2 * Math.PI / 60 / 735.5 / DynoCalc.HP_PER_GS
+            out += DynoSample(t, rpm.toInt(), kmh.toInt().toFloat(), 100f, ((rpm - 2500) / 15).coerceAtMost(85.0).toFloat(), maf.toFloat())
             val v = kmh / 3.6
             val force = nm(rpm) * (rpm * 2 * Math.PI / 60) / v - 0.5 * 1.2 * 0.85 * v * v - 0.015 * m * 9.81
             kmh += force / (m * PerfCalc.rotatingMass(rpm.toInt(), v)) * 3.6 / 30

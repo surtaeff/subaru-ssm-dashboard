@@ -520,6 +520,11 @@ class Settings(ctx: Context) {
     fun usbKind(id: String): Int? = if (p.contains("usb:$id")) p.getInt("usb:$id", 0) else null
     fun setUsbKind(id: String, baud: Int) = p.edit().putInt("usb:$id", baud).apply()
 
+    /** USB devices that once answered as the SensorBox, "VID:PID" or "VID:PID/serial", comma separated. */
+    var boxUsbIds: String
+        get() = str("boxUsbIds", "")
+        set(v) = putStr("boxUsbIds", v)
+
     /** Wi-Fi ELM327 address, "host:port"; almost all of them are 192.168.0.10:35000. */
     var wifiHost: String
         get() = p.getString("wifiHost", "192.168.0.10:35000")!!
@@ -534,6 +539,14 @@ class Settings(ctx: Context) {
     var canListen: Boolean
         get() = p.getBoolean("canListen", false)
         set(v) = p.edit().putBoolean("canListen", v).apply()
+
+    /**
+     * Another device polls the ECU on the same K-line all the time (a Blitz gauge on an OBD splitter): the app sends
+     * nothing on it (no init, no line hold, no ELM probe) and shows what that device asks for (KLineTransport.listenOnly).
+     */
+    var lineShared: Boolean
+        get() = p.getBoolean("lineShared", false)
+        set(v) = p.edit().putBoolean("lineShared", v).apply()
 
     /** OBD-II on CAN: the make's own parameters from a downloaded OBDb set (ssm/Obdb), shown on «Датчики». */
     var obdbOn: Boolean
@@ -623,10 +636,21 @@ class Settings(ctx: Context) {
         get() = p.getInt("injectorCc", 0)
         set(v) = p.edit().putInt("injectorCc", v).apply()
 
+    /** «Доработки машины» (see [CarMods]); read by the rules on every sample, so kept parsed. */
+    @Volatile private var carModsCache: CarMods? = null
+    var carMods: CarMods
+        get() = carModsCache ?: CarMods.parse(p.getString("carMods", "")!!).also { carModsCache = it }
+        set(v) { carModsCache = v; p.edit().putString("carMods", v.encode()).apply() }
+
     /** Injector opening time (dead time) at 14 V, ms, for the same count; 0 = the usual 0.6 (see FuelCalc.deadTimeMs). */
     var injectorDeadMs: Float
         get() = p.getFloat("injectorDeadMs", 0f)
         set(v) = p.edit().putFloat("injectorDeadMs", v).apply()
+
+    /** Engine displacement, litres, for the fuel count by the manifold pressure (no MAF, no injection time); 0 = by the ECU or 2.0. */
+    var engineLitres: Float
+        get() = p.getFloat("engineLitres", 0f)
+        set(v) = p.edit().putFloat("engineLitres", v).apply()
 
     /** Body colour of the 3D car (see CarPaints). */
     var carPaint: String

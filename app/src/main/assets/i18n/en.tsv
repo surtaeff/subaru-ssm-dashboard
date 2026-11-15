@@ -361,7 +361,7 @@ t-критерий Уэлча, 95 %: погрешность — наскольк
 Если спул ушёл вверх на 300 об/мин и больше по сравнению с первыми тестами — ищите утечку во впуске, проверьте вестгейт и соленоид наддува. Холодный воздух даёт наддув чуть раньше, жара — позже.	If spool moved up by 300 rpm or more compared to the first tests, look for an intake leak, check the wastegate and boost solenoid. Cold air brings boost a little earlier, heat later.
 Мощность на колёсах (оценка)	Wheel power (estimate)
 «Виртуальный диностенд»: мощность на колёсах по оборотам, пока педаль в полу, и момент: та же мощность, делённая на обороты мотора. Это момент на коленвалу без учёта потерь трансмиссии (не момент на колёсах). Заезды хранятся, старый можно наложить на новый и увидеть, куда ушло плато момента и где начинает падать мощность.	A “virtual dyno”: wheel power by rpm while the pedal is down, and torque: the same power divided by engine rpm. This is crankshaft torque without transmission losses (not torque at the wheels). Runs are kept, an old one can be overlaid on a new one to see where the torque plateau went and where power starts to fall.
-Мощность = (масса × ускорение × поправка на раскрутку колёс и трансмиссии + сопротивление воздуха + качения + уклон) × скорость. Поправка зависит от передачи: около 1,2 на 2-й, 1,13 на 3-й, 1,07 на 5-й. Ускорение считается по оборотам: скорость ЭБУ целая и задаёт только передаточное число заезда. Окно ±150 мс от 20 замеров в секунду, иначе ±300 мс. Точки по 100 об/мин, если на них хватает замеров, иначе по 250; точка из одного-двух замеров не считается. Переключение делит заезд на части. Уклон берётся из высоты GPS и учитывается от 3 %: меньше него погрешность высоты. Пока открыт этот экран и газ в полу, ЭБУ опрашивается чаще: обороты, скорость, газ и давление, остальное после первых 6 секунд раз в 2 секунды, и предупреждения в это время проверяются реже. На коленвалу примерно +15 % (потери трансмиссии).	Power = (mass × acceleration × correction for spinning up wheels and drivetrain + air drag + rolling + grade) × speed. The correction depends on the gear: about 1.2 in 2nd, 1.13 in 3rd, 1.07 in 5th. Acceleration is by rpm: ECU speed is whole numbers and only sets the run's gear ratio. Window ±150 ms from 20 samples a second, otherwise ±300 ms. Points every 100 rpm if there are enough samples, otherwise every 250; a point of one or two samples doesn't count. A shift divides the run into parts. Grade comes from GPS altitude and counts from 3 %: below that is the altitude error. While this screen is open and the throttle floored, the ECU is polled more often: rpm, speed, throttle and pressure, the rest after the first 6 seconds once in 2 seconds, and warnings are checked less often at this time. At the crankshaft about +15 % (drivetrain losses).
+Мощность = (масса × ускорение × поправка на раскрутку колёс и трансмиссии + сопротивление воздуха + качения + уклон) × скорость. Поправка зависит от передачи: около 1,2 на 2-й, 1,13 на 3-й, 1,07 на 5-й. Ускорение считается по оборотам: скорость ЭБУ целая и задаёт только передаточное число заезда. Окно ±150 мс от 20 замеров в секунду, иначе ±300 мс. Точки по 100 об/мин, если на них хватает замеров, иначе по 250; точка из одного-двух замеров не считается. Переключение делит заезд на части. Уклон берётся из высоты GPS и учитывается от 3 %: меньше него погрешность высоты. Пока открыт этот экран и газ в полу, ЭБУ опрашивается чаще: обороты, скорость, газ и давление, остальное после первых 6 секунд раз в 2 секунды, и предупреждения в это время проверяются реже. Сопротивление воздуха считается по его плотности в заезде: атмосферное давление и температура впуска. На коленвалу: оценка с потерями трансмиссии около 20 % на механике и 25 % на автомате (полный привод). «По воздуху»: правило владельцев «мощность на маховике ≈ MAF в г/с × 1,25» для турбо-бензина по пику MAF заезда, грубо и без массы машины.	Power = (mass × acceleration × correction for spinning up wheels and drivetrain + air drag + rolling + grade) × speed. The correction depends on the gear: about 1.2 in 2nd, 1.13 in 3rd, 1.07 in 5th. Acceleration is by rpm: ECU speed is whole numbers and only sets the run's gear ratio. Window ±150 ms from 20 samples a second, otherwise ±300 ms. Points every 100 rpm if there are enough samples, otherwise every 250; a point of one or two samples doesn't count. A shift divides the run into parts. Grade comes from GPS altitude and counts from 3 %: below that is the altitude error. While this screen is open and the throttle floored, the ECU is polled more often: rpm, speed, throttle and pressure, the rest after the first 6 seconds once in 2 seconds, and warnings are checked less often at this time. Air drag goes by the air's density on the pull: the atmospheric pressure and intake temperature. At the crankshaft: an estimate with drivetrain losses of about 20 % with a manual and 25 % with an automatic (all-wheel drive). «By airflow»: the owners' rule «flywheel hp ≈ MAF in g/s × 1.25» for a turbo petrol engine, by the pull's peak MAF, rough and with no car mass in it.
 Мерьте на одной и той же передаче, ровной дороге, в безветрие, сравнивайте свои замеры между собой. Плато момента: самый длинный участок от 97 % пика. Спад мощности: первые обороты выше пика, где она ниже 97 % пика.	Measure in the same gear, on a level road, without wind, compare your own runs with each other. Torque plateau: the longest stretch from 97 % of peak. Power fall-off: the first rpm above the peak where it is below 97 % of peak.
 Секундомер кругов	Lap timer
 Время кругов по GPS: поставьте точку старта/финиша и катайтесь.	Lap times by GPS: set a start/finish point and drive.
@@ -1328,7 +1328,6 @@ AFR ШДК	Wideband AFR
 Идёт заезд: держите газ в полу до отсечки	Run in progress: hold the throttle floored to the limiter
 Заезд не засчитан: слишком короткий или мало замеров. Повторите или выберите заезд в списке	Run not counted: too short or too few samples. Repeat or choose a run from the list
 Нет замера: на ровной дороге на 3-й передаче от ~2000 об/мин нажмите газ в пол до отсечки	No run: on a level road in 3rd gear from ~2000 rpm floor the throttle to the limiter
-# л.с. при # об/мин · # Н·м при # об/мин · на коленвалу ≈ # л.с. (+# % потерь трансмиссии)	# hp at # rpm · # Nm at # rpm · at the crank ≈ # hp (+# % drivetrain losses)
 Другая передача: обороты на км/ч отличаются больше чем на 8 %, сравнение условное	Different gear: rpm per km/h differs by over 8 %, the comparison is rough
 Здесь будут кривые мощности и момента	Power and torque curves will be here
 мощность{}   	power{}   
@@ -3000,7 +2999,6 @@ IAM #, ниже максимума: ЭБУ раньше слышал детон�
 , и не первый раз за поездку. Не разгоняйтесь в пол до проверки бензина и смеси	, and not for the first time this trip. Don't accelerate flat out until the fuel and mixture are checked
 Во время разгона мотор детонировал, ЭБУ убрал #°. Если повторяется на тех же оборотах, 	During acceleration the engine knocked, the ECU pulled #°. If it repeats at the same rpm, 
 {}не разгоняйтесь в пол до проверки бензина и смеси.{}	{}don't accelerate flat out until the fuel and mixture are checked.{}
-Под наддувом смесь бедная (AFR #). Это опасно для поршней. Не давите газ в пол до проверки топливной системы	The mixture is lean under boost (AFR #). This is dangerous for the pistons. Don't floor it until the fuel system is checked
 Откаты зажигания совпадают с переключениями АКПП ({} раз за поездку, {}–{} об/мин). Вероятно, это ложный детон от переключения: датчик слышит щелчки гидроблока, или ЭБУ сам убирает угол на время переключения. На карте откатов они отмечены отдельно	Ignition retards coincide with automatic shifts ({} times this trip, {}–{} rpm). Likely false knock from the shift: the sensor hears valve body clicks, or the ECU itself pulls timing for the shift. They are marked separately on the retard map
 Детонация чаще всего в цилиндре {}: {} из {} срабатываний за поездку. Если так повторяется, проверьте этот цилиндр: свечу, катушку, компрессию	Knock is most often in cylinder {}: {} of {} events this trip. If this repeats, check that cylinder: plug, coil, compression
 Мотор холодный, а вы уже под наддувом. Холодное масло хуже защищает вкладыши и турбину, подождите прогрева	The engine is cold and you are already on boost. Cold oil protects the bearings and turbine worse, wait for warm-up
@@ -4045,7 +4043,7 @@ MAP: высокий сигнал — обрыв массы датчика, за�
 Датчик коленвала — сбой сигнала: зазор/загрязнение датчика, ротор, после замены ремня ГРМ — правильность установки.	Crank sensor, signal glitch: sensor gap/dirt, rotor; after a timing belt change, correct installation.
 Датчик положения распредвала: разъём, провод, датчик (на задней части головки).	Camshaft position sensor: connector, wire, sensor (at the rear of the head).
 Датчик распредвала — сбой сигнала: метки ремня ГРМ, датчик, ротор.	Cam sensor, signal glitch: timing belt marks, sensor, rotor.
-КПД катализатора ниже порога. Не спешите менять катализатор: 1) подсос/прогар выпуска до заднего зонда (прокладки приёмной трубы, гофра); 2) старый передний датчик A/F или задний зонд; 3) пропуски зажигания, богатая смесь, расход масла — они «убивают» катализатор; 4) сам катализатор. Подсказка: на исправном катализаторе сигнал заднего зонда на прогретом ходу почти ровный; если он «скачет» вслед за передним — катализатор не работает.	Catalyst efficiency below threshold. Don't rush to replace the catalyst: 1) exhaust leak/burn-through before the rear sensor (downpipe gaskets, flex); 2) old front A/F sensor or rear O2 sensor; 3) misfires, rich mixture, oil consumption, which “kill” the catalyst; 4) the catalyst itself. A hint: on a healthy catalyst the rear sensor signal is almost steady on the warm move; if it “jumps” after the front one, the catalyst isn't working.
+КПД катализатора ниже порога. Не спешите менять катализатор: 1) подсос/прогар выпуска до заднего зонда (прокладки приёмной трубы, гофра); 2) старый передний датчик A/F или задний зонд; 3) пропуски зажигания, богатая смесь, расход масла — они «убивают» катализатор; 4) сам катализатор; 5) катализатор удалён (даунпайп или апайп без него): тогда ошибка ожидаема, надёжно её убирает только прошивка с отключённым монитором катализатора. Подсказка: на исправном катализаторе сигнал заднего зонда на прогретом ходу почти ровный; если он «скачет» вслед за передним — катализатор не работает.	Catalyst efficiency below threshold. Don't rush to replace the catalyst: 1) exhaust leak/burn-through before the rear sensor (downpipe gaskets, flex); 2) old front A/F sensor or rear O2 sensor; 3) misfires, rich mixture, oil consumption, which “kill” the catalyst; 4) the catalyst itself; 5) the catalyst removed (a downpipe or up-pipe without one): then the code is expected, and only a tune with the catalyst monitor off clears it for good. A hint: on a healthy catalyst the rear sensor signal is almost steady on the warm move; if it “jumps” after the front one, the catalyst isn't working.
 Неверный поток продувки адсорбера: клапан продувки (на коллекторе) заклинил, трещины/слетевшие шланги EVAP, забит адсорбер.	Wrong canister purge flow: purge valve (on the manifold) stuck, cracked/detached EVAP hoses, clogged canister.
 Небольшая утечка EVAP: крышка бака (уплотнитель), шланги у адсорбера и бака, клапан продувки, горловина.	Small EVAP leak: tank cap (seal), hoses at the canister and tank, purge valve, filler neck.
 Клапан вентиляции адсорбера — обрыв цепи: разъём (у адсорбера/бака, грязь и вода), обмотка, провод.	Canister vent valve, open circuit: connector (at the canister/tank, dirt and water), winding, wire.
@@ -4645,3 +4643,88 @@ G-радар	G-radar
 Холостые	Idling
 Включать музыку при запуске	Play music on start
 При включении магнитолы и при открытии приложения играет то, что выбрано в Медиа: USB, Bluetooth, радио или плеер	When the head unit powers up or the app opens, what is picked in Media plays: USB, Bluetooth, radio or a player app
+Из файла	From the file
+Сохранить показанный отрезок	Save the piece shown
+показано {} из {}	showing {} of {}
+палец: курсор, два пальца: масштаб	finger: cursor, two fingers: zoom
+Вместе	Together
+Шкала по всему логу	Scale over the whole log
+Открыть CSV…	Open CSV…
+// data/Updater.kt
+Файл не скачался, попробуйте ещё раз	The file did not download, try again
+Скачалось не полностью ({} из {} МБ), попробуйте ещё раз	Downloaded only in part ({} of {} MB), try again
+Размер файла не совпал с релизом ({} вместо {} МБ), попробуйте ещё раз	The file size does not match the release ({} instead of {} MB), try again
+Файл повреждён при скачивании (не совпала контрольная сумма), попробуйте ещё раз	The file was damaged while downloading (checksum mismatch), try again
+Мало места: для обновления нужно около {} МБ свободной памяти, сейчас {} МБ. Освободите место и попробуйте снова	Not enough space: the update needs about {} MB of free memory, now {} MB. Free some space and try again
+Скачанный файл не читается как приложение, скачайте ещё раз	The downloaded file can't be read as an app, download it again
+Скачан файл другого приложения, обновление отменено	The downloaded file is another app, update cancelled
+Скачанная версия не новее установленной, обновлять нечего	The downloaded version is not newer than the installed one, nothing to update
+У установленной версии другая подпись (0.8 или собранная самостоятельно): поверх неё обновление не встанет. Сохраните резервную копию, удалите приложение и поставьте новую версию заново	The installed version has another signature (0.8 or self-built): the update won't install over it. Save a backup, remove the app and install the new version again
+Обновление установлено	Update installed
+Не установилось: установку запретила система или другое приложение	Not installed: the system or another app blocked the install
+Установка отменена	Install cancelled
+Не установилось: файл повреждён или не подходит, нажмите «Скачать и установить» ещё раз	Not installed: the file is damaged or doesn't fit, press “Download and install” again
+Не установилось: конфликт с установленной версией (другая подпись). Сохраните резервную копию, удалите приложение и поставьте заново	Not installed: conflict with the installed version (another signature). Save a backup, remove the app and install again
+Не установилось: мало места в памяти устройства	Not installed: not enough storage on the device
+Не установилось: эта версия не подходит для устройства	Not installed: this version doesn't fit the device
+Не установилось: установщик не дождался ответа, попробуйте ещё раз	Not installed: the installer timed out, try again
+Не установилось: ошибка установщика{}	Not installed: installer error{}
+Скачивание отменено	Download cancelled
+Готовлю установку…	Preparing the install…
+Не установилось: {}	Not installed: {}
+Не удалось сохранить файл обновления	Couldn't save the update file
+Установщик открыт: подтвердите обновление	The installer is open: confirm the update
+Откройте приложение и нажмите «Скачать и установить» ещё раз	Open the app and press “Download and install” again
+// ui/LogSettingsScreens.kt
+Отменить	Cancel
+// ui/FuelScreen.kt
+ЭБУ не отдаёт MAF: расход по MAP для мотора 2,0 л. Впишите свой объём в «Машина и адаптер → Топливо», уточнится по заправкам	ECU gives no MAF: consumption by MAP for a 2.0 l engine. Enter your engine size in “Car and adapter → Fuel”, refines with refills
+ЭБУ не отдаёт MAF: расход по MAP, уточнится по заправкам	ECU gives no MAF: consumption by MAP, refines with refills
+// ui/CarSetup.kt
+Объём двигателя, л (для расхода по MAP)	Engine size, l (for consumption by MAP)
+Нужен, когда ЭБУ не отдаёт ни MAF, ни время впрыска. Пусто: по ЭБУ или 2,0 л.	Needed when the ECU gives neither MAF nor injection time. Empty: by the ECU or 2.0 l.
+// service/EcuService.kt, ui/CarSetup.kt: the K-line shared with another device, a TCU gone quiet
+K-линия занята другим прибором: только слушаю, показываю то, что спрашивает он	The K-line belongs to another device: only listening, showing what it asks for
+Блок АКПП перестал отвечать, пробую снова	The transmission unit stopped answering, trying again
+На линии другой прибор (Blitz и т.п.)	Another device on the line (Blitz etc.)
+Приложение ничего не шлёт на K-линию и показывает только то, что спрашивает этот прибор	The app sends nothing on the K-line and shows only what that device asks for
+// service/Analyzer.kt
+С даунпайпом или без катализатора на стоковой прошивке так и бывает: турбина дует больше, чем просит карта. Нужна настройка WGDC (скважности вестгейта) под выпуск, до неё не разгоняйтесь в пол	With a downpipe or no catalyst on the stock tune this is what happens: the turbo blows more than the map asks for. The WGDC (wastegate duty) needs tuning for the exhaust; don't floor it until then
+Под наддувом смесь бедная: AFR #	The mixture is lean under boost: AFR #
+, а ЭБУ просит #	, while the ECU asks for #
+{}. На полном газу с наддувом ЭБУ держит около #–#, поэтому # и выше здесь по-настоящему бедно и опасно для поршней, это не ложная тревога. Не давите газ в пол, пока не проверите давление топлива (около # бар, # psi, при снятом вакуумном шланге регулятора, под наддувом растёт вровень с наддувом), топливный фильтр и насос, калибровку ДМРВ после замены впуска, форсунки. Запишите лог разгона для проверки	{}. At full throttle on boost the ECU holds about #–#, so # or leaner here is really lean and dangerous for the pistons, not a false alarm. Don't floor it until you check the fuel pressure (about # bar, # psi, with the regulator's vacuum hose off; under boost it rises one to one with boost), the fuel filter and pump, the MAF scaling after an intake change, the injectors. Record a log of a pull for checking
+Смесь сильно богатая: ЭБУ убирает #% топлива. Растёт расход, нужна проверка	The mixture is very rich: the ECU removes #% of fuel. Consumption goes up, needs checking
+Впуск с другим корпусом датчика отмечен в доработках: перекалибруйте ДМРВ в прошивке, без этого и расход по MAF неточен	An intake with another MAF housing is ticked in the mods: rescale the MAF in the tune, until then the MAF-based consumption is off too
+С другим корпусом датчика на впуске (отмечен в доработках) так и бывает: перекалибруйте ДМРВ в прошивке. Кондиционер и обогревы тоже добавляют	With another MAF housing on the intake (ticked in the mods) this is expected: rescale the MAF in the tune. A/C and heaters add some too
+С другим корпусом датчика на впуске (отмечен в доработках) перекалибруйте ДМРВ в прошивке. Иначе ищите подсос воздуха после датчика или грязный датчик	With another MAF housing on the intake (ticked in the mods), rescale the MAF in the tune. Otherwise look for an air leak after the sensor or a dirty sensor
+// ui/LogSettingsScreens.kt
+Доработки машины	Car mods
+Подсказки и ошибки учитывают доработки: снятый катализатор, даунпайп на стоковой прошивке, другой впуск. После смены выпуска, турбины или прошивки обычный наддув и выход на наддув выучиваются заново.	Hints and trouble codes take the mods into account: a removed catalyst, a downpipe on the stock tune, another intake. After a change of the exhaust, turbo or tune the usual boost and spool point are learned again.
+Катализатор снят	Catalyst removed
+в апайпе	in the up-pipe
+передний	front
+задний	rear
+Даунпайп	Downpipe
+Впуск с другим корпусом ДМРВ	Intake with another MAF housing
+Турбина больше штатной	Turbo bigger than stock
+Прошивка ЭБУ	ECU tune
+Форсунки, cc/мин («Машина и адаптер» → расход)	Injectors, cc/min («Car and adapter» → consumption)
+штатные	stock
+Масса машины («Замеры» → «Диностенд»)	Car mass («Measure» → «Dyno»)
+{} кг	{} kg
+Лог для настройщика	Log for a tuner
+Как снять полезный лог: прогретый мотор, минута на холостых. Затем разгон в пол на 3-й или 4-й передаче от 2500 об/мин до отсечки (около 10 с) и разгон на половине газа 6–7 с. AFR пишется в единицах AFR, наддув в барах.	How to record a useful log: warm engine, a minute at idle. Then a full-throttle pull in 3rd or 4th gear from 2500 rpm to the limiter (about 10 s) and a half-throttle pull of 6–7 s. AFR is written in AFR units, boost in bar.
+// ui/PerfScreen.kt
+# л.с. при # об/мин · # Н·м при # об/мин · на коленвалу ≈ # л.с. (оценка: потери трансмиссии около # %)	# hp at # rpm · # Nm at # rpm · at the crank ≈ # hp (estimate: drivetrain losses about # %)
+по воздуху ≈ # л.с. на маховике (MAF × #, грубо), пик MAF # г/с	by airflow ≈ # hp at the flywheel (MAF × #, rough), peak MAF # g/s
+Мощность по разгону считается на колёсах и зависит от введённой массы, поэтому две цифры расходятся	The power from acceleration is at the wheels and depends on the entered mass, so the two figures differ
+// data/CarMods.kt
+сток	stock
+своя настройка	own tune
+без кат. апайп	no up-pipe cat
+без перед. кат.	no front cat
+без задн. кат.	no rear cat
+даунпайп	downpipe
+Катализатор снят (отмечено в «Доработки машины»): эта ошибка ожидаема, задний зонд теперь переключается так же, как передний. Надёжно её убирает только прошивка с отключённым монитором катализатора	Catalyst removed (ticked in «Car mods»): this code is expected, the rear sensor now switches like the front one. Only a tune with the catalyst monitor off clears it for good
+Катализатор снят (отмечено в «Доработки машины»): коррекция смеси по заднему зонду уходит, это ожидаемо. Без прошивки ошибка вернётся{}	Catalyst removed (ticked in «Car mods»): the mixture trim by the rear sensor drifts, this is expected. Without a tune the code comes back{}
+. Если катализатор на месте: {}	. If the catalyst is in place: {}

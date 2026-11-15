@@ -15,6 +15,8 @@ interface ObdLink {
      * unit than the engine). Null where the adapter can't or nobody answered.
      */
     fun requestTo(tx: Int, rx: Int, req: ByteArray): ByteArray? = null
+    /** The voltage on the adapter's own supply pin (OBD pin 16, the battery), volts; null where the adapter can't tell. */
+    fun adapterVolts(): Float? = null
     fun close()
 }
 
@@ -38,12 +40,33 @@ class ElmObd(private val elm: Elm327) : ObdLink {
     /** The header [requestTo] set: the next plain request goes back to the functional 7DF. */
     private var header = -1
 
+    /** The socket broke (a Bluetooth "Broken pipe"): every request after it fails at once, nothing is written. */
+    @Volatile private var dead: java.io.IOException? = null
+
+    /**
+     * [elm]'s answer to [line], null when there was none in time. A broken link is thrown, not taken for a silent
+     * PID: swallowed, the poll went on writing into the dead socket (about 70 writes and two 4 s timeouts) before
+     * the loss was noticed (WSW3DKP8); thrown, the poll fails at once and the reconnect starts.
+     */
+    private fun cmd(line: String, timeoutMs: Long): String? {
+        dead?.let { throw it }
+        return try {
+            elm.cmd(line, timeoutMs)
+        } catch (e: ElmTimeout) {
+            null
+        } catch (e: java.io.IOException) {
+            SsmTrace.log("ELM link lost: $e")
+            dead = e
+            throw e
+        }
+    }
+
     override fun request(req: ByteArray): List<ByteArray>? {
         if (header >= 0) {
-            runCatching { elm.cmd("ATSH7DF"); elm.cmd("ATAR") }
+            cmd("ATSH7DF", 2500); cmd("ATAR", 2500)
             header = -1
         }
-        val r = runCatching { elm.cmd(Elm327.hex(req), 4000) }.getOrNull() ?: return null
+        val r = cmd(Elm327.hex(req), 4000) ?: return null
         if (Elm327.isError(r)) return null
         return frames(r)?.filter { it.isNotEmpty() && it[0] == (req[0] + 0x40).toByte() }?.ifEmpty { null }
     }
@@ -51,13 +74,17 @@ class ElmObd(private val elm: Elm327) : ObdLink {
     override fun requestTo(tx: Int, rx: Int, req: ByteArray): ByteArray? {
         if (protocol != "6" && protocol != "8") return null
         if (header != tx) {
-            runCatching { elm.cmd("ATSH%03X".format(tx)); elm.cmd("ATCRA%03X".format(rx)) }.getOrElse { return null }
+            cmd("ATSH%03X".format(tx), 2500) ?: return null
+            cmd("ATCRA%03X".format(rx), 2500) ?: return null
             header = tx
         }
-        val r = runCatching { elm.cmd(Elm327.hex(req), 3000) }.getOrNull() ?: return null
+        val r = cmd(Elm327.hex(req), 3000) ?: return null
         if (Elm327.isError(r)) return null
         return frames(r)?.firstOrNull { it.isNotEmpty() && it[0] == (req[0] + 0x40).toByte() }
     }
+
+    /** ATRV: the ELM's own reading of pin 16, for a car without PID 42 (an old ISO 9141 one). */
+    override fun adapterVolts(): Float? = cmd("ATRV", 1500)?.let { parseVolts(it) }
 
     /** The answer lines as frames; CAN multi-frame (ATCAF1) is a length line, then "0:…", "1:…". */
     private fun frames(r: String): List<ByteArray>? {
@@ -75,6 +102,13 @@ class ElmObd(private val elm: Elm327) : ObdLink {
     override fun close() {}
 
     companion object {
+        /** ATRV's answer ("12.4V", some clones "12,4V" or "12.4 V"), volts; null for an error or a value no car has. */
+        fun parseVolts(r: String): Float? {
+            if (Elm327.isError(r)) return null
+            val m = Regex("""(\d{1,2}[.,]\d{1,2})\s*V""", RegexOption.IGNORE_CASE).find(r) ?: return null
+            return m.groupValues[1].replace(',', '.').toFloatOrNull()?.takeIf { it in 5f..20f }
+        }
+
         private val PROTOCOLS = mapOf(
             "1" to "J1850 PWM", "2" to "J1850 VPW", "3" to "ISO 9141", "4" to "KWP 5 бод", "5" to "KWP быстрый",
             "6" to "CAN 11/500", "7" to "CAN 29/500", "8" to "CAN 11/250", "9" to "CAN 29/250",
@@ -102,8 +136,16 @@ class Obd2(val link: ObdLink) {
     private val values = HashMap<Int, ByteArray>()
     private var multi = link.isCan
     private var slowIdx = 0
+    private var cycle = 0
+    /** The adapter's pin 16 voltage (ATRV) for a car without PID 42, and when it was last asked. */
+    private var adapterV: Float? = null
+    private var adapterVMs = 0L
+    private var adapterVFails = 0
 
-    /** Ids of the extra values (OBD_xx) ticked on «Датчики»: read every cycle, the rest not at all. */
+    /**
+     * Ids of the extra values (OBD_xx) ticked on «Датчики»: read every cycle, the slow ones ([SLOW_EXTRA]) every
+     * [SLOW_EVERY]th, the rest not at all.
+     */
     @Volatile var watched: Set<String> = emptySet()
 
     /** Reads the "PIDs supported" bitmaps (01 00, 01 20 … 01 C0). */
@@ -146,12 +188,17 @@ class Obd2(val link: ObdLink) {
         return out
     }
 
-    /** One poll: the fast parameters and the ticked extras every time, one of the slow ones in turn. Null when the ECU went silent. */
+    /**
+     * One poll: the fast parameters every time, one of the slow ones in turn, the ticked extras every time or (the
+     * slow ones) every [SLOW_EVERY]th. Null when the ECU went silent. On the K-line every PID is a request of its own
+     * (~250 ms on an ISO 9141 car), so the bank 1 short trim goes every other time there too.
+     */
     fun poll(now: Long): EcuSnapshot? {
-        val fast = fastPids(supported)
+        val c = cycle++
+        val fast = fastPids(supported).filter { multi || it != 0x06 || c % 2 == 0 }
         val slow = SLOW.filter { it in supported }
         val extra = ObdPids.EXTRA.filter { it.id in watched && it.pid in supported }.map { it.pid }.distinct()
-        val ask = (fast + listOfNotNull(slow.getOrNull(slowIdx++ % slow.size.coerceAtLeast(1))) + extra).distinct()
+        val ask = (fast + listOfNotNull(slow.getOrNull(slowIdx++ % slow.size.coerceAtLeast(1))) + extraDue(extra, c)).distinct()
         var got = 0
         if (multi) {
             for (group in ask.chunked(6)) got += readMany(group)
@@ -159,7 +206,16 @@ class Obd2(val link: ObdLink) {
         }
         if (!multi) for (pid in ask) got += readMany(listOf(pid))
         if (got == 0) return null
+        readAdapterVolts(now)
         return decode(now)
+    }
+
+    /** ATRV every [ADAPTER_V_MS] when the car has no PID 42; given up after three answers that weren't a voltage. */
+    private fun readAdapterVolts(now: Long) {
+        if (0x42 in supported || adapterVFails >= 3 || (adapterVMs != 0L && now - adapterVMs in 0 until ADAPTER_V_MS)) return
+        adapterVMs = now
+        val v = link.adapterVolts()
+        if (v != null) { adapterV = v; adapterVFails = 0 } else { adapterVFails++; if (adapterVFails >= 3) adapterV = null }
     }
 
     private fun readMany(pids: List<Int>): Int {
@@ -191,7 +247,7 @@ class Obd2(val link: ObdLink) {
             intakeC = a(0x0F)?.let { it - 40 },
             mafGs = ab(0x10)?.let { it / 100f },
             throttlePct = a(0x11)?.let { it * 100f / 255f },
-            batteryV = ab(0x42)?.let { it / 1000f },
+            batteryV = ab(0x42)?.let { it / 1000f } ?: adapterV,
             atmKpa = a(0x33)?.toFloat(),
             mapKpa = a(0x0B)?.toFloat(),
             afCorrPct = a(0x06)?.let { (it - 128) * 100f / 128f },
@@ -334,6 +390,22 @@ class Obd2(val link: ObdLink) {
 
         /** Every cycle: what the gauges and the fuel calculation need. */
         private val FAST = listOf(0x0C, 0x0D, 0x10, 0x11, 0x0B, 0x0E, 0x06)
+
+        /**
+         * Extras that change slowly (the trims of bank 2, temperatures, distances): read every [SLOW_EVERY]th poll.
+         * Each was half a second a cycle on an ISO 9141 car (WSW3DKP8's 08/09).
+         */
+        val SLOW_EXTRA = setOf(0x08, 0x09, 0x1F, 0x21, 0x30, 0x31, 0x3C, 0x3D, 0x3E, 0x3F, 0x46, 0x4D, 0x4E, 0x51, 0x52,
+            0x5C, 0x67, 0x68, 0xA6)
+        const val SLOW_EVERY = 4
+        /** How often ATRV is asked, ms. */
+        const val ADAPTER_V_MS = 5_000L
+
+        /** The [extra] PIDs to read in poll number [cycle]: the slow ones spread over [SLOW_EVERY] polls, one share each. */
+        fun extraDue(extra: List<Int>, cycle: Int): List<Int> {
+            val slow = extra.filter { it in SLOW_EXTRA }
+            return extra.filter { it !in SLOW_EXTRA || slow.indexOf(it) % SLOW_EVERY == cycle % SLOW_EVERY }
+        }
 
         /**
          * What is asked every cycle of a unit that has [supported]: [FAST], plus the fuel: its own fuel rate (PID 5E)

@@ -213,7 +213,7 @@ object Perf {
         val k = Repo.settings.speedK.toFloat()
         val was = dyno.pulling
         val pulls = dyno.started
-        val pulled = dyno.feed(if (dynoOn && rpm != null) DynoSample(now, rpm, v / k, gas, e.gaugeKpa) else null, Repo.settings.massKg.toFloat(), k, Repo.settings.demo)
+        val pulled = dyno.feed(if (dynoOn && rpm != null) DynoSample(now, rpm, v / k, gas, e.gaugeKpa, e.mafGs) else null, Repo.settings.massKg.toFloat(), k, Repo.settings.demo)
         // first the one that ended: a gap in the samples ends a pull and starts the next on the same sample
         if (pulled.isNotEmpty() || (was && !dyno.pulling)) dynoDone(pulled, e, now)
         if (dyno.started != pulls) Repo.perf.value = Repo.perf.value.copy(dyno = emptyList(), dynoPulling = true, dynoRejected = false, dynoShown = null)
@@ -369,6 +369,7 @@ object Perf {
         val auto = s.gearbox != "mt"
         // from before the pull: the transmission isn't asked during one
         val tcuGear = Repo.tcu.value?.takeIf { now - it.timeMs < 30_000L }?.gear
+        val mods = s.carMods
         var longest = emptyList<DynoPoint>()
         var longestSize = 0
         var shown: Long? = null
@@ -378,13 +379,15 @@ object Perf {
             val mass = s.massKg.toFloat()
             if (tab) {
                 val mid = samples[samples.size / 2]
+                // no label of the driver's: the mods are the series, so a pull after a new downpipe compares with its own kind
                 val run = DynoRun(samples.first().tMs, mass, k, Gears.estimate(mid.rpm, (mid.kmh * k).toInt(), auto) ?: tcuGear.takeIf { part === parts.first() },
-                    DynoCalc.rpmPerKmh(samples, k), s.perfLabel.trim().ifEmpty { null }, e.intakeC, e.atmKpa, e.coolantC, Repo.guard.value.iam, DynoCalc.ALGO)
+                    DynoCalc.rpmPerKmh(samples, k), s.perfLabel.trim().ifEmpty { mods.tag().ifEmpty { null } }, e.intakeC, e.atmKpa, e.coolantC, Repo.guard.value.iam, DynoCalc.ALGO,
+                    DynoCalc.mafPeak(samples), mods.encode())
                 runCatching { DynoStore.save(run, samples, slope, part.demo) }.onFailure { kg.forester.sg.ssm.SsmTrace.log("dyno: $it") }
             }
             if (samples.size > longestSize) {
                 longestSize = samples.size
-                longest = DynoCalc.curve(samples, mass, k, slope)
+                longest = DynoCalc.curve(samples, mass, k, slope, DynoCalc.airDensity(e.atmKpa, e.intakeC))
                 shown = samples.first().tMs.takeIf { tab }
             }
         }

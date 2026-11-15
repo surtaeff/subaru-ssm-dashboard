@@ -165,8 +165,57 @@ class LogUploadTest {
 
     // ---- I4: a fault, not a key-off
 
+    private fun FaultWatch.run(vararg s: Triple<Int, Int?, Float?>) {
+        newConnection()
+        s.forEachIndexed { i, (rpm, kmh, v) -> sample(rpm, kmh, v, i * 250L) }
+    }
+
+    @Test fun faultWatchTellsKeyOffFromHang() {
+        val w = FaultWatch { Triple(null, null, null) }
+        // key off standing at idle: the ECU goes dark at 750 rpm, nothing else moved
+        w.run(*Array(12) { Triple(750, 0, 14.2f) })
+        assertFalse("idle, standing", w.looksLikeFault())
+        // the rpm coming down when it stopped, standing
+        w.run(Triple(1500, 0, 14.2f), Triple(1450, 0, 14.2f), Triple(1300, 0, 14.1f), Triple(1200, 0, 14.0f))
+        assertFalse("rpm falling", w.looksLikeFault())
+        // the voltage dropping as the key goes, even above idle
+        w.run(Triple(1600, 0, 14.3f), Triple(1600, 0, 14.2f), Triple(1600, 0, 13.1f))
+        assertFalse("battery dropping", w.looksLikeFault())
+        // driving: the ECU stops answering at 60 km/h, the rpm falling on a lift too
+        w.run(Triple(2600, 60, 14.1f), Triple(2400, 60, 14.1f), Triple(2100, 59, 14.1f))
+        assertTrue("moving", w.looksLikeFault())
+        // standing, steady and well above idle (revved, warming up): a hang
+        w.run(*Array(12) { Triple(1800, 0, 14.0f) })
+        assertTrue("steady above idle", w.looksLikeFault())
+        // creeping at walking pace at idle: not clearly running
+        w.run(Triple(800, 4, 14.0f), Triple(800, 4, 14.0f))
+        assertFalse(w.looksLikeFault())
+        // unknown speed and voltage (an ECU without them): the rpm alone decides
+        w.run(Triple(2400, null, null), Triple(2400, null, null))
+        assertTrue(w.looksLikeFault())
+        w.run(Triple(780, null, null), Triple(780, null, null))
+        assertFalse(w.looksLikeFault())
+        // the old samples go out of the window: a rev long before the idle doesn't count as falling
+        w.newConnection()
+        w.sample(3000, 50, 14f, 0)
+        for (t in 1..20) w.sample(1800, 0, 14f, t * 500L)
+        assertTrue(w.looksLikeFault())
+    }
+
+    @Test fun faultWatchTakesSpeedOfTheSameSample() {
+        var live = Triple<Int?, Int?, Float?>(820, 70, 14f)
+        val w = FaultWatch { live }
+        w.newConnection()
+        w.sample(820, 0L); w.sample(820, 500L)
+        assertTrue("moving at idle rpm", w.looksLikeFault())
+        live = Triple(1000, 70, 14f)
+        w.newConnection()
+        w.sample(820, 0L); w.sample(820, 500L)
+        assertFalse("another sample's speed is not used", w.looksLikeFault())
+    }
+
     @Test fun faultWatch() {
-        val w = FaultWatch()
+        val w = FaultWatch { Triple(null, null, null) }
         w.newConnection()
         // key off: rpm falls to 0 and the data goes on for a while, then stops
         for (t in 0..10) w.sample(if (t < 2) 800 else 0, t * 500L)

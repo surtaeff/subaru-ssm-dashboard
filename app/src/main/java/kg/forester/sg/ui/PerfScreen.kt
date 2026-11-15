@@ -363,8 +363,14 @@ private fun DynoTab() {
                     cur == null && state.rejected -> T("Заезд не засчитан: слишком короткий или мало замеров. Повторите или выберите заезд в списке", 13.sp, C.Orange)
                     maxHp == null || maxNm == null -> T("Нет замера: на ровной дороге на 3-й передаче от ~2000 об/мин нажмите газ в пол до отсечки", 13.sp, C.Sub)
                     else -> {
-                        T("%.0f л.с. при %d об/мин · %.0f Н·м при %d об/мин · на коленвалу ≈ %.0f л.с. (+15 %% потерь трансмиссии)"
-                            .format(maxHp.hp, maxHp.rpm, maxNm.nm, maxNm.rpm, maxHp.hp * 1.15f), 13.sp, C.Sub, maxLines = 1)
+                        val loss = DynoCalc.drivetrainLoss(s.gearbox != "mt")
+                        T("%.0f л.с. при %d об/мин · %.0f Н·м при %d об/мин · на коленвалу ≈ %.0f л.с. (оценка: потери трансмиссии около %.0f %%)"
+                            .format(maxHp.hp, maxHp.rpm, maxNm.nm, maxNm.rpm, DynoCalc.crankHp(maxHp.hp, loss), loss * 100), 13.sp, C.Sub, maxLines = 1)
+                        // the owners' MAF rule beside it: another quantity (the crank, no mass in it), so the gap is said
+                        cur?.mafPeakGs?.let { maf ->
+                            T("по воздуху ≈ %.0f л.с. на маховике (MAF × 1,25, грубо), пик MAF %.0f г/с".format(DynoCalc.airflowHp(maf), maf), 13.sp, C.Sub, maxLines = 1)
+                            T("Мощность по разгону считается на колёсах и зависит от введённой массы, поэтому две цифры расходятся", 11.sp, C.Sub, maxLines = 2)
+                        }
                         DynoCalc.compareLines(curve, refCurve).forEach { T(it, 15.sp, weight = FontWeight.SemiBold, maxLines = 1) }
                         if (ref != null && DynoCalc.otherGear(cur!!, ref)) T(kg.forester.sg.data.DistanceUnits.label("Другая передача: обороты на км/ч отличаются больше чем на 8 %, сравнение условное"), 12.sp, C.Orange, maxLines = 1)
                     }

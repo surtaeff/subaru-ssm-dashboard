@@ -8,6 +8,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,8 +69,11 @@ import java.util.Locale
 /** One numeric column of a CSV log; NaN where the cell was empty. */
 private class LogSeries(val key: String, val title: String, val unit: String, val group: String, val v: FloatArray)
 
-/** A CSV log read back: [t] seconds from the first line, [startMs] the wall clock of the first line if known. */
-private class LogData(val t: DoubleArray, val startMs: Long?, val series: List<LogSeries>) {
+/**
+ * A CSV log read back: [t] seconds from the first line, [startMs] the wall clock of the first line if known;
+ * [sep] the file's separator and [timeCol] its time column (to cut a piece of the file out the same way).
+ */
+private class LogData(val t: DoubleArray, val startMs: Long?, val series: List<LogSeries>, val sep: Char = ',', val timeCol: Int = 0) {
     val duration get() = if (t.isEmpty()) 0.0 else t.last() - t.first()
 }
 
@@ -76,16 +84,36 @@ private val UNITS = listOf(
 
 private val COLORS get() = listOf(C.Blue, C.Orange, C.Green, C.Violet)
 
-/** Reads a log the app wrote (or battery.csv): the first column is the time, the numeric ones become charts. */
+/** The rows of a log under its header: blank and one-cell lines dropped (the same rule when a piece is cut out). */
+private fun logRows(lines: List<String>, sep: Char): List<List<String>> =
+    lines.drop(1).map { kg.forester.sg.data.CsvRead.split(it, sep) }.filter { it.size >= 2 }
+
+/**
+ * Reads a log the app wrote (or battery.csv), or a CSV from elsewhere: the time column, then the numeric ones
+ * become charts. Another program's file may use ; or tabs, a decimal comma, units in brackets and clock times.
+ */
 private fun readLog(f: File, rr: Map<String, kg.forester.sg.ssm.RrParam> = emptyMap()): LogData {
-    val lines = f.bufferedReader().use { r -> r.lineSequence().take(400_000).toList() }
+    val lines = f.bufferedReader().use { r -> r.lineSequence().filter { it.isNotBlank() }.take(400_000).toList() }
     if (lines.size < 2) return LogData(DoubleArray(0), null, emptyList())
-    val head = lines[0].split(',')
-    val rows = lines.drop(1).map { it.split(',') }.filter { it.size >= 2 }
+    val sep = kg.forester.sg.data.CsvRead.separator(lines[0].removePrefix("﻿"))
+    val head = kg.forester.sg.data.CsvRead.split(lines[0].removePrefix("﻿"), sep)
+    val rows = logRows(lines, sep)
     val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-    val ms = rows.mapIndexed { i, r ->
+    // the app's own files: ms (from the start or the epoch) or a date in the first column, read as always
+    val own = sep == ',' && rows.all { r -> r[0].toLongOrNull() != null || runCatching { dateFmt.parse(r[0]) }.getOrNull() != null }
+    val tc = if (own) 0 else kg.forester.sg.data.CsvRead.timeColumn(head)
+    val ms = if (own) rows.mapIndexed { i, r ->
         val c = r[0]
         c.toLongOrNull() ?: runCatching { dateFmt.parse(c)?.time }.getOrNull() ?: (i * 1000L)
+    } else kg.forester.sg.data.CsvRead.times(rows.map { it.getOrElse(tc) { "" } }, head.getOrElse(tc) { "" }).let { raw ->
+        // a clock of the day that passes midnight, or rows out of order: time never goes back on the chart
+        var add = 0L
+        var prev = Long.MIN_VALUE
+        raw.map { v ->
+            var x = v + add
+            if (x < prev && prev - x > 43_200_000L && v < 86_400_000L) { add += 86_400_000L; x += 86_400_000L }
+            x = maxOf(x, prev); prev = x; x
+        }
     }
     // the wall clock: epoch ms in the first column, else (ms from the start there) the start in the file name
     val wall = ms.firstOrNull()?.takeIf { it > 1_000_000_000_000L } ?: ms.firstOrNull()?.let { first ->
@@ -121,6 +149,16 @@ private fun readLog(f: File, rr: Map<String, kg.forester.sg.ssm.RrParam> = empty
             series("duty", "Загрузка генератора", "%", "Генератор", "charging", col("extra")),
         )
         return LogData(t, wall, list)
+    }
+    if (!own) {
+        // a file from another program: every numeric column but the time, the unit from its header
+        val list = head.indices.filter { it != tc }.mapNotNull { c ->
+            val v = FloatArray(rows.size) { kg.forester.sg.data.CsvRead.number(rows[it].getOrElse(c) { "" }, sep) }
+            if (v.all { it.isNaN() }) return@mapNotNull null
+            val (name, unit) = kg.forester.sg.data.CsvRead.nameAndUnit(head[c])
+            LogSeries("c$c ${head[c]}", name.ifEmpty { "#${c + 1}" }, kg.forester.sg.data.CsvRead.unitRu(unit), "Из файла", v)
+        }
+        return LogData(t, wall, list, sep, tc)
     }
     val known = LogColumns.all.associateBy { it.key }
     val keys = head.map { it.trim() }.toSet()
@@ -289,6 +327,9 @@ fun LogViewer(file: File, onClose: () -> Unit) {
     var zoom by remember(file) { mutableStateOf(1f) }
     var centre by remember(file) { mutableStateOf(0.5f) }
     var cursor by remember(file) { mutableStateOf(0.5f) } // 0…1 across the window
+    // all picked lines on one tall chart (each in its own scale), and a value scale over the whole file
+    var together by remember { mutableStateOf(false) }
+    var wholeScale by remember { mutableStateOf(false) }
     val d = data
     LaunchedEffect(d) {
         if (d != null && picked.isEmpty()) {
@@ -318,6 +359,15 @@ fun LogViewer(file: File, onClose: () -> Unit) {
             IconTap(Lucide.ZoomOut, "Уменьшить", { zoom = (zoom / 2f).coerceAtLeast(1f) }, tint = C.Text, enabled = zoom > 1f)
             IconTap(Lucide.ZoomIn, "Увеличить", { centre = windowAt(centre, zoom, cursor); zoom = (zoom * 2f).coerceAtMost(256f); cursor = 0.5f }, tint = C.Text, enabled = d != null && zoom < 256f)
             IconTap(Lucide.Maximize2, "Весь график", { zoom = 1f; centre = 0.5f }, tint = C.Text, enabled = zoom > 1f)
+            // the piece on screen as its own file: easier to send than the whole drive
+            IconTap(Lucide.Scissors, "Сохранить показанный отрезок", {
+                d?.let { dd ->
+                    val half = 0.5f / zoom
+                    val cc = centre.coerceIn(half, 1f - half)
+                    val total = dd.duration.coerceAtLeast(1.0)
+                    saveWindow(ctx, file, dd, dd.t.first() + (cc - half) * total, dd.t.first() + (cc + half) * total)
+                }
+            }, tint = C.Text, enabled = d != null && zoom > 1f)
             Spacer(Modifier.width(6.dp))
             LogFileActions(file, onDeleted = onClose)
         }
@@ -420,7 +470,10 @@ fun LogViewer(file: File, onClose: () -> Unit) {
                     val ik = shown.firstOrNull()?.let { nearest(it.v, d.t, at, ic) } ?: ic
                     val wall = d.startMs?.let { "  ·  " + SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(it + (d.t[ik] * 1000).toLong())) } ?: ""
                     T("${clock(d.t[ik])}$wall", 13.sp, C.Text, weight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                    T(if (zoom > 1f) "показано ${clock(w1 - w0)} из ${clock(total)}  ·  ведите пальцем" else "ведите пальцем по графику", 12.sp, C.Sub)
+                    T(if (zoom > 1f) "показано ${clock(w1 - w0)} из ${clock(total)}" else "палец: курсор, два пальца: масштаб", 12.sp, C.Sub, maxLines = 1)
+                    Spacer(Modifier.width(8.dp))
+                    if (shown.size > 1) { Chip("Вместе", together, { together = !together }, Lucide.Layers); Spacer(Modifier.width(6.dp)) }
+                    Chip("Шкала по всему логу", wholeScale, { wholeScale = !wholeScale }, Lucide.MoveVertical)
                 }
                 Spacer(Modifier.height(8.dp))
                 Column(
@@ -428,19 +481,45 @@ fun LogViewer(file: File, onClose: () -> Unit) {
                         .pointerInput(file) {
                             // the plot starts after the lane padding and the value scale
                             val left = (LANE_PAD + GUTTER).toPx(); val right = LANE_PAD.toPx()
-                            detectTapGestures { p -> cursor = ((p.x - left) / (size.width - left - right)).coerceIn(0f, 1f) }
-                        }
-                        .pointerInput(file) {
-                            val left = (LANE_PAD + GUTTER).toPx(); val right = LANE_PAD.toPx()
-                            detectDragGestures { ch, _ -> cursor = ((ch.position.x - left) / (size.width - left - right)).coerceIn(0f, 1f) }
+                            fun frac(x: Float) = ((x - left) / (size.width - left - right)).coerceIn(0f, 1f)
+                            // one finger moves the cursor; two fingers zoom about the point between them and move the window
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                cursor = frac(down.position.x)
+                                while (true) {
+                                    val ev = awaitPointerEvent()
+                                    val pressed = ev.changes.filter { it.pressed }
+                                    if (pressed.isEmpty()) break
+                                    if (pressed.size >= 2) {
+                                        val z = ev.calculateZoom()
+                                        val pan = ev.calculatePan()
+                                        val fx = frac(ev.calculateCentroid(useCurrent = true).x)
+                                        val oldW = 1f / zoom
+                                        val start = centre.coerceIn(oldW / 2, 1f - oldW / 2) - oldW / 2
+                                        val p = start + fx * oldW
+                                        val nz = (zoom * z).coerceIn(1f, 256f)
+                                        val nw = 1f / nz
+                                        val ns = p - fx * nw - pan.x / (size.width - left - right) * nw
+                                        zoom = nz
+                                        centre = (ns + nw / 2).coerceIn(nw / 2, 1f - nw / 2)
+                                    } else cursor = frac(pressed[0].position.x)
+                                    ev.changes.forEach { it.consume() }
+                                }
+                            }
                         },
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     if (shown.isEmpty()) T("Выберите параметры слева.", 14.sp, C.Sub)
+                    if (together && shown.size > 1) {
+                        OverlayLane(d, shown, picked, i0, i1, w0, w1, at, ic, cursor, wholeScale, n)
+                        TimeAxis(w0, w1, d.startMs)
+                        return@Column
+                    }
                     shown.forEachIndexed { idx, s ->
                         val color = COLORS[picked.indexOf(s.key).coerceIn(0, 3)]
                         val stats = remember(s, i0, i1) { stats(s.v, i0, i1) }
-                        val (lo, hi) = axis(stats)
+                        val scaleStats = if (wholeScale) remember(s) { stats(s.v, 0, n) } else stats
+                        val (lo, hi) = axis(scaleStats)
                         // the sample nearest to the cursor (the battery journal has one every few minutes)
                         val k = nearest(s.v, d.t, at, ic)
                         Column(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.CardHi)
@@ -502,15 +581,112 @@ fun LogViewer(file: File, onClose: () -> Unit) {
     }
 }
 
+/**
+ * The picked lines on one tall chart, each in its own scale (boost, throttle and knock side by side read easier than
+ * four lanes of 100 px on a 600-high screen); the scale on the left is the first line's, in its colour.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun androidx.compose.foundation.layout.ColumnScope.OverlayLane(
+    d: LogData, shown: List<LogSeries>, picked: List<String>, i0: Int, i1: Int, w0: Double, w1: Double,
+    at: Double, ic: Int, cursor: Float, wholeScale: Boolean, n: Int,
+) {
+    val lanes = shown.map { s ->
+        val color = COLORS[picked.indexOf(s.key).coerceIn(0, 3)]
+        val st = stats(s.v, if (wholeScale) 0 else i0, if (wholeScale) n else i1)
+        Triple(s, color, axis(st))
+    }
+    Column(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.CardHi)
+        .padding(horizontal = LANE_PAD, vertical = 6.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            lanes.forEach { (s, color, _) ->
+                val k = nearest(s.v, d.t, at, ic)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(9.dp).clip(CircleShape).background(color))
+                    Spacer(Modifier.width(6.dp))
+                    T(s.title, 13.sp, C.Sub, maxLines = 1)
+                    Spacer(Modifier.width(6.dp))
+                    T(k?.let { num(s.v[it]) } ?: "—", 16.sp, color, weight = FontWeight.Bold)
+                    if (s.unit.isNotEmpty()) { Spacer(Modifier.width(3.dp)); T(s.unit, 11.sp, C.Sub) }
+                }
+            }
+        }
+        Canvas(Modifier.weight(1f).fillMaxWidth().padding(top = 4.dp)) {
+            val g = GUTTER.toPx()
+            val (lo0, hi0) = lanes.first().third
+            drawScale(lo0, hi0, g)
+            inset(left = g, top = 0f, right = 0f, bottom = 0f) {
+                lanes.forEachIndexed { idx, (s, color, range) ->
+                    drawSeries(d.t, s.v, i0, i1, w0, w1, range.first, range.second, color, fill = idx == 0, grid = idx == 0)
+                }
+                val x = cursor * size.width
+                drawLine(C.Text.copy(alpha = 0.7f), Offset(x, 0f), Offset(x, size.height), 1.5f,
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f)))
+                lanes.forEach { (s, color, range) ->
+                    val k = nearest(s.v, d.t, at, ic) ?: return@forEach
+                    if (range.first.isNaN()) return@forEach
+                    val px = ((d.t[k] - w0) / (w1 - w0) * size.width).toFloat()
+                    val py = size.height - (s.v[k] - range.first) / (range.second - range.first) * size.height
+                    drawCircle(C.Ink, 6.5f, Offset(px, py))
+                    drawCircle(color, 4.5f, Offset(px, py))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Saves the rows from [w0] to [w1] s (the zoomed window) as a file of their own with the same header, in
+ * «Загрузки/CarPulse»: half a minute of a pull is easier to send than the whole drive.
+ */
+private fun saveWindow(ctx: Context, f: File, d: LogData, w0: Double, w1: Double) {
+    val name = runCatching {
+        val lines = f.bufferedReader().use { r -> r.lineSequence().filter { it.isNotBlank() }.take(400_000).toList() }
+        val rows = lines.drop(1).filter { kg.forester.sg.data.CsvRead.split(it, d.sep).size >= 2 }
+        val i0 = lowerBound(d.t, w0).coerceIn(0, rows.size)
+        val i1 = (lowerBound(d.t, w1) + 1).coerceIn(i0, rows.size)
+        val a = clock(d.t.getOrElse(i0) { 0.0 }).replace(':', '-'); val b = clock(d.t.getOrElse(i1 - 1) { 0.0 }).replace(':', '-')
+        val out = File(File(ctx.cacheDir, "share").apply { mkdirs() }, "${f.nameWithoutExtension}_${a}_$b.csv")
+        out.bufferedWriter().use { w ->
+            w.write(lines[0]); w.newLine()
+            for (i in i0 until i1) { w.write(rows[i]); w.newLine() }
+        }
+        saveLog(ctx, out)
+        out.delete()
+    }.onFailure { kg.forester.sg.ssm.SsmTrace.log("log window save: $it") }
+    if (name.isFailure) android.widget.Toast.makeText(ctx, kg.forester.sg.data.tr("Не удалось сохранить: ${kg.forester.sg.data.Failure.text(name.exceptionOrNull()!!)}"), android.widget.Toast.LENGTH_LONG).show()
+}
+
 private val LANE_PAD = 10.dp
 private val GUTTER = 40.dp
 
-/** The value range drawn: the samples' min…max with some room above and below (a value that never moved gets ±5 %). */
+/**
+ * The value range drawn: the samples' min…max with some room above and below (a value that never moved gets ±5 %),
+ * widened so the three grid lines fall on round numbers (steps of 1, 2, 2.5 or 5 times a power of ten).
+ */
 private fun axis(st: FloatArray): Pair<Float, Float> {
     val lo = st[0]; val hi = st[2]
     if (lo.isNaN()) return Float.NaN to Float.NaN
     val pad = if (hi - lo < 1e-6f) maxOf(kotlin.math.abs(hi) * 0.05f, 0.5f) else (hi - lo) * 0.1f
-    return (lo - pad) to (hi + pad)
+    return niceRange(lo - pad, hi + pad)
+}
+
+/** [a]…[b] widened to four equal steps of a round size: the grid at the quarters reads 0, 50, 100… not 13.7. */
+internal fun niceRange(a: Float, b: Float): Pair<Float, Float> {
+    if (!(b > a) || a.isInfinite() || b.isInfinite()) return a to b
+    var step = niceStep((b - a) / 4.0)
+    repeat(4) {
+        val lo = Math.floor(a / step) * step
+        if (lo + 4 * step >= b) return lo.toFloat() to (lo + 4 * step).toFloat()
+        step = niceStep(step * 1.01)
+    }
+    return a to b
+}
+
+/** The smallest of 1, 2, 2.5, 5 × 10ⁿ not below [x]. */
+internal fun niceStep(x: Double): Double {
+    val p = Math.pow(10.0, Math.floor(Math.log10(x)))
+    return listOf(1.0, 2.0, 2.5, 5.0, 10.0).first { it * p >= x * 0.999999 } * p
 }
 
 /** The index of the non-empty sample of [v] closest in time to [at] ([from] = the index at or after it). */
@@ -540,7 +716,8 @@ private fun DrawScope.drawScale(lo: Float, hi: Float, gutter: Float) {
     }
     val h = size.height
     for ((frac, v) in listOf(0.25f to hi - (hi - lo) * 0.25f, 0.5f to (lo + hi) / 2, 0.75f to lo + (hi - lo) * 0.25f)) {
-        drawContext.canvas.nativeCanvas.drawText(num(v), gutter - 6.dp.toPx(), h * frac + 4.dp.toPx(), paint)
+        val label = num(v).let { s -> if ('.' in s) s.trimEnd('0').trimEnd('.') else s }.let { if (it == "-0") "0" else it }
+        drawContext.canvas.nativeCanvas.drawText(label, gutter - 6.dp.toPx(), h * frac + 4.dp.toPx(), paint)
     }
 }
 
@@ -591,10 +768,10 @@ private fun stats(v: FloatArray, i0: Int, i1: Int): FloatArray {
 /** One line per two pixels (the low and high of the samples there), broken where the log has a gap. */
 private fun DrawScope.drawSeries(
     t: DoubleArray, v: FloatArray, i0: Int, i1: Int, w0: Double, w1: Double,
-    min: Float, max: Float, color: Color, fill: Boolean,
+    min: Float, max: Float, color: Color, fill: Boolean, grid: Boolean = true,
 ) {
     val w = size.width; val h = size.height
-    for (k in 1..3) drawLine(C.Border.copy(alpha = 0.5f), Offset(0f, h * k / 4), Offset(w, h * k / 4), 1f)
+    if (grid) for (k in 1..3) drawLine(C.Border.copy(alpha = 0.5f), Offset(0f, h * k / 4), Offset(w, h * k / 4), 1f)
     if (min.isNaN()) return
     val span = (max - min).takeIf { it > 0f } ?: 1f
     fun y(x: Float) = h - (x - min) / span * h

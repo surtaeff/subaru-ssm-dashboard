@@ -255,7 +255,9 @@ private fun LabelDialog(title: String, label0: String, note0: String?, advice: B
     var label by remember { mutableStateOf(label0) }
     var note by remember { mutableStateOf(note0 ?: "") }
     val perf by Repo.perf.collectAsState()
-    val known = (perf.runs.map { it.cond.label } + perf.dynoRuns.mapNotNull { it.label }).filter { it.isNotEmpty() }.distinct().take(8)
+    // the mods of «Доработки машины» first: the series a pull without a label goes into by itself
+    val known = (listOf(Repo.settings.carMods.tag()) + perf.runs.map { it.cond.label } + perf.dynoRuns.mapNotNull { it.label })
+        .filter { it.isNotEmpty() }.distinct().take(8)
     CarAlertDialog(
         onDismissRequest = onClose,
         containerColor = C.CardHi, textScrolls = false,

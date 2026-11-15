@@ -27,10 +27,14 @@ object RulesHost {
         val rom = Repo.ecuInit.value?.romId
         litresFor?.let { (r, l) -> if (r == rom) return l }
         val family = runCatching { kg.forester.sg.ssm.EngineId.detect(ctx).family }.getOrDefault("EJ")
-        val l = when (family) { "EJ20", "FA20" -> 2.0f; "EJ22" -> 2.2f; "EJ25" -> 2.5f; "EZ30" -> 3.0f; "EZ36" -> 3.6f; else -> null }
+        val l = litresOf(family)
         litresFor = rom to l
         return l
     }
+
+    /** Litres of an engine family (EJ20 2.0, EJ25 2.5…), null for one of no single size ("EJ", "FB"). */
+    fun litresOf(family: String): Float? =
+        when (family) { "EJ20", "FA20" -> 2.0f; "EJ22" -> 2.2f; "EJ25" -> 2.5f; "EZ30" -> 3.0f; "EZ36" -> 3.6f; else -> null }
 
     /**
      * What is normal for this engine, by what the ECU says; cached per ROM and for whatever else detect goes by (boost
@@ -147,6 +151,17 @@ object RulesHost {
         ctx.applicationContext.getSharedPreferences("analyzer", Context.MODE_PRIVATE).edit().remove("knockMap").apply()
         analyzer?.clearKnockMap()
         diag.value = diag.value.copy(allKnock = kg.forester.sg.data.KnockMap(System.currentTimeMillis()))
+    }
+
+    /**
+     * «Доработки машины» changed what the boost depends on (a tune, a turbo, the exhaust): the usual peak boost, the
+     * spool points and the learned norm start over, so underboost and a late spool aren't judged by the old car.
+     */
+    fun forgetBoostNorms(ctx: Context) {
+        ctx.applicationContext.getSharedPreferences("analyzer", Context.MODE_PRIVATE).edit()
+            .remove("boostBase").remove("spool").remove("boostNorm").apply()
+        analyzer?.forgetBoostNorms()
+        diag.value = diag.value.copy(spool = SpoolTrend())
     }
 
     private var analyzer: Analyzer? = null

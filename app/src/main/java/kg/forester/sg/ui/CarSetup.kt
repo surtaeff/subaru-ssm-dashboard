@@ -147,6 +147,8 @@ fun CarAdapterSettings(onOpenLook: () -> Unit = {}) {
             if (!otherCar) OilCorrectionRow()
             SettingsSection("Топливо")
             FuelSettings()
+            // the fuel count by the manifold pressure (an ECU with neither MAF nor injection time) needs the engine size
+            if (otherCar || kg.forester.sg.service.FuelCalc.source == "map" || s.engineLitres > 0f) EngineLitresField()
         }
         Panel(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())) {
             PanelTitle(Lucide.Usb, "Адаптер")
@@ -218,6 +220,18 @@ fun CarAdapterSettings(onOpenLook: () -> Unit = {}) {
                     Spacer(Modifier.height(6.dp))
                     Chip("Что идёт по CAN", false, { monitor = true }, Lucide.Activity)
                     if (monitor) CanMonitorDialog { monitor = false }
+                }
+            }
+            // the K-line cables (a KKL, an OpenPort): a gauge on a splitter that polls the ECU itself (KirillSG's Blitz)
+            if (!otherCar && (adapter == "kkl" || adapter == "op2" || adapter == "auto")) {
+                Spacer(Modifier.height(10.dp))
+                var shared by remember { mutableStateOf(s.lineShared) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        T("На линии другой прибор (Blitz и т.п.)", 15.sp)
+                        SettingHint("Приложение ничего не шлёт на K-линию и показывает только то, что спрашивает этот прибор")
+                    }
+                    Switch(shared, { shared = it; s.lineShared = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
                 }
             }
             Spacer(Modifier.height(14.dp))
@@ -533,4 +547,17 @@ internal fun TextBox(label: String, value: String, onChange: (String) -> Unit) {
         ),
         modifier = Modifier.fillMaxWidth(),
     )
+}
+
+/** The engine size for the fuel count by MAP, saved as typed; empty = by the ECU (a Subaru) or 2.0 l. */
+@Composable
+private fun EngineLitresField() {
+    val s = Repo.settings
+    var text by remember { mutableStateOf(s.engineLitres.takeIf { it > 0f }?.let { "%.1f".format(it) } ?: "") }
+    Spacer(Modifier.height(10.dp))
+    TextBox("Объём двигателя, л (для расхода по MAP)", text) { t ->
+        text = t.filter { it.isDigit() || it == '.' || it == ',' }.take(4)
+        s.engineLitres = text.replace(',', '.').toFloatOrNull()?.takeIf { it in kg.forester.sg.service.FuelCalc.LITRES_RANGE } ?: 0f
+    }
+    SettingHint("Нужен, когда ЭБУ не отдаёт ни MAF, ни время впрыска. Пусто: по ЭБУ или 2,0 л.")
 }

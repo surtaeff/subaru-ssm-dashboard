@@ -29,6 +29,15 @@ object SensorBoxLink {
     private val busy = HashSet<String>()
     /** Devices asked once since they were plugged in: not asked again. */
     private val asked = HashSet<String>()
+    /** Which loop asks a device first (see [BoxFirst]); under [lock]. */
+    private val first = BoxFirst()
+    /** Devices each loop saw on its last look: a new one means something was plugged in (or came back after a sleep). */
+    private val boxSeen = HashSet<String>()
+    private val ecuSeen = HashSet<String>()
+    /** What this loop never asks (the ECU loop's own adapters: OpenPort, CANable); set by [start]. */
+    @Volatile private var notBox: ((UsbSerialDriver) -> Boolean)? = null
+    /** The ECU loop's device is one this loop would ask too (a bare USB-serial chip). */
+    @Volatile private var ecuBoxMayAsk = false
     /** The ECU loop's device while it has it open. */
     @Volatile var ecuDevice: String? = null
     /** The ECU loop's hold on [ecuDevice]: no longer [UsbOwnership.Lease.permitted] when the wideband needs the device. */
@@ -83,8 +92,16 @@ object SensorBoxLink {
         val drivers = all.filter { !ScreenLink.isScreen(it.device.vendorId) && UsbDeviceRegistry.available(it.device, UsbDeviceRegistry.ECU) }
         flashDevice?.let { f -> if (!SensorBox.enabled.value) return drivers.filter { it.device.deviceName != f } }
         if (!SensorBox.enabled.value) return drivers
+        val now = System.currentTimeMillis()
         synchronized(lock) {
-            return drivers.filter { it.device.deviceName !in busy && it.device.deviceName != flashDevice && !isArduino(it.device.vendorId) }
+            arrivals(ecuSeen, drivers, now)
+            // a Nano's CH340 looks like a KKL cable: never the box's device, and a device this loop has yet to ask
+            // only after a while (the ECU loop starts first and would keep it as a cable that never echoes)
+            return drivers.filter {
+                val n = it.device.deviceName
+                n !in busy && n != flashDevice && !isArduino(it.device.vendorId) &&
+                    (!boxMayAsk(it) || first.ecuMayTake(n, n == lastBoxDevice, n in asked, now))
+            }
         }
     }
 
@@ -94,11 +111,60 @@ object SensorBoxLink {
             val lease = UsbDeviceRegistry.claim(d.device, UsbDeviceRegistry.ECU) ?: return@synchronized false
             ecuLease = lease
             ecuDevice = d.device.deviceName
+            ecuBoxMayAsk = boxMayAsk(d)
             true
         }
     }
 
     fun releaseEcu() { ecuLease?.close(); ecuLease = null; ecuDevice = null }
+
+    /**
+     * The ECU loop's K-line session heard no echo for [rounds] rounds in a row: no cable on a live line, maybe the
+     * box on the same chip. True: let the device go, this loop asks it first (once per wake, see [BoxFirst.ecuYields]).
+     */
+    fun ecuNoEcho(rounds: Int): Boolean {
+        if (!SensorBox.enabled.value) return false
+        val n = ecuDevice ?: return false
+        synchronized(lock) {
+            if (!first.ecuYields(n, rounds, ecuBoxMayAsk)) return false
+            asked -= n
+            first.hold(n, System.currentTimeMillis())
+        }
+        SsmTrace.log("SensorBox: no echo on $n for $rounds rounds, asking it whether it is the box")
+        return true
+    }
+
+    /** The head unit woke (ACC on): every device is asked again, the ECU loop waits for that a while. */
+    fun wake() = synchronized(lock) { asked.clear(); first.holdAll(System.currentTimeMillis()) }
+
+    /** Under [lock]: a device not seen on the last look (plugged in, or back after a sleep) has everything asked again. */
+    private fun arrivals(seen: HashSet<String>, drivers: List<UsbSerialDriver>, now: Long) {
+        val names = drivers.map { it.device.deviceName }.toSet()
+        val fresh = drivers.filter { it.device.deviceName !in seen }
+        seen.retainAll(names)
+        seen.addAll(names)
+        if (fresh.isEmpty()) return
+        asked.clear()
+        first.holdAll(now)
+        val ids = rememberedIds()
+        fresh.filter { BoxFirst.remembered(ids, boxId(it.device)) }.forEach { first.hold(it.device.deviceName, now, BoxFirst.REMEMBERED_MS) }
+    }
+
+    /** This loop would ask [d] whether it is the box. */
+    // with «Доп датчики» off the box loop asks nothing, so the ECU loop must not wait for it
+    private fun boxMayAsk(d: UsbSerialDriver) = SensorBox.enabled.value && notBox?.invoke(d) == false && d.device.deviceName !in ScreenLink.knownScreens
+
+    /** "VID:PID", with "/serial" when Android lets us read one. */
+    private fun boxId(d: android.hardware.usb.UsbDevice) = BoxFirst.id(d.vendorId, d.productId, UsbDeviceRegistry.serial(d))
+
+    private fun rememberedIds(): List<String> =
+        runCatching { Repo.settings.boxUsbIds }.getOrDefault("").split(',').filter { it.isNotEmpty() }
+
+    private fun remember(d: android.hardware.usb.UsbDevice) {
+        val id = boxId(d)
+        val ids = rememberedIds()
+        if (id !in ids) runCatching { Repo.settings.boxUsbIds = (ids + id).takeLast(4).joinToString(",") }
+    }
 
     /** Every few seconds: ask a device nobody holds whether it is the box, read it while it is. */
     suspend fun loop(scope: CoroutineScope, usb: UsbManager, list: () -> List<UsbSerialDriver>, isAdapter: (UsbSerialDriver) -> Boolean,
@@ -116,7 +182,11 @@ object SensorBoxLink {
             if (!SensorBox.enabled.value) { delay(1000); continue }
             val drivers = runCatching { list() }.getOrDefault(emptyList())
             val names = drivers.map { it.device.deviceName }.toSet()
-            synchronized(lock) { asked.retainAll(names) } // unplugged: asked again when it comes back
+            synchronized(lock) {
+                asked.retainAll(names) // unplugged: asked again when it comes back
+                first.gone(names)
+                arrivals(boxSeen, drivers, System.currentTimeMillis())
+            }
             val candidate = synchronized(lock) {
                 drivers.firstOrNull { d ->
                     val n = d.device.deviceName
@@ -144,12 +214,19 @@ object SensorBoxLink {
                 synchronized(lock) { busy -= n; asked -= n }
                 delay(300); continue
             }
+            val before = session
             val wasBox = try { session(usb, candidate, lease) }
                 catch (e: CancellationException) { throw e }
                 catch (e: Exception) { SsmTrace.log("SensorBox: $e"); false }
                 finally { lease.close(); synchronized(lock) { busy -= n } }
-            // the box that went quiet is asked again; anything else only after it is plugged in again
-            synchronized(lock) { busy -= n; if (wasBox) asked -= n }
+            // answered this time, even if a USB error (after a sleep) ended it: the box all the same
+            val answered = wasBox || session != before
+            // the box that went quiet is asked again (also one that answered before, here or by its ids); anything else
+            // only after it is plugged in again or the unit wakes
+            synchronized(lock) {
+                busy -= n
+                if (first.askAgain(n, answered, n == lastBoxDevice, BoxFirst.remembered(rememberedIds(), boxId(candidate.device)))) asked -= n
+            }
             delay(1000)
         }
     }
@@ -195,7 +272,7 @@ object SensorBoxLink {
                             val s = line.toString()
                             line.clear()
                             SensorBox.parseInfo(s, "USB $id")?.let {
-                                if (!known) { SsmTrace.log("SensorBox: $s"); outbox.clear(); session++ }
+                                if (!known) { SsmTrace.log("SensorBox: $s"); outbox.clear(); session++; remember(d.device) }
                                 known = true
                                 lastBoxDevice = d.device.deviceName
                                 lastData = System.currentTimeMillis()
@@ -263,6 +340,78 @@ object SensorBoxLink {
     /** Starts the box loop next to the ECU one. */
     fun start(scope: CoroutineScope, usb: UsbManager, list: () -> List<UsbSerialDriver>, isAdapter: (UsbSerialDriver) -> Boolean,
               askPermission: (android.hardware.usb.UsbDevice) -> Unit) {
+        notBox = isAdapter
+        // before the ECU loop's first look: it waits for this loop to ask the serial devices first
+        synchronized(lock) { first.holdAll(System.currentTimeMillis()) }
         scope.launch(Dispatchers.IO) { loop(scope, usb, list, isAdapter, askPermission) }
+    }
+}
+
+/**
+ * Which loop asks a USB device first, the box loop or the ECU loop (only with the box switched on). A Nano's CH340
+ * is a KKL cable's chip too, and the ECU loop keeps a device it opened as a cable: after a start, a wake or a device
+ * plugged in it leaves the devices the box loop has yet to ask for a while, and never the box's own device.
+ * Pure, under the caller's lock.
+ */
+class BoxFirst(private val holdMs: Long = HOLD_MS) {
+    private var allUntil = Long.MIN_VALUE
+    private val until = HashMap<String, Long>()
+    private val yielded = HashSet<String>()
+    private val misses = HashMap<String, Int>()
+
+    /** A start, a wake or a device plugged in: every device not asked yet waits for the box loop a while. */
+    fun holdAll(now: Long) {
+        allUntil = now + holdMs
+        yielded.clear()
+        misses.clear()
+    }
+
+    /** [device] waits for the box loop for [ms]: one that answered as the box before (by its ids), or one the ECU let go. */
+    fun hold(device: String, now: Long, ms: Long = holdMs) {
+        until[device] = maxOf(until[device] ?: Long.MIN_VALUE, now + ms)
+    }
+
+    /** Forgets devices no longer plugged in. */
+    fun gone(present: Set<String>) {
+        until.keys.retainAll(present)
+        yielded.retainAll(present)
+        misses.keys.retainAll(present)
+    }
+
+    /** The ECU loop may open [device]: never the box itself ([isBox]), else once the box loop asked it or the wait is over. */
+    fun ecuMayTake(device: String, isBox: Boolean, asked: Boolean, now: Long): Boolean =
+        !isBox && (asked || now >= maxOf(allUntil, until[device] ?: Long.MIN_VALUE))
+
+    /** A K-line session without echo for [rounds] rounds lets [device] go for the box loop to ask: once per wake. */
+    fun ecuYields(device: String, rounds: Int, boxMayAsk: Boolean): Boolean =
+        boxMayAsk && rounds >= NO_ECHO_ROUNDS && yielded.add(device)
+
+    /**
+     * After a box session on [device]: asked again, or left alone until it is plugged in again or the unit wakes.
+     * Asked again when it answered, when it is the box's device ([lastBox]), or a few times when its ids are those of
+     * a box seen before ([remembered]: a KKL cable on the same chip has the same ids).
+     */
+    fun askAgain(device: String, answered: Boolean, lastBox: Boolean, remembered: Boolean): Boolean {
+        if (answered) { misses.remove(device); return true }
+        val m = (misses[device] ?: 0) + 1
+        misses[device] = m
+        return lastBox || (remembered && m <= REMEMBERED_TRIES)
+    }
+
+    companion object {
+        /** How long the ECU loop leaves a device for the box loop: a Nano's probe takes about 6 s, a pause 3 s between. */
+        const val HOLD_MS = 20_000L
+        /** A device with a remembered box's ids waits longer: the box loop may be busy asking others first. */
+        const val REMEMBERED_MS = 60_000L
+        const val NO_ECHO_ROUNDS = 3
+        const val REMEMBERED_TRIES = 3
+
+        /** "VID:PID", with "/serial" when there is one. */
+        fun id(vid: Int, pid: Int, serial: String?): String =
+            "%04X:%04X".format(vid, pid) + (serial?.takeIf { it.isNotBlank() }?.let { "/$it" } ?: "")
+
+        /** [id] is one of [ids]; without the serial (no permission yet) by VID:PID alone. */
+        fun remembered(ids: List<String>, id: String): Boolean =
+            id in ids || ('/' !in id && ids.any { it.substringBefore('/') == id })
     }
 }

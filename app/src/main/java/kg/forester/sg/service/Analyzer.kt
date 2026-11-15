@@ -16,6 +16,24 @@ import kotlin.math.abs
 /** Timing pulled further than this many degrees (FBKC, the live knock pull) is knock: the rules and every screen go by it. */
 const val KNOCK_WARN_DEG = -2f
 
+/** Overboost with a free-flowing exhaust on the map the car came with («Доработки машины»): not a fault of a part. */
+private const val WGDC_NOTE = "С даунпайпом или без катализатора на стоковой прошивке так и бывает: турбина дует больше, чем просит карта. " +
+    "Нужна настройка WGDC (скважности вестгейта) под выпуск, до неё не разгоняйтесь в пол"
+
+/**
+ * The lean-under-boost warning: the measured AFR beside what the ECU asks for ([target], when the ROM has it). An
+ * owner seeing 13 at full throttle takes it for a false alarm, so the text says why it is not (a stock EJ turbo map
+ * asks for about 10.5–11.5 on boost) and what to check first: the fuel pressure (about 3 bar / 43 psi with the
+ * regulator's vacuum hose off, rising 1:1 with boost on a stock regulator), the filter and the pump, the MAF scaling
+ * after an intake change, the injectors.
+ */
+fun leanBoostText(afr: Float, target: Float?): String =
+    "Под наддувом смесь бедная: AFR %.1f".format(afr) +
+        (target?.takeIf { it in 9f..16f }?.let { ", а ЭБУ просит %.1f".format(it) } ?: "") +
+        ". На полном газу с наддувом ЭБУ держит около 10,5–11,5, поэтому 13 и выше здесь по-настоящему бедно и опасно для поршней, это не ложная тревога. " +
+        "Не давите газ в пол, пока не проверите давление топлива (около 3 бар, 43 psi, при снятом вакуумном шланге регулятора, под наддувом растёт вровень с наддувом), " +
+        "топливный фильтр и насос, калибровку ДМРВ после замены впуска, форсунки. Запишите лог разгона для проверки"
+
 /** One sample for the rules: the engine, the transmission and what the guard worked out from them. */
 data class RuleInput(
     val e: EcuSnapshot,
@@ -34,6 +52,8 @@ data class RuleInput(
     val oilC: Float? = null,
     val turbo: Boolean = false,
     val targetBoostKpa: Float? = null,
+    /** The AFR the ECU asks for (Final Fueling Base or the primary open-loop enrichment), when the ROM has it; null = not read. */
+    val targetAfr: Float? = null,
     /** A sports ECU (Link on the CAN): no wastegate duty, IAM or factory idle to judge by. */
     val sportEcu: Boolean = false,
     /** SensorBox inputs with a role; all null when the box isn't there. */
@@ -57,6 +77,8 @@ data class RuleInput(
     val tripPer100: Float? = null,
     /** Another make over OBD-II known to have a turbo: this car's VIN ("" if none given) for [kg.forester.sg.data.BoostNorm]; else null. */
     val boostNormCar: String? = null,
+    /** «Доработки машины»: what the hints keep in mind (a removed catalyst, a downpipe on a stock map, another intake). */
+    val mods: kg.forester.sg.data.CarMods = kg.forester.sg.data.CarMods(),
 )
 
 /** SensorBox readings by role: fuel rail and oil pressure in bar (over the atmosphere), air before and after the intercooler, the pump's volts. */
@@ -300,11 +322,23 @@ class Analyzer(
     /** The current sample is from a sports ECU (see [RuleInput.sportEcu]); the car has an automatic. */
     private var sport = false
     private var automatic = false
+    private var mods = kg.forester.sg.data.CarMods()
+
+    /** Set from the screen (another thread) when the mods change: the usual boost, spool point and boost norm start over. */
+    @Volatile private var forgetBoost = false
+    fun forgetBoostNorms() { forgetBoost = true }
 
     fun process(x: RuleInput) {
         sport = x.sportEcu
         automatic = x.automatic
+        mods = x.mods
         if (clearMap) { clearMap = false; allKnock = KnockMap(x.now); store.knockMap = ""; mapDirty = false; diagDirty = true }
+        if (forgetBoost) {
+            // a new tune, turbo or exhaust makes another boost and spool point: the old ones would cry underboost or spoolLate
+            forgetBoost = false
+            store.boostBase = 0f; store.spool = ""; store.boostNorm = ""
+            spool = SpoolTrend(); boostNorm = kg.forester.sg.data.BoostNorm(); pullLows.clear(); diagDirty = true
+        }
         val e = x.e
         val now = x.now
         val rpm = e.rpm ?: 0
@@ -578,8 +612,7 @@ class Analyzer(
         // lean under boost: the stock sensor is poor there and reads rich at worst, so lean is worth a warning
         val lean = x.turbo && (gauge ?: 0f) > 50f && (thr ?: 0f) >= 90f && (x.e.lambda ?: 0f) > 0.85f
         if (leanBoostHold.ms(lean, now) >= 1000L) {
-            say("leanBoost", "Под наддувом смесь бедная (AFR %.1f). Это опасно для поршней. Не давите газ в пол до проверки топливной системы".format(x.e.afr ?: 0f),
-                Alerts.Level.DANGER, 10 * 60_000L)
+            say("leanBoost", leanBoostText(x.e.afr ?: 0f, x.targetAfr), Alerts.Level.DANGER, 10 * 60_000L)
         }
     }
 
@@ -676,7 +709,8 @@ class Analyzer(
                         "шланги и хомуты. Не нагружайте мотор до проверки", Alerts.Level.DANGER, 30 * 60_000L)
                     mean >= 15 -> say("lean", "ЭБУ постоянно добавляет топливо (%.0f%%): в мотор попадает лишний воздух или не хватает бензина. ".format(mean) +
                         "Проверьте гофру между датчиком расхода воздуха и дросселем, шланги вентиляции картера, почистите датчик расхода воздуха", Alerts.Level.WARN, 30 * 60_000L)
-                    mean <= -25 -> say("rich", "Смесь сильно богатая: ЭБУ убирает %.0f%% топлива. Растёт расход и страдает катализатор, нужна проверка".format(-mean),
+                    mean <= -25 -> say("rich", (if (mods.anyCatRemoved) "Смесь сильно богатая: ЭБУ убирает %.0f%% топлива. Растёт расход, нужна проверка"
+                        else "Смесь сильно богатая: ЭБУ убирает %.0f%% топлива. Растёт расход и страдает катализатор, нужна проверка").format(-mean),
                         Alerts.Level.DANGER, 30 * 60_000L)
                     mean <= -15 -> say("rich", "ЭБУ постоянно убирает топливо (%.0f%%), смесь слишком богатая. ".format(-mean) +
                         "Частые причины: клапан продувки бензобака, подтекающая форсунка, высокое давление топлива", Alerts.Level.WARN, 30 * 60_000L)
@@ -776,7 +810,8 @@ class Analyzer(
             val mean = cruiseLearnSum / cruiseLearnS
             if (mean in -14.5..-7.0 && per100 >= 15f) {
                 say("mafHigh", kg.forester.sg.data.DistanceUnits.prose("ЭБУ постоянно убирает около %.0f%% топлива, а расход за поездку %.1f л/100. Так бывает, когда датчик расхода воздуха завышает: ".format(-mean, per100)) +
-                    "не тот датчик или трубка, грязный датчик, неверная калибровка в прошивке. Почистите датчик и сравните расход", Alerts.Level.WARN, 24 * 3600_000L)
+                    (if (mods.intake) "Впуск с другим корпусом датчика отмечен в доработках: перекалибруйте ДМРВ в прошивке, без этого и расход по MAF неточен"
+                    else "не тот датчик или трубка, грязный датчик, неверная калибровка в прошивке. Почистите датчик и сравните расход"), Alerts.Level.WARN, 24 * 3600_000L)
             }
         }
     }
@@ -792,10 +827,12 @@ class Analyzer(
             val k = maf / usual
             if (idleMafHold.ms(hotIdle && (k >= 1.7f || k <= 0.65f), now) >= 60_000L) {
                 if (k >= 1.7f) say("idleMaf", "На холостых мотор берёт много воздуха для этих оборотов: %.1f г/с на %d об/мин, для %.1f л обычно около %.1f. ".format(maf, rpm, litres, usual) +
-                    "Если смесь при этом в норме, датчик расхода воздуха завышает: проверьте его, трубку и калибровку в прошивке. Кондиционер и обогревы тоже добавляют",
+                    (if (mods.intake) "С другим корпусом датчика на впуске (отмечен в доработках) так и бывает: перекалибруйте ДМРВ в прошивке. Кондиционер и обогревы тоже добавляют"
+                    else "Если смесь при этом в норме, датчик расхода воздуха завышает: проверьте его, трубку и калибровку в прошивке. Кондиционер и обогревы тоже добавляют"),
                     Alerts.Level.INFO, 6 * 3600_000L)
                 else say("idleMaf", "На холостых датчик видит мало воздуха: %.1f г/с на %d об/мин, для %.1f л обычно около %.1f. ".format(maf, rpm, litres, usual) +
-                    "Так бывает при подсосе воздуха после датчика расхода или когда сам датчик грязный", Alerts.Level.INFO, 6 * 3600_000L)
+                    (if (mods.intake) "С другим корпусом датчика на впуске (отмечен в доработках) перекалибруйте ДМРВ в прошивке. Иначе ищите подсос воздуха после датчика или грязный датчик"
+                    else "Так бывает при подсосе воздуха после датчика расхода или когда сам датчик грязный"), Alerts.Level.INFO, 6 * 3600_000L)
             }
         }
         val atm = e.atmKpa
@@ -840,7 +877,7 @@ class Analyzer(
         if (n.revision != before) store.boostNorm = n.format()
         if (over != null) {
             say("overboost", "Наддув выше обычного для этой машины: %.0f кПа абсолютного давления при обычных %.0f. "
-                .format(over.mapKpa, over.normKpa) + "Если машину не перенастраивали, проверьте управление наддувом: это нагружает мотор",
+                .format(over.mapKpa, over.normKpa) + (if (mods.stockTuneFreeFlow) WGDC_NOTE else "Если машину не перенастраивали, проверьте управление наддувом: это нагружает мотор"),
                 Alerts.Level.WARN, 10 * 60_000L)
         }
     }
@@ -865,7 +902,7 @@ class Analyzer(
             else if (wgdc != null) "Наддув выше нормы: %.2f бар при цели %.2f. Это нагружает поршни. Проверьте шланги к актуатору вестгейта и соленоиду".format(gauge!! / 100f, target!! / 100f)
             // no duty read: nothing here says what the wastegate is doing
             else "Наддув выше нормы: %.2f бар при цели %.2f. Это нагружает поршни. Проверьте управление наддувом".format(gauge!! / 100f, target!! / 100f)
-            say("overboost", text, Alerts.Level.WARN, 10 * 60_000L)
+            say("overboost", if (mods.stockTuneFreeFlow) "$text. $WGDC_NOTE" else text, Alerts.Level.WARN, 10 * 60_000L)
         }
         // fuel cut: full throttle, the injectors suddenly off, right after high boost
         val ref = store.boostBase.takeIf { it > 0f } ?: 70f

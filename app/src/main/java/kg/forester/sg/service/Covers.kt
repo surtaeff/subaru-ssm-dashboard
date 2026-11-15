@@ -27,8 +27,8 @@ object Covers {
     private val failed = HashMap<String, Long>()
 
     /** The cover of [artist] – [title], from the cache or looked up once. Blocking: call off the main thread. */
-    fun find(ctx: Context, artist: String, title: String): Bitmap? {
-        val t = title.trim()
+    fun find(ctx: Context, artistIn: String, titleIn: String): Bitmap? {
+        val (artist, t) = split(artistIn, titleIn)
         if (t.isEmpty()) return null
         val key = "${artist.trim().lowercase()}|${t.lowercase()}"
         val dir = File(ctx.filesDir, "covers")
@@ -58,8 +58,53 @@ object Covers {
         return runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
     }
 
-    /** The 600×600 picture of the best match, null when iTunes has no such track; throws when it can't be asked. */
+    /**
+     * Some phones send «Artist - Title» as the title over Bluetooth and no artist (or «Unknown»): the two are split
+     * so the search has an artist to check the match against.
+     */
+    internal fun split(artist: String, title: String): Pair<String, String> {
+        val a = artist.trim().takeUnless { it.lowercase() in setOf("unknown", "unknown artist", "неизвестно", "неизвестный исполнитель", "<unknown>") } ?: ""
+        val t = title.trim()
+        if (a.isEmpty()) {
+            val m = Regex("^(.+?)\\s+[-–—]\\s+(.+)$").find(t)
+            if (m != null) return m.groupValues[1].trim() to m.groupValues[2].trim()
+        }
+        return a to t
+    }
+
+    /**
+     * The best match's picture: iTunes first, then Deezer (it knows far more Russian music, and its artist names are
+     * in the original script, where iTunes often has only a Latin spelling); null when neither has the track.
+     */
     private fun lookup(artist: String, title: String): String? {
+        val first = runCatching { itunes(artist, title) }
+        first.getOrNull()?.let { return it }
+        val second = runCatching { deezer(artist, title) }
+        second.getOrNull()?.let { return it }
+        // both unreachable: a failure (asked again later), not a miss kept for a month
+        if (first.isFailure && second.isFailure) throw first.exceptionOrNull()!!
+        return null
+    }
+
+    /** Deezer's 1000×1000 cover of the best match (public search, no key). */
+    private fun deezer(artist: String, title: String): String? {
+        val bare = term("", title)
+        val q = if (artist.isNotEmpty()) "artist:\"$artist\" track:\"$bare\"" else bare
+        val text = open("https://api.deezer.com/search?q=${URLEncoder.encode(q, "UTF-8")}&limit=5").inputStream.bufferedReader().use { it.readText() }
+        val results = JSONObject(text).optJSONArray("data") ?: return null
+        val want = norm(artist)
+        for (i in 0 until results.length()) {
+            val r = results.getJSONObject(i)
+            val art = r.optJSONObject("album")?.optString("cover_xl")?.takeIf { it.startsWith("http") } ?: continue
+            val by = norm(r.optJSONObject("artist")?.optString("name") ?: "")
+            if (want.isNotEmpty() && !(by.contains(want) || want.contains(by))) continue
+            return art
+        }
+        return null
+    }
+
+    /** The 600×600 picture of the best match, null when iTunes has no such track; throws when it can't be asked. */
+    private fun itunes(artist: String, title: String): String? {
         val q = term(artist, title)
         Log.d(TAG, "search: $q")
         val text = open("https://itunes.apple.com/search?term=${URLEncoder.encode(q, "UTF-8")}&media=music&entity=song&limit=5").inputStream.bufferedReader().use { it.readText() }

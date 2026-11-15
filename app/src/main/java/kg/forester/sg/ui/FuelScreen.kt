@@ -348,10 +348,15 @@ private fun InstCard(ts: kg.forester.sg.data.TripState, modifier: Modifier) {
         // an ECU without a usable MAF: say how the number comes about (or why there is none)
         val live by Repo.live.collectAsState()
         if ((live.rpm ?: 0) > 300 && live.mafGs == null && live.fuelRateLh == null) {
-            val inj = kg.forester.sg.service.FuelCalc.source == "inj"
+            val src = kg.forester.sg.service.FuelCalc.source
+            val inj = src == "inj"
             // a sports ECU on the CAN usually runs on MAP with no MAF at all: that is how it works, not a fault
             val (note, color) = if (inj && kg.forester.sg.data.CanEcu.active)
                 "Расход по времени впрыска (у Link нет MAF). Точнее станет после 1–2 заправок до полного" to C.Sub
+            // no MAF, no injection time: by the manifold pressure, the engine size the driver's, the ECU's or a guess
+            else if (src == "map") (if (kg.forester.sg.service.FuelCalc.litresGuessed)
+                "ЭБУ не отдаёт MAF: расход по MAP для мотора 2,0 л. Впишите свой объём в «Машина и адаптер → Топливо», уточнится по заправкам"
+                else "ЭБУ не отдаёт MAF: расход по MAP, уточнится по заправкам") to C.Sub
             else (if (inj) "ЭБУ не отдаёт MAF: расход по форсункам, уточнится по заправкам"
                 else "ЭБУ не отдаёт ни MAF, ни время впрыска: расход не считается") to C.Orange
             T(note, car.secondary, color, maxLines = 3)
