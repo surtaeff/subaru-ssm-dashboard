@@ -214,25 +214,34 @@ private fun CanChannelForm(start: CanChannel, onDone: () -> Unit) {
     var bitMode by remember { mutableStateOf(start.bits) }
     var sbText by remember { mutableStateOf(if (start.bits) start.startBit.toString() else "") }
     var blText by remember { mutableStateOf(if (start.bits) start.bitLen.toString() else "") }
+    var vt by remember { mutableStateOf(start.valueType) }
+    // CAN FD: a byte past 7 typed in
+    var byteText by remember { mutableStateOf(if (start.byte > 7) start.byte.toString() else "") }
     val sb = sbText.trim().toIntOrNull()
     val bl = blText.trim().toIntOrNull()
     val canId = idText.trim().removePrefix("0x").removePrefix("0X").toIntOrNull(16)
     val muxN = mux.trim().takeIf { it.isNotEmpty() }?.toIntOrNull()
+    val rows by CanMonitor.rows.collectAsState()
+    // the frame as it comes (8 bytes classic, up to 64 CAN FD); not seen yet: anything up to 64
+    val frameLen = rows.firstOrNull { it.id == canId && it.ext == ext }?.data?.size
+    val maxBytes = frameLen ?: 64
     val error = when {
         name.isBlank() -> "Введите название"
         canId == null || canId > (if (ext) 0x1FFFFFFF else 0x7FF) -> "ID в шестнадцатеричном виде: 3E8 для 1000 (у Link ID в PCLink десятичный)"
-        mux.isNotBlank() && (muxN == null || muxN !in 0..255) -> "Номер кадра: число 0–255 или пусто"
+        mux.isNotBlank() && (muxN == null || muxN < 0 || (start.muxStart < 0 && muxN > 255)) -> "Номер кадра: число 0–255 или пусто"
         bitMode && (sb == null || sb !in 0..511) -> "Стартовый бит: число 0–511"
         bitMode && (bl == null || bl !in 1..64) -> "Длина: 1–64 бит"
-        bitMode && kg.forester.sg.data.CanBits.positions(sb!!, bl!!, be, 64) == null -> "Сигнал выходит за пределы кадра"
-        !bitMode && byte + len > 8 -> "Значение выходит за 8 байт кадра"
+        bitMode && kg.forester.sg.data.CanBits.positions(sb!!, bl!!, be, maxBytes) == null -> "Сигнал выходит за $maxBytes байт кадра"
+        !bitMode && byte !in 0..63 -> "Первый байт: число 0–63"
+        !bitMode && byte + len > maxBytes -> "Значение выходит за $maxBytes байт кадра"
+        vt == CanChannel.FLOAT32 && (if (bitMode) bl != 32 else len != 4) -> "float занимает 4 байта (32 бит)"
+        vt == CanChannel.FLOAT64 && !(bitMode && bl == 64) -> "double занимает 64 бит: разметка «биты», длина 64"
         RrExpr.parse(formula.ifBlank { "x" }) == null -> "Формула: x, числа, + − * / и скобки"
         else -> null
     }
     val draft = if (canId != null) CanChannel(start.id, name, canId, ext, muxN ?: -1, byte, len, be, signed, formula.ifBlank { "x" }, units, dec, role,
         startBit = if (bitMode && sb != null && bl != null) sb else -1, bitLen = if (bitMode && sb != null && bl != null) bl else 0,
-        muxStart = start.muxStart, muxLen = start.muxLen, muxBe = start.muxBe) else null
-    val rows by CanMonitor.rows.collectAsState()
+        muxStart = start.muxStart, muxLen = start.muxLen, muxBe = start.muxBe, valueType = vt, muxChain = start.muxChain) else null
     val row = draft?.let { d -> rows.firstOrNull { it.id == d.canId && it.ext == d.ext && (d.mux < 0 || it.mux == d.mux) } }
     val preview = row?.let { r -> draft.raw(r.data)?.let { raw -> raw to draft.decode(r.data) } }
     Column {
@@ -263,11 +272,31 @@ private fun CanChannelForm(start: CanChannel, onDone: () -> Unit) {
             T("Как в DBC: у Intel стартовый бит младший, у Motorola старший; биты считаются от младшего бита байта 0 (байт 1 = биты 8–15)",
                 11.sp, C.Sub, modifier = Modifier.weight(1f))
         } else {
-            Labeled("Первый байт") { (0..7).forEach { n -> Chip("$n", byte == n, { byte = n }) } }
+            Labeled("Первый байт") {
+                (0..7).forEach { n -> Chip("$n", byte == n, { byte = n; byteText = "" }) }
+                // a CAN FD frame has up to 64 bytes
+                if (maxBytes > 8 || byte > 7) FormField("8–63", byteText, Modifier.width(100.dp), KeyboardType.Number) { t ->
+                    byteText = t.filter { it.isDigit() }.take(2)
+                    byteText.toIntOrNull()?.let { byte = it }
+                }
+            }
             Labeled("Длина") { listOf(1, 2, 4).forEach { n -> Chip("$n байт", len == n, { len = n }) } }
         }
         Labeled("Порядок байт") { Chip("младший первым (Intel)", !be, { be = false }); Chip("старший первым (Motorola)", be, { be = true }) }
         Labeled("Знак") { Chip("без знака", !signed, { signed = false }); Chip("со знаком", signed, { signed = true }) }
+        Labeled("Тип значения") {
+            Chip("целое", vt == CanChannel.INT, { vt = CanChannel.INT })
+            Chip("float (32 бит)", vt == CanChannel.FLOAT32, {
+                vt = CanChannel.FLOAT32
+                if (bitMode) blText = "32" else len = 4
+            })
+            Chip("double (64 бит)", vt == CanChannel.FLOAT64, {
+                vt = CanChannel.FLOAT64
+                // 8 bytes are bits here: the byte model has 1, 2 or 4
+                if (!bitMode) { sbText = (if (be) byte * 8 + 7 else byte * 8).toString(); bitMode = true }
+                blText = "64"
+            })
+        }
         Labeled("Знаков после запятой") { (0..3).forEach { n -> Chip("$n", dec == n, { dec = n }) } }
         Labeled("Роль") { CanChannel.ROLES.forEach { (k, l) -> Chip(l, role == k, { role = k }) } }
         // the same roles as a SensorBox input: a CAN sensor board's value works as if wired to the box

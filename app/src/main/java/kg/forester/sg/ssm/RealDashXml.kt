@@ -1,6 +1,7 @@
 package kg.forester.sg.ssm
 
 import kg.forester.sg.data.CanBits
+import kg.forester.sg.data.CanChannel
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserException
 import org.xmlpull.v1.XmlPullParserFactory
@@ -123,7 +124,20 @@ object RealDashXml {
         fun bad(why: String) = CanSig(name, offset * 8, 8, false, signed, units = unitsRaw, comment = comment, problem = why)
 
         if (writes) return bad("этот кадр отправляет сам дашборд (writeInterval)")
-        if (bool(a["float"]) || bool(a["double"])) return bad("число с плавающей точкой (float)")
+        // IEEE 754: 4 bytes float, 8 bytes double, as RealDash reads them (whole bytes, the frame's byte order)
+        val vt = when { bool(a["double"]) -> CanChannel.FLOAT64; bool(a["float"]) -> CanChannel.FLOAT32; else -> CanChannel.INT }
+        if (vt != CanChannel.INT) {
+            val need = if (vt == CanChannel.FLOAT64) 8 else 4
+            if (startbit != null || bitcount != null || a["length"]?.toIntOrNull() != need) return bad("float/double: длина должна быть $need байт")
+            val abc = a["conversionabc"]
+            val conv = conversion(abc ?: a["conversion"], abc != null)
+            if (conv == null || conv.shift != 0 || conv.width != null) return bad("формула RealDash не поддерживается: " + (abc ?: a["conversion"]).orEmpty())
+            val (u, formula) = CanImport.normalize(unitsRaw, conv.formula)
+            return CanSig(
+                name, if (big) CanBits.valueBit(offset, need, true, need * 8 - 1) else offset * 8, need * 8, big, false, formula, u,
+                comment = comment, valueType = vt, byte = if (need == 4) offset else -1, len = if (need == 4) 4 else 0,
+            )
+        }
         if (length !in 1..8 && bitcount == null) return bad("длина $length байт")
         val abc = a["conversionabc"]
         val conv = conversion(abc ?: a["conversion"], abc != null) ?: return bad("формула RealDash не поддерживается: " + (abc ?: a["conversion"]).orEmpty())

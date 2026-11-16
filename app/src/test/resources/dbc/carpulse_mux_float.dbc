@@ -1,0 +1,40 @@
+VERSION ""
+
+CM_ "Written for CarPulse's tests: floats and extended multiplexing.";
+
+BS_:
+
+BU_: TEST
+
+BO_ 1280 MUXED: 8 TEST
+ SG_ Mode M : 0|8@1+ (1,0) [0|255] "" TEST
+ SG_ Sub m3M : 8|4@1+ (1,0) [0|15] "" TEST
+ SG_ Temp m1 : 16|8@1+ (1,-40) [-40|215] "C" TEST
+ SG_ Press m2 : 16|16@1+ (0.1,0) [0|6553.5] "kPa" TEST
+ SG_ Deep m5 : 24|8@1+ (1,0) [0|255] "" TEST
+ SG_ Ranged m4 : 32|8@1+ (1,0) [0|255] "" TEST
+ SG_ Orphan m7 : 40|8@1+ (1,0) [0|255] "" TEST
+
+BO_ 1281 FLOATS: 8 TEST
+ SG_ IntelFloat : 0|32@1- (1,0) [0|0] "" TEST
+ SG_ MotoFloat : 39|32@0- (1,0) [0|0] "C" TEST
+
+BO_ 1282 DOUBLE_LE: 8 TEST
+ SG_ IntelDouble : 0|64@1- (1,0) [0|0] "" TEST
+
+BO_ 1283 DOUBLE_BE: 8 TEST
+ SG_ MotoDouble : 7|64@0- (1,0) [0|0] "" TEST
+ SG_ BadFloat : 7|16@0- (1,0) [0|0] "" TEST
+
+SG_MUL_VAL_ 1280 Sub Mode 3-3;
+SG_MUL_VAL_ 1280 Deep Sub 5-7;
+SG_MUL_VAL_ 1280 Ranged Mode 4-6, 10-10;
+SG_MUL_VAL_ 1280 Temp Mode 1-1;
+SG_MUL_VAL_ 1280 Press Mode 2-2;
+SG_MUL_VAL_ 1280 Orphan Nothing 1-1;
+
+SIG_VALTYPE_ 1281 IntelFloat : 1;
+SIG_VALTYPE_ 1281 MotoFloat : 1;
+SIG_VALTYPE_ 1282 IntelDouble : 2;
+SIG_VALTYPE_ 1283 MotoDouble : 2;
+SIG_VALTYPE_ 1283 BadFloat : 1;

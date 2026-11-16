@@ -2,6 +2,7 @@ package kg.forester.sg.ssm
 
 import kg.forester.sg.data.CanBits
 import kg.forester.sg.data.CanChannel
+import kg.forester.sg.data.CanMux
 import java.math.BigDecimal
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -26,8 +27,14 @@ data class CanSig(
     val comment: String = "",
     /** DBC mN: the signal is in the frame only when the message's multiplexor is N. */
     val muxValue: Int? = null,
-    /** DBC M: this one is the multiplexor. */
+    /** DBC M (or mNM, a multiplexor that is itself multiplexed): other signals depend on this one. */
     val isMuxer: Boolean = false,
+    /** SG_MUL_VAL_: the multiplexor this one depends on, by name (null = the message's own M). */
+    val muxOf: String? = null,
+    /** SG_MUL_VAL_: the multiplexor's values it is in the frame for; empty = [muxValue] alone. */
+    val muxRanges: List<LongRange> = emptyList(),
+    /** [CanChannel.INT], [CanChannel.FLOAT32] or [CanChannel.FLOAT64] (DBC SIG_VALTYPE_, RealDash float/double). */
+    val valueType: Int = CanChannel.INT,
     /** VAL_ / RealDash enum: what a raw number means. */
     val values: Map<Long, String> = emptyMap(),
     /** A RealDash value of whole bytes our byte model has (offset, 1/2/4 bytes): the channel keeps that form. */
@@ -46,7 +53,8 @@ data class CanMsg(
     val cycleMs: Int? = null,
     val comment: String = "",
 ) {
-    val muxer: CanSig? get() = signals.firstOrNull { it.isMuxer }
+    /** The message's own multiplexor (M), the one an mN without SG_MUL_VAL_ depends on. */
+    val muxer: CanSig? get() = signals.firstOrNull { it.isMuxer && it.muxValue == null && it.muxRanges.isEmpty() }
 
     fun idText() = (if (ext) "%08X" else "%03X").format(id)
 }
@@ -144,8 +152,10 @@ object CanImport {
         formula: String? = null, units: String? = null, decimals: Int? = null,
     ): CanChannel {
         val (u, f) = if (formula != null || units != null) (units ?: s.units) to (formula ?: s.formula) else normalize(s.units, s.formula)
-        val muxer = m.muxer.takeIf { s.muxValue != null }
-        val byteMux = muxer != null && muxer.bitLen == 8 && muxer.startBit == if (muxer.motorola) 7 else 0
+        val chain = muxChain(m, s).orEmpty()
+        // one multiplexor with one value: the simple fields (byte 0 as the Link's stream, or its bits)
+        val single = chain.singleOrNull()?.takeIf { c -> c.ranges.size == 1 && c.ranges[0].first == c.ranges[0].last && c.len <= 31 }
+        val byteMux = single != null && single.len == 8 && single.start == if (single.motorola) 7 else 0
         var byte: Int
         var len: Int
         var be = s.motorola
@@ -164,13 +174,34 @@ object CanImport {
         // 8 bits have no byte order: the form shows them as one byte
         if (!bits && len == 1) be = false
         val r = role ?: guessRole(name, u, s.comment)
+        val dec = decimals ?: decimals(f).let { if (it == 0 && s.valueType != CanChannel.INT) 2 else it }
         return CanChannel(
-            id, name.trim(), m.id, m.ext, s.muxValue ?: -1, byte, len, be, s.signed, f, u, decimals ?: decimals(f), r,
+            id, name.trim(), m.id, m.ext, single?.ranges?.get(0)?.first?.toInt() ?: -1, byte, len, be,
+            s.signed && s.valueType == CanChannel.INT, f, u, dec, r,
             startBit = if (bits) s.startBit else -1, bitLen = if (bits) s.bitLen else 0,
-            muxStart = if (muxer != null && !byteMux) muxer.startBit else -1,
-            muxLen = if (muxer != null && !byteMux) muxer.bitLen else 8,
-            muxBe = muxer != null && !byteMux && muxer.motorola,
+            muxStart = if (single != null && !byteMux) single.start else -1,
+            muxLen = if (single != null && !byteMux) single.len else 8,
+            muxBe = single != null && !byteMux && single.motorola,
+            valueType = s.valueType,
+            muxChain = if (single == null) chain else emptyList(),
         )
+    }
+
+    /**
+     * What must hold for [s] to be in a frame of [m], outermost multiplexor first: an mN depends on the message's M,
+     * an SG_MUL_VAL_ names its multiplexor and ranges, and a multiplexor that is itself multiplexed adds its own
+     * condition. Empty for a plain signal, null when a multiplexor is missing or they go round in a loop.
+     */
+    fun muxChain(m: CanMsg, s: CanSig): List<CanMux>? {
+        val out = ArrayList<CanMux>()
+        var cur = s
+        repeat(9) {
+            val ranges = cur.muxRanges.ifEmpty { cur.muxValue?.let { listOf(it.toLong()..it.toLong()) } ?: return out.reversed() }
+            val parent = (cur.muxOf ?: m.muxer?.name)?.let { n -> m.signals.firstOrNull { it.name == n && it !== cur } } ?: return null
+            out += CanMux(parent.startBit, parent.bitLen, parent.motorola, ranges)
+            cur = parent
+        }
+        return null
     }
 
     /** A file's text as a description: RealDash XML by its root, else DBC. */

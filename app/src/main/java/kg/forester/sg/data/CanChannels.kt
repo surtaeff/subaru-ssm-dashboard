@@ -19,7 +19,7 @@ data class CanChannel(
     val ext: Boolean,
     /** Compound stream: byte 0 must be this frame number; -1 = any frame of the id. */
     val mux: Int,
-    /** First byte, 0–7. */
+    /** First byte, 0–7 (0–63 in a CAN FD frame). */
     val byte: Int,
     /** 1, 2 or 4 bytes. */
     val len: Int,
@@ -43,6 +43,10 @@ data class CanChannel(
     val muxStart: Int = -1,
     val muxLen: Int = 8,
     val muxBe: Boolean = false,
+    /** What the bits hold: [INT], [FLOAT32] (IEEE 754, 32 bits) or [FLOAT64] (64 bits), as a DBC's SIG_VALTYPE_ 0/1/2. */
+    val valueType: Int = INT,
+    /** Extended multiplexing: every condition must hold, outermost first (besides [mux], which stays the simple case). */
+    val muxChain: List<CanMux> = emptyList(),
 ) {
     private val expr by lazy { RrExpr.parse(formula.ifBlank { "x" }) }
 
@@ -54,20 +58,31 @@ data class CanChannel(
             val m = if (muxStart >= 0) CanBits.get(d, muxStart, muxLen, muxBe, false) else d.firstOrNull()?.let { it.toLong() and 0xFF }
             if (m != mux.toLong()) return null
         }
-        if (bits) return CanBits.get(d, startBit, bitLen, bigEndian, signed)
+        if (muxChain.any { !it.ok(d) }) return null
+        // a float's bits as they are: decode makes the number of them
+        val sign = signed && valueType == INT
+        if (bits) return CanBits.get(d, startBit, bitLen, bigEndian, sign)
         if (byte < 0 || byte + len > d.size) return null
         var u = 0L
         for (i in 0 until len) {
             val b = d[byte + if (bigEndian) i else len - 1 - i].toLong() and 0xFF
             u = (u shl 8) or b
         }
-        if (signed) { val bits = len * 8; if (u and (1L shl (bits - 1)) != 0L) u -= 1L shl bits }
+        if (sign) { val bits = len * 8; if (u and (1L shl (bits - 1)) != 0L) u -= 1L shl bits }
         return u
     }
 
     fun decode(d: ByteArray): Double? = raw(d)?.let { r ->
-        // all 64 bits unsigned: past Long's range
-        val x = if (bits && bitLen == 64 && !signed && r < 0) r.toULong().toDouble() else r.toDouble()
+        val width = if (bits) bitLen else len * 8
+        val x = when {
+            valueType == FLOAT32 -> if (width == 32) java.lang.Float.intBitsToFloat(r.toInt()).toDouble() else return null
+            valueType == FLOAT64 -> if (width == 64) java.lang.Double.longBitsToDouble(r) else return null
+            // all 64 bits unsigned: past Long's range
+            bits && bitLen == 64 && !signed && r < 0 -> r.toULong().toDouble()
+            else -> r.toDouble()
+        }
+        // a sensor's "no value" (NaN) or a broken one gives nothing, not a number on the screen
+        if (x.isNaN() || x.isInfinite()) return null
         // RealDash's names in a formula: V the value, B0… its bytes from the first one
         expr?.eval(x) { ref, _ ->
             when {
@@ -87,7 +102,9 @@ data class CanChannel(
     )
 
     fun idText() = (if (ext) "%08X" else "%03X").format(canId) + (if (mux >= 0) " #$mux" else "") +
-        if (bits) ", биты $startBit|$bitLen" + (if (bigEndian) "@0" else "@1") else ", байт $byte" + (if (len > 1) "–${byte + len - 1}" else "")
+        (if (bits) ", биты $startBit|$bitLen" + (if (bigEndian) "@0" else "@1") else ", байт $byte" + (if (len > 1) "–${byte + len - 1}" else "")) +
+        (if (muxChain.isNotEmpty()) " #" + muxChain.joinToString("/") { it.text() } else "") +
+        when (valueType) { FLOAT32 -> " float"; FLOAT64 -> " double"; else -> "" }
 
     fun toJson(): JSONObject = JSONObject().put("id", id).put("name", name).put("can", canId).put("ext", ext).put("mux", mux)
         .put("byte", byte).put("len", len).put("be", bigEndian).put("signed", signed).put("formula", formula)
@@ -96,21 +113,29 @@ data class CanChannel(
             // only when used: a list without them reads the same in an older version
             if (bits) put("sb", startBit).put("bits", bitLen)
             if (muxStart >= 0) put("msb", muxStart).put("mbits", muxLen).put("mbe", muxBe)
+            if (valueType != INT) put("vt", valueType)
+            if (muxChain.isNotEmpty()) put("mx", JSONArray().also { a -> muxChain.forEach { a.put(it.toJson()) } })
         }
 
     companion object {
+        const val INT = 0
+        const val FLOAT32 = 1
+        const val FLOAT64 = 2
+
         /** The SensorBox roles (but the tank wire's volts) and the Link's fault code. */
         val ROLES = listOf("" to "нет") + BoxRoles.all.filter { it.first.isNotEmpty() && it.first != "fuelLevel" } +
             ("fault" to "Код ошибки Link")
 
         fun fromJson(o: JSONObject) = CanChannel(
             o.getString("id"), o.optString("name"), o.getInt("can"), o.optBoolean("ext"), o.optInt("mux", -1),
-            o.optInt("byte").coerceIn(0, 7), o.optInt("len", 2).let { if (it in setOf(1, 2, 4)) it else 2 }, o.optBoolean("be"),
+            o.optInt("byte").coerceIn(0, 63), o.optInt("len", 2).let { if (it in setOf(1, 2, 4)) it else 2 }, o.optBoolean("be"),
             o.optBoolean("signed"), o.optString("formula", "x"), o.optString("units"), o.optInt("dec", 1), o.optString("role"),
             startBit = o.optInt("sb", -1).takeIf { it in 0..511 && o.optInt("bits") in 1..64 } ?: -1,
             bitLen = o.optInt("bits").takeIf { it in 1..64 && o.optInt("sb", -1) in 0..511 } ?: 0,
             muxStart = o.optInt("msb", -1).takeIf { it in 0..511 } ?: -1, muxLen = o.optInt("mbits", 8).coerceIn(1, 32),
             muxBe = o.optBoolean("mbe"),
+            valueType = o.optInt("vt", INT).takeIf { it in INT..FLOAT64 } ?: INT,
+            muxChain = o.optJSONArray("mx")?.let { a -> List(a.length()) { CanMux.fromJson(a.getJSONObject(it)) }.filterNotNull() }.orEmpty(),
         )
     }
 }

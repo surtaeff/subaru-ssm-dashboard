@@ -11,11 +11,12 @@ object Dbc {
 
     // \x22 is the quote: a quote in these patterns would end the string for the i18n scan
     private val SG = Regex(
-        """^SG_\s+(\w+)\s*(M|m\d+M?)?\s*:\s*(\d+)\s*\|\s*(\d+)\s*@\s*([01])\s*([+-])\s*""" +
+        """^SG_\s+(\w+)\s*(M|m\d*M?)?\s*:\s*(\d+)\s*\|\s*(\d+)\s*@\s*([01])\s*([+-])\s*""" +
             """\(\s*([^,\s]+)\s*,\s*([^)\s]+)\s*\)\s*\[\s*([^|\]\s]*)\s*\|\s*([^\]\s]*)\s*]\s*\x22((?:[^\x22\\]|\\.)*)\x22""",
     )
     private val BO = Regex("""^BO_\s+(\d+)\s+(\w+)\s*:\s*(\d+)""")
     private val STRING = Regex("""\x22((?:[^\x22\\]|\\.)*)\x22""")
+    private val RANGE = Regex("""(\d+)\s*-\s*(\d+)""")
     private val VALUE = Regex("""(-?\d+(?:\.\d+)?)\s+\x22((?:[^\x22\\]|\\.)*)\x22""")
 
     /** Pseudo message of signals not in any frame (Vector's editor writes it). */
@@ -35,7 +36,8 @@ object Dbc {
         var skipped = false
         val sigComments = HashMap<Pair<Long, String>, String>()
         val sigValues = HashMap<Pair<Long, String>, Map<Long, String>>()
-        val floats = HashSet<Pair<Long, String>>()
+        val types = HashMap<Pair<Long, String>, Int>()
+        val mulVal = HashMap<Pair<Long, String>, Pair<String, List<LongRange>>>()
         for (line in statements(text)) {
             val t = line.trim()
             val word = t.split(Regex("[\\s:]"), 2)[0]
@@ -60,16 +62,17 @@ object Dbc {
                     val offset = g[8].toDoubleOrNull()
                     val len = g[4].toInt()
                     val muxTag = g[2]
+                    val muxN = muxTag.drop(1).removeSuffix("M").toIntOrNull()
                     msg.signals += CanSig(
                         name = g[1], startBit = g[3].toInt(), bitLen = len, motorola = g[5] == "0", signed = g[6] == "-",
                         formula = if (factor != null && offset != null) CanImport.linear(factor, offset) else "x",
                         units = unescape(g[11]), min = g[9].toDoubleOrNull(), max = g[10].toDoubleOrNull(),
-                        muxValue = if (muxTag.startsWith("m")) muxTag.drop(1).removeSuffix("M").toInt() else null,
-                        isMuxer = muxTag == "M",
+                        // "m" alone is a multiplexor too in some files (opendbc's vw_pq)
+                        muxValue = if (muxTag.startsWith("m")) muxN else null,
+                        isMuxer = muxTag == "M" || muxTag == "m" || (muxTag.length > 1 && muxTag.endsWith("M")),
                         problem = when {
                             len !in 1..64 -> "длина $len бит"
                             factor == null || offset == null -> "множитель не число"
-                            muxTag.length > 1 && muxTag.endsWith("M") -> "вложенный мультиплексор"
                             else -> null
                         },
                     )
@@ -110,7 +113,17 @@ object Dbc {
                     current = null
                     val p = t.removePrefix("SIG_VALTYPE_").trim().split(Regex("[\\s:;]+"))
                     val id = p.getOrNull(0)?.toLongOrNull() ?: continue
-                    if (p.getOrNull(2) == "1" || p.getOrNull(2) == "2") floats += id to p[1]
+                    p.getOrNull(2)?.toIntOrNull()?.let { types[id to p[1]] = it }
+                }
+                // SG_MUL_VAL_ 1152 MO5_Abgastyp MO5_Mp_Code 3-3, 5-7;
+                "SG_MUL_VAL_" -> {
+                    current = null
+                    val p = t.removePrefix("SG_MUL_VAL_").trim().split(Regex("\\s+"), limit = 4)
+                    val id = p.getOrNull(0)?.toLongOrNull() ?: continue
+                    val sig = p.getOrNull(1) ?: continue
+                    val muxer = p.getOrNull(2) ?: continue
+                    val ranges = RANGE.findAll(p.getOrNull(3).orEmpty()).map { it.groupValues[1].toLong()..it.groupValues[2].toLong() }.toList()
+                    if (ranges.isNotEmpty()) mulVal[id to sig] = muxer to ranges
                 }
                 "" -> {}
                 else -> current = null
@@ -122,13 +135,24 @@ object Dbc {
                 m.id, m.ext, m.name, m.size,
                 m.signals.map { s ->
                     val k = raw to s.name
+                    val vt = types[k] ?: 0
+                    val mv = mulVal[k]
                     s.copy(
                         comment = sigComments[k].orEmpty(), values = sigValues[k].orEmpty(),
-                        problem = s.problem ?: if (k in floats) "число с плавающей точкой (IEEE float)" else null,
+                        valueType = if (vt in 1..2) vt else 0, muxOf = mv?.first, muxRanges = mv?.second.orEmpty(),
+                        problem = s.problem ?: when {
+                            vt == 1 && s.bitLen != 32 -> "float: нужно 32 бит, в файле ${s.bitLen}"
+                            vt == 2 && s.bitLen != 64 -> "double: нужно 64 бит, в файле ${s.bitLen}"
+                            vt !in 0..2 -> "тип значения $vt"
+                            else -> null
+                        },
                     )
                 },
                 m.cycle, m.comment,
             )
+        }.map { m ->
+            // a multiplexor named in SG_MUL_VAL_ that the message doesn't have, or a loop of them
+            m.copy(signals = m.signals.map { s -> if (s.problem == null && CanImport.muxChain(m, s) == null) s.copy(problem = "мультиплексор не найден") else s })
         }
         return CanDb(out, kbit, warnings)
     }

@@ -31,7 +31,7 @@ object Slcan {
     /** One line without its CR; null for anything but a data frame (OK, error, a remote request). */
     fun parse(line: String): Frame? {
         if (line.isEmpty()) return null
-        val ext = when (line[0]) { 't' -> false; 'T' -> true; else -> return null }
+        val ext = when (line[0]) { 't' -> false; 'T' -> true; 'd', 'D', 'b', 'B' -> return SlcanFd.parse(line); else -> return null }
         val idLen = if (ext) 8 else 3
         if (line.length < 1 + idLen + 1) return null
         val id = line.substring(1, 1 + idLen).toIntOrNull(16) ?: return null

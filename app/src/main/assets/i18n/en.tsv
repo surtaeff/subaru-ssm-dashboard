@@ -4875,17 +4875,13 @@ JDM цифровой розовый	JDM digital pink
 Разметка	Layout
 Стартовый бит	Start bit
 Готовые профили	Ready profiles
-вложенный мультиплексор	nested multiplexor
 как у датчика	as the sensor's
 файл не открылся	the file did not open
 множитель не число	the factor is not a number
 Температура датчика ШДК	Wideband sensor temperature
 сдвиг за пределами значения	shift beyond the value
-Сигнал выходит за пределы кадра	The signal goes past the frame
 своё краткое описание по фактам из rusEFI_CAN_verbose.dbc (сам файл GPL и не копировался); на ЭБУ не проверено	own short description from the facts of rusEFI_CAN_verbose.dbc (the GPL file itself is not copied); not tried on an ECU
 этот кадр отправляет сам дашборд (writeInterval)	the dash itself sends this frame (writeInterval)
-число с плавающей точкой (float)	floating point number (float)
-число с плавающей точкой (IEEE float)	floating point number (IEEE float)
 скорость шины по файлу {} кбит	bus speed by the file {} kbit
 в файле нет сообщений BO_	the file has no BO_ messages
 Плата термопар с выходом CAN: впишите её ID и байты своего канала, формула должна давать °C	A thermocouple board with CAN output: enter its ID and the bytes of your channel, the formula must give °C
@@ -4984,3 +4980,17 @@ Real-time Data Broadcasting MS3, старший байт первым. Темп�
 rusEFI (поток ЭБУ)	rusEFI (ECU stream)
 rusEFI Wideband (ШДК)	rusEFI Wideband
 wideband_can.h контроллера (MIT) и декодер rusEFI; скорость шины в них не указана	the controller's wideband_can.h (MIT) and rusEFI's decoder; they don't give the bus speed
+float: нужно # бит, в файле {}	float: needs # bits, the file has {}
+double: нужно # бит, в файле {}	double: needs # bits, the file has {}
+тип значения {}	value type {}
+мультиплексор не найден	multiplexor not found
+float/double: длина должна быть {} байт	float/double: the length must be {} bytes
+Сигнал выходит за {} байт кадра	The signal goes past the frame's {} bytes
+Первый байт: число 0–63	First byte: a number 0–63
+float занимает 4 байта (32 бит)	A float takes 4 bytes (32 bits)
+double занимает 64 бит: разметка «биты», длина 64	A double takes 64 bits: layout «bits», length 64
+Тип значения	Value type
+целое	integer
+float (32 бит)	float (32 bits)
+double (64 бит)	double (64 bits)
+файл не прочитан	the file could not be read

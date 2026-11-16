@@ -78,7 +78,7 @@ fun CanImportChip() {
         scope.launch {
             val r = withContext(Dispatchers.IO) { runCatching { CanImport.parse(readText(ctx, uri)) } }
             r.onSuccess { db = it; file = name; msg = "" }
-            r.onFailure { msg = "$name: " + (it.message ?: it.toString()); bad = true }
+            r.onFailure { msg = "$name: " + kg.forester.sg.data.Failure.link(it, "файл не прочитан"); bad = true }
         }
     }
     Chip("Импорт DBC / RealDash XML", false, { pick.launch(arrayOf("*/*")) }, Lucide.Upload)
@@ -108,7 +108,7 @@ fun CanProfilesDialog(onClose: () -> Unit) {
         LaunchedEffect(p) {
             withContext(Dispatchers.IO) {
                 runCatching { CanImport.parse(ctx.assets.open("can_profiles/${p.asset}").bufferedReader().use { it.readText() }) }
-            }.onSuccess { db = it }.onFailure { msg = "${p.title}: " + (it.message ?: it.toString()); open = null }
+            }.onSuccess { db = it }.onFailure { msg = "${p.title}: " + kg.forester.sg.data.Failure.link(it, "файл не прочитан"); open = null }
         }
         val d = db ?: return
         val es = remember(d) {

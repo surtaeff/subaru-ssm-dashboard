@@ -154,7 +154,9 @@ class CanDbcTest {
         val oil = misc.signals.first { it.name == "OilPress" }
         assertEquals("Oil pressure,\ngauge, after the filter with \"quotes\"", oil.comment)
         assertEquals(mapOf(0L to "none", 250L to "full"), eec.signals.first { it.name == "Torque" }.values)
-        assertNotNull(misc.signals.first { it.name == "Ratio" }.problem)
+        // SIG_VALTYPE_ 1: a float of its 32 bits
+        assertEquals(CanChannel.FLOAT32, misc.signals.first { it.name == "Ratio" }.valueType)
+        assertNull(misc.signals.first { it.name == "Ratio" }.problem)
         // roles where they are plain
         assertEquals("oilP", CanImport.channel(misc, oil, "C1").role)
         assertEquals("egt", CanImport.channel(misc, misc.signals.first { it.name == "ExhaustGasTemp" }, "C2").role)

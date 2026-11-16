@@ -54,3 +54,29 @@ object CanBits {
     fun valueBit(offset: Int, len: Int, bigEndian: Boolean, j: Int): Int =
         if (bigEndian) (offset + len - 1 - j / 8) * 8 + j % 8 else offset * 8 + j
 }
+
+/**
+ * One condition of a multiplexed signal: the multiplexor's bits (as [CanBits] reads them) must hold a value in one
+ * of [ranges]. A DBC's extended multiplexing (SG_MUL_VAL_) gives several ranges, and a multiplexor that is itself
+ * multiplexed (m3M) makes a chain of them, outermost first.
+ */
+data class CanMux(val start: Int, val len: Int, val motorola: Boolean, val ranges: List<LongRange>) {
+    fun ok(d: ByteArray): Boolean = CanBits.get(d, start, len, motorola, false)?.let { v -> ranges.any { v in it } } ?: false
+
+    /** "#3", "#4–6,10" for the channel's line. */
+    fun text(): String = ranges.joinToString(",") { if (it.first == it.last) "${it.first}" else "${it.first}–${it.last}" }
+
+    fun toJson(): org.json.JSONObject = org.json.JSONObject().put("sb", start).put("bits", len).put("be", motorola)
+        .put("r", org.json.JSONArray().also { a -> ranges.forEach { a.put(it.first).put(it.last) } })
+
+    companion object {
+        fun fromJson(o: org.json.JSONObject): CanMux? {
+            val r = o.optJSONArray("r") ?: return null
+            val ranges = (0 until r.length() / 2).map { r.getLong(it * 2)..r.getLong(it * 2 + 1) }
+            val start = o.optInt("sb", -1)
+            val len = o.optInt("bits")
+            if (start !in 0..511 || len !in 1..64 || ranges.isEmpty()) return null
+            return CanMux(start, len, o.optBoolean("be"), ranges)
+        }
+    }
+}
