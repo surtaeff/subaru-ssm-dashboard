@@ -5346,8 +5346,6 @@ Subaru по SSM: положение селектора и передача из 
 Треки	Tracks
 Альбомы	Albums
 Моя волна, «Мне нравится», плейлисты и поиск играют прямо здесь: через эквалайзер, кнопки руля и мини-плеер. Нужен аккаунт Яндекса с подпиской Плюс, без неё только 30-секундные фрагменты.	My Wave, Liked, playlists and search play right here: through the equalizer, the steering wheel keys and the mini player. A Yandex account with a Plus subscription is needed, without it only 30-second previews.
-Войти через Яндекс	Sign in with Yandex
-Войти с телефона по коду	Sign in from the phone with a code
 Вставить токен	Paste a token
 Пароль вводится на странице Яндекса, приложение его не видит. Токен хранится только на этой магнитоле, зашифрованный ключом Android Keystore. Доступ к Яндекс Музыке неофициальный, для личного использования.	The password is typed on Yandex's page, the app doesn't see it. The token is kept only on this head unit, encrypted with an Android Keystore key. Access to Yandex Music is unofficial, for personal use.
 Открываю страницу входа Яндекса…	Opening Yandex's sign-in page…
@@ -5359,13 +5357,10 @@ Subaru по SSM: положение селектора и передача из 
 Страница Яндекса не открылась: проверьте интернет и попробуйте позже	Yandex's page didn't open: check the internet and try later
 Получаю код…	Getting a code…
 Сервис недоступен, попробуйте позже	The service is unavailable, try later
-Откройте {} и введите код	Open {} and enter the code
 Вход отклонён на телефоне	Sign-in declined on the phone
 Яндекс не подтвердил вход	Yandex didn't confirm the sign-in
-Код истёк: закройте окно и попробуйте снова	The code has expired: close the window and try again
 Вход с телефона	Sign in from the phone
-На телефоне, где вы вошли в Яндекс, откройте ya.ru/device и введите этот код:	On a phone signed in to Yandex, open ya.ru/device and enter this code:
-Код действует несколько минут. Подтвердите вход аккаунтом с подпиской: приложение получит только токен доступа.	The code is valid for a few minutes. Confirm with an account that has a subscription: the app gets only an access token.
+На телефоне, где вы вошли в Яндекс, откройте ya.ru/device и введите этот код	On a phone signed in to Yandex, open ya.ru/device and enter this code
 Токен Яндекс Музыки (обычно начинается с «y0_»). Он будет проверен и сохранён зашифрованным; никуда, кроме Яндекса, не отправляется.	A Yandex Music token (usually starts with «y0_»). It is checked and kept encrypted; it is sent nowhere but to Yandex.
 Токен	Token
 Из буфера	From clipboard
@@ -5456,3 +5451,12 @@ ts.kg и oc.kg работают только в Кыргызстане: из д�
 Видео	Video
 Экран «Видео»	«Video» screen
 Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах Rutube, YouTube и приложения кинотеатров	Films and series: ts.kg and oc.kg in Kyrgyzstan, Rutube, YouTube and the cinema apps elsewhere
+// ui/MediaYandex.kt
+Справа код для входа с телефона, или войдите на этой магнитоле	The sign-in code for the phone is on the right, or sign in on this head unit
+Справа: вход через страницу Яндекса или токен	On the right: sign in on Yandex's page or with a token
+Или войдите на этой магнитоле:	Or sign in on this head unit:
+Войти через страницу Яндекса	Sign in on Yandex's page
+Жду подтверждения, код действует ещё {}	Waiting for confirmation, the code is good for {} more
+Код истёк	The code has expired
+Получить новый код	Get a new code
+QR-код страницы входа	QR code of the sign-in page

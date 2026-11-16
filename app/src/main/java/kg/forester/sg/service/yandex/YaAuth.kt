@@ -40,6 +40,10 @@ object YaAuth {
      * The client's secret, needed only by the code flow. Not in the sources: a build gets it from the Gradle property
      * `yandexClientSecret` (~/.gradle/gradle.properties); without it «Войти с телефона» isn't offered.
      */
+    /**
+     * The device flow's client secret: only from the build machine's gradle property `yandexClientSecret` (BuildConfig),
+     * never in the source. Without it the panel offers Yandex's page and a token, no phone code.
+     */
     private val clientSecret: String get() = kg.forester.sg.BuildConfig.YANDEX_CLIENT_SECRET
     val codeLogin: Boolean get() = clientSecret.isNotEmpty()
 
@@ -197,24 +201,15 @@ object YaAuth {
 
     // ---- the code flow (device flow) ----------------------------------------------------------------------
 
-    data class Code(val deviceCode: String, val userCode: String, val url: String, val intervalMs: Long, val deadline: Long)
-
-    /** A code to type on the phone; blocking. */
-    fun requestCode(): Code {
+    /** A code for ya.ru/device (see [YaDevice]); throws when the service can't be reached. Only with [codeLogin]. */
+    fun requestCode(): YaDevice.Code? {
         val did = java.lang.Long.toHexString(java.util.Random().nextLong()).padStart(16, '0').take(10)
-        val r = oauthPost("device/code", YaApi.form("client_id", CLIENT_ID, "device_id", did, "device_name", "CarPulse"))
-        val dc = r.optString("device_code", "")
-        if (dc.isEmpty()) throw YaApi.Err(500, "no code")
-        return Code(dc, r.optString("user_code", ""), r.optString("verification_url", "https://ya.ru/device"),
-            maxOf(3000L, r.optLong("interval", 5) * 1000), System.currentTimeMillis() + maxOf(60L, r.optLong("expires_in", 300)) * 1000)
+        return YaDevice.parseCode(oauthPost("device/code", YaApi.form("client_id", CLIENT_ID, "device_id", did, "device_name", "CarPulse")), System.currentTimeMillis())
     }
 
-    /** One look whether the code was confirmed: (token, expires in s) or (null, the OAuth error). Blocking. */
-    fun pollCode(code: Code): Pair<String?, String> {
-        val r = oauthPost("token", YaApi.form("grant_type", "device_code", "code", code.deviceCode, "client_id", CLIENT_ID, "client_secret", clientSecret))
-        val tok = r.optString("access_token", "")
-        return if (tok.isNotEmpty()) tok to r.optLong("expires_in", 0).toString() else null to r.optString("error", "")
-    }
+    /** One check of [code]; throws when the request itself fails. The secret goes only to oauth.yandex.ru. */
+    fun pollCode(code: YaDevice.Code): YaDevice.Poll =
+        YaDevice.parsePoll(oauthPost("token", YaApi.form("grant_type", "device_code", "code", code.deviceCode, "client_id", CLIENT_ID, "client_secret", clientSecret)))
 
     private fun oauthPost(path: String, form: String): JSONObject {
         val c = URL("https://oauth.yandex.ru/$path").openConnection() as HttpURLConnection

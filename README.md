@@ -140,6 +140,16 @@ USB-драйверы: [usb-serial-for-android](https://github.com/mik3y/usb-seri
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+### Вход в Яндекс Музыку по коду с телефона (необязательно)
+Во вкладке «Яндекс» без входа панель рядом с плеером сразу предлагает войти: через страницу Яндекса (WebView) или вставив токен. Вход по коду (на телефоне открыть ya.ru/device и ввести код с экрана) работает только в сборке, которой передан секрет OAuth-клиента. **В исходниках секрета нет и не будет**: его задаёт тот, кто собирает, у себя на машине, в gradle-свойстве `yandexClientSecret`, откуда он попадает в `BuildConfig.YANDEX_CLIENT_SECRET`:
+```bash
+# один раз, в ~/.gradle/gradle.properties (вне репозитория, не коммитить):
+yandexClientSecret=<секрет вашего OAuth-клиента>
+# или только для одной сборки:
+./gradlew assembleDebug -PyandexClientSecret=<секрет>
+```
+Без свойства сборка проходит как обычно, просто кнопки входа по коду нет. Не кладите секрет в `gradle.properties` проекта и в код: они в репозитории.
+
 ## Как это работает
 - **Протокол SSM2:** пакет `80 <dest> F0 <len> <cmd…> <checksum>`, где `0xBF` это init (SSM ID, ROM ID, байты возможностей), `0xA8` чтение адресов, `0xB8` запись.
 - **Список параметров** проверяется по байтам возможностей ЭБУ. Адреса и формулы взяты из логгер-определений RomRaider и таблиц FreeSSM.
@@ -153,7 +163,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - [SubaruDefs](https://github.com/RomRaider/SubaruDefs) (определения ECUFlash, ветка Stable): адреса сеток таблиц обучения для вкладки «Обучение», собраны в `app/src/main/assets/learning_axes.json` скриптом `tools/romraider/build_learning.py`; способ найти таблицу FLKC рядом с IAM взят из окна Learning Table Values в RomRaider;
 - [radio-browser.info](https://www.radio-browser.info/): открытый каталог радиостанций, логотипы FM-станций и интернет-радио (загружаются в приложении, в репозитории их нет);
 - [Media3 / ExoPlayer](https://github.com/androidx/media) (Apache-2.0): свой плеер, медиасессия, HLS;
-- Яндекс Музыка: запросы к неофициальному API `api.music.yandex.net` повторяют открытые клиенты [MarshalX/yandex-music-api](https://github.com/MarshalX/yandex-music-api) (LGPL-3.0) и [DECE2183/yamusic-tui](https://github.com/DECE2183/yamusic-tui); вход использует публичный client_id официального Android-приложения, как и они. Вход по коду с телефона появляется только в сборке, которой передан `yandexClientSecret` (в `~/.gradle/gradle.properties`, в репозитории его нет);
+- Яндекс Музыка: запросы к неофициальному API `api.music.yandex.net` повторяют открытые клиенты [MarshalX/yandex-music-api](https://github.com/MarshalX/yandex-music-api) (LGPL-3.0) и [DECE2183/yamusic-tui](https://github.com/DECE2183/yamusic-tui); вход использует публичный client_id официального Android-приложения, как и они. Вход по коду с телефона появляется только в сборке, которой передан `yandexClientSecret` (в `~/.gradle/gradle.properties`, в репозитории его нет, см. «Сборка из исходников»);
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): офлайн-синтез речи, Apache-2.0;
 - голоса [Piper](https://huggingface.co/rhasspy/piper-voices): «Ирина» (обучен на голосе Irina проекта [RHVoice](https://github.com/RHVoice/RHVoice), CC BY-SA 4.0 / GPL-3.0), «Дмитрий» и «Денис» (CC0); скачиваются в приложении, в репозитории их нет;
 - [opendbc](https://github.com/commaai/opendbc) (comma.ai, MIT): идентификаторы и сигналы CAN Subaru 2010–2018 для прослушки CAN;

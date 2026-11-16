@@ -92,7 +92,7 @@ fun ContactSettings() {
 }
 
 /** [text] as a black on white QR code bitmap, [size] px square; null if it could not be made. */
-private fun qrBitmap(text: String, size: Int): Bitmap? = runCatching {
+internal fun qrBitmap(text: String, size: Int): Bitmap? = runCatching {
     val m = com.google.zxing.qrcode.QRCodeWriter().encode(
         text, com.google.zxing.BarcodeFormat.QR_CODE, size, size, mapOf(com.google.zxing.EncodeHintType.MARGIN to 0),
     )

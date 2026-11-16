@@ -35,6 +35,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -61,6 +62,7 @@ import kg.forester.sg.data.I18n
 import kg.forester.sg.service.LocalMusic
 import kg.forester.sg.service.yandex.YaApi
 import kg.forester.sg.service.yandex.YaAuth
+import kg.forester.sg.service.yandex.YaDevice
 import kg.forester.sg.service.yandex.YaLibrary
 import kg.forester.sg.service.yandex.YaMusic
 import kotlinx.coroutines.Dispatchers
@@ -75,8 +77,8 @@ private val MOODS = listOf("" to "Любое", "active" to "Бодрое", "fun"
 private val DIVERSITY = listOf("" to "Любой", "favorite" to "Любимое", "discover" to "Незнакомое", "popular" to "Популярное")
 
 /**
- * The left of «Яндекс»: the track of the own player when it is Yandex's, ♥ and 👎 beside the keys. Signed out it says
- * where to sign in; signed in with nothing playing, ▶ goes on with what played last, else starts «Моя волна».
+ * The left of «Яндекс»: the track of the own player when it is Yandex's, ♥ and 👎 beside the keys. Signed out it points
+ * at the sign-in in the panel beside it; signed in with nothing playing, ▶ goes on with what played last, else starts «Моя волна».
  */
 @Composable
 internal fun YandexHero() {
@@ -100,7 +102,8 @@ internal fun YandexHero() {
         onNext = { if (on) LocalMusic.next(ctx) }, onPrev = { if (on) LocalMusic.prev(ctx) },
         info = {
             when {
-                !auth.signedIn -> TrackInfo("Яндекс Музыка", "Войдите в Яндекс", "Моя волна, «Мне нравится», плейлисты и поиск: в списке справа")
+                !auth.signedIn -> TrackInfo("Яндекс Музыка", "Войдите в Яндекс",
+                    if (YaAuth.codeLogin) "Справа код для входа с телефона, или войдите на этой магнитоле" else "Справа: вход через страницу Яндекса или токен")
                 !on -> TrackInfo("Яндекс Музыка", if (ya.loading) "Загружаю Мою волну…" else "Моя волна",
                     if (ya.loading) "" else "Нажмите ▶ или выберите музыку в списке")
                 else -> TrackInfo(if (ya.wave) "Моя волна" else I18n.raw(ya.from.ifBlank { "Яндекс Музыка" }), I18n.raw(st.title), I18n.raw(st.artist),
@@ -412,34 +415,228 @@ private fun CoverRow(title: String, sub: String, cover: String, icon: ImageVecto
     ListRow(title, sub, lead = { YaCover(cover, icon) }, trail = { Icon(Lucide.ChevronRight, null, tint = C.Sub, modifier = Modifier.size(18.dp)) }, onClick = onClick)
 }
 
-// --- signing in ---------------------------------------------------------------------------------------------
+// --- signing in: right in the panel, beside the player, no window over it ------------------------------------
+
+/** What the signed-out panel shows: the ways in (the phone code first where the build has it), Yandex's page, a token. */
+private enum class SignIn { CHOICES, WEB, PASTE }
 
 @Composable
 private fun SignInPanel(problem: String) {
-    var web by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf(false) }
-    var paste by remember { mutableStateOf(false) }
+    var mode by remember { mutableStateOf(SignIn.CHOICES) }
     var said by remember { mutableStateOf("") }
-    PanelBox(Lucide.Waves, "Яндекс Музыка") {
-        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
-            T("Моя волна, «Мне нравится», плейлисты и поиск играют прямо здесь: через эквалайзер, кнопки руля и мини-плеер. " +
-                "Нужен аккаунт Яндекса с подпиской Плюс, без неё только 30-секундные фрагменты.", 14.sp, C.Sub)
-            Spacer(Modifier.height(14.dp))
-            Pill("Войти через Яндекс", Lucide.LogIn, true) { web = true }
-            if (YaAuth.codeLogin) { Spacer(Modifier.height(8.dp)); Pill("Войти с телефона по коду", Lucide.Smartphone) { code = true } }
-            Spacer(Modifier.height(8.dp))
-            Pill("Вставить токен", Lucide.KeyRound) { paste = true }
-            val note = said.ifEmpty { problem }
-            if (note.isNotEmpty()) { Spacer(Modifier.height(10.dp)); T(note, 13.sp, C.Orange) }
-            Spacer(Modifier.height(14.dp))
-            T("Пароль вводится на странице Яндекса, приложение его не видит. Токен хранится только на этой магнитоле, " +
-                "зашифрованный ключом Android Keystore. Доступ к Яндекс Музыке неофициальный, для личного использования.", 12.sp, C.Sub)
+    // a failure comes back to the ways in with its reason; a success replaces the whole panel (YaAuth.state)
+    val done: (Boolean, String) -> Unit = { ok, msg -> if (!ok) { said = msg; mode = SignIn.CHOICES } }
+    if (mode != SignIn.CHOICES) androidx.activity.compose.BackHandler { mode = SignIn.CHOICES }
+    PanelBox(Lucide.Waves, "Яндекс Музыка", trailing = {
+        if (mode != SignIn.CHOICES) Pill("Назад", Lucide.ArrowLeft, height = 38.dp) { mode = SignIn.CHOICES }
+    }) {
+        when (mode) {
+            SignIn.WEB -> WebLogin(done)
+            SignIn.PASTE -> PasteToken(done)
+            SignIn.CHOICES -> Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
+                val about = "Моя волна, «Мне нравится», плейлисты и поиск играют прямо здесь: через эквалайзер, кнопки руля и мини-плеер. " +
+                    "Нужен аккаунт Яндекса с подпиской Плюс, без неё только 30-секундные фрагменты."
+                if (YaAuth.codeLogin) {
+                    DeviceLogin()
+                    Spacer(Modifier.height(12.dp))
+                    T("Или войдите на этой магнитоле:", 13.sp, C.Sub)
+                } else T(about, 14.sp, C.Sub)
+                Spacer(Modifier.height(10.dp))
+                Pill("Войти через страницу Яндекса", Lucide.LogIn, !YaAuth.codeLogin) { said = ""; mode = SignIn.WEB }
+                Spacer(Modifier.height(8.dp))
+                Pill("Вставить токен", Lucide.KeyRound) { said = ""; mode = SignIn.PASTE }
+                val note = said.ifEmpty { problem }
+                if (note.isNotEmpty()) { Spacer(Modifier.height(10.dp)); T(note, 13.sp, C.Orange) }
+                Spacer(Modifier.height(14.dp))
+                if (YaAuth.codeLogin) { T(about, 12.sp, C.Sub); Spacer(Modifier.height(6.dp)) }
+                T("Пароль вводится на странице Яндекса, приложение его не видит. Токен хранится только на этой магнитоле, " +
+                    "зашифрованный ключом Android Keystore. Доступ к Яндекс Музыке неофициальный, для личного использования.", 12.sp, C.Sub)
+            }
         }
     }
-    val done: (Boolean, String) -> Unit = { ok, msg -> if (!ok) said = msg }
-    if (web) WebLoginDialog({ web = false }, done)
-    if (code) CodeLoginDialog({ code = false }, done)
-    if (paste) PasteTokenDialog({ paste = false }, done)
+}
+
+/**
+ * The device flow (ya.ru/device) in a card of the panel: the code big, a QR of the address, the time it is still good
+ * for; checked every few seconds until the phone confirms. An expired or refused code asks for a new one by a tap.
+ * The steps are [YaDevice]'s, tested on their own.
+ */
+@Composable
+private fun DeviceLogin() {
+    val ctx = LocalContext.current
+    var attempt by remember { mutableIntStateOf(0) }
+    var flow by remember { mutableStateOf<YaDevice.Flow>(YaDevice.Flow.Requesting) }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(attempt) {
+        flow = YaDevice.Flow.Requesting
+        var f = YaDevice.start(withContext(Dispatchers.IO) { runCatching { YaAuth.requestCode() }.getOrNull() })
+        flow = f
+        while (f is YaDevice.Flow.Waiting) {
+            delay(f.intervalMs)
+            val w = f
+            f = YaDevice.next(w, withContext(Dispatchers.IO) { runCatching { YaAuth.pollCode(w.code) }.getOrNull() }, System.currentTimeMillis())
+            flow = f
+        }
+        val c = f
+        if (c is YaDevice.Flow.Confirming) YaAuth.signIn(ctx, c.token, c.expiresInSec) { ok, msg ->
+            if (!ok) flow = YaDevice.Flow.Failed(YaDevice.Reason.SIGN_IN, msg)
+        }
+    }
+    val waiting = flow is YaDevice.Flow.Waiting
+    LaunchedEffect(waiting) { while (waiting) { now = System.currentTimeMillis(); delay(1000) } }
+    val shape = RoundedCornerShape(18.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(C.Violet.copy(alpha = 0.12f)).border(1.dp, C.Violet.copy(alpha = 0.35f), shape).padding(14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconTile(Lucide.Smartphone)
+            Spacer(Modifier.width(12.dp))
+            T("Вход с телефона", 17.sp, weight = FontWeight.SemiBold, maxLines = 1)
+        }
+        Spacer(Modifier.height(8.dp))
+        T("На телефоне, где вы вошли в Яндекс, откройте ya.ru/device и введите этот код", 14.sp, C.Sub)
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                when (val f = flow) {
+                    YaDevice.Flow.Requesting -> {
+                        T("· · ·", 44.sp, C.Sub, FontWeight.Bold)
+                        T("Получаю код…", 14.sp, C.Sub, textAlign = TextAlign.Center)
+                    }
+                    is YaDevice.Flow.Waiting -> {
+                        T(I18n.raw(f.code.userCode), 44.sp, C.Violet, FontWeight.Bold, maxLines = 1)
+                        T("Жду подтверждения, код действует ещё ${YaDevice.clock(YaDevice.secondsLeft(f.code, now))}", 13.sp, C.Sub, textAlign = TextAlign.Center)
+                    }
+                    is YaDevice.Flow.Confirming -> {
+                        Spacer(Modifier.height(8.dp))
+                        T("Проверяю вход…", 16.sp, C.Text, textAlign = TextAlign.Center)
+                    }
+                    YaDevice.Flow.Expired -> {
+                        T("Код истёк", 18.sp, C.Orange, FontWeight.SemiBold, textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(8.dp))
+                        Pill("Получить новый код", Lucide.RefreshCw, true) { attempt++ }
+                    }
+                    is YaDevice.Flow.Failed -> {
+                        T(when (f.reason) {
+                            YaDevice.Reason.UNAVAILABLE -> "Сервис недоступен, попробуйте позже"
+                            YaDevice.Reason.DENIED -> "Вход отклонён на телефоне"
+                            YaDevice.Reason.REJECTED -> "Яндекс не подтвердил вход"
+                            YaDevice.Reason.SIGN_IN -> f.detail
+                        }, 15.sp, C.Orange, textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(8.dp))
+                        Pill("Получить новый код", Lucide.RefreshCw, true) { attempt++ }
+                    }
+                }
+            }
+            val w = flow as? YaDevice.Flow.Waiting
+            if (w != null) {
+                // the address as a QR: the phone's camera opens the page, the code is typed there
+                val qr = remember(w.code.url) { qrBitmap(w.code.url, 256) }
+                if (qr != null) {
+                    Spacer(Modifier.width(12.dp))
+                    Image(qr.asImageBitmap(), kg.forester.sg.data.tr("QR-код страницы входа"), Modifier.size(112.dp).clip(RoundedCornerShape(10.dp))
+                        .background(Color.White).padding(6.dp), filterQuality = androidx.compose.ui.graphics.FilterQuality.None)
+                }
+            }
+        }
+    }
+}
+
+/** Yandex's sign-in page in the panel; only the redirect with the token is read, nothing on the page. */
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun ColumnScope.WebLogin(done: (Boolean, String) -> Unit) {
+    val ctx = LocalContext.current
+    var status by remember { mutableStateOf("Открываю страницу входа Яндекса…") }
+    var finished by remember { mutableStateOf(false) }
+    var view by remember { mutableStateOf<WebView?>(null) }
+    DisposableEffect(Unit) {
+        onDispose {
+            view?.let { runCatching { it.stopLoading(); it.loadUrl("about:blank"); it.destroy() } }
+            YaAuth.clearCookies() // the token is all that is kept
+        }
+    }
+    T(status, 14.sp, C.Sub)
+    Spacer(Modifier.height(8.dp))
+    Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(14.dp)).background(Color.White)) {
+        AndroidView(modifier = Modifier.fillMaxSize(), factory = { c ->
+            val w = runCatching { WebView(c) }.getOrNull()
+            if (w == null) {
+                status = "На этой магнитоле нет системного WebView: вставьте токен"
+                return@AndroidView android.view.View(c)
+            }
+            view = w
+            w.settings.apply {
+                javaScriptEnabled = true // Yandex's page needs it; no JavaScript interface is added
+                domStorageEnabled = true
+                allowFileAccess = false
+                allowContentAccess = false
+                setSupportMultipleWindows(false)
+                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            }
+            /** True: the link is ours to handle (the token, an error, a page off Yandex). Never logged. */
+            fun check(url: String?): Boolean {
+                if (finished || url == null) return finished
+                val r = YaApi.fromRedirect(url)
+                if (r != null) {
+                    finished = true
+                    val (tok, exp, _) = r
+                    if (tok == null) { done(false, "Вход отменён"); return true }
+                    status = "Проверяю вход…"
+                    YaAuth.signIn(ctx, tok, exp?.toLongOrNull() ?: 0, done)
+                    return true
+                }
+                return !YaAuth.yandexPage(url)
+            }
+            w.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest) = check(r.url.toString())
+                @Deprecated("for Android 6")
+                override fun shouldOverrideUrlLoading(v: WebView, url: String) = check(url)
+                override fun onPageStarted(v: WebView, url: String?, f: Bitmap?) { if (check(url)) v.stopLoading() }
+                override fun onPageFinished(v: WebView, url: String?) {
+                    if (finished) return
+                    check(url)
+                    if (!finished) status = "Введите логин, пароль и код на странице Яндекса. Приложение не видит и не хранит пароль."
+                }
+                override fun doUpdateVisitedHistory(v: WebView, url: String?, reload: Boolean) { check(url) }
+                override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
+                    if (r.isForMainFrame && !finished) status = "Страница Яндекса не открылась: проверьте интернет и попробуйте позже"
+                }
+            }
+            w.loadUrl(YaAuth.AUTHORIZE)
+            w
+        })
+    }
+}
+
+/** «Вставить токен» in the panel: for those who have one. */
+@Composable
+private fun ColumnScope.PasteToken(done: (Boolean, String) -> Unit) {
+    val ctx = LocalContext.current
+    var tok by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
+        T("Токен Яндекс Музыки (обычно начинается с «y0_»). Он будет проверен и сохранён зашифрованным; никуда, кроме Яндекса, не отправляется.", 14.sp, C.Sub)
+        Spacer(Modifier.height(12.dp))
+        androidx.compose.material3.OutlinedTextField(
+            value = tok, onValueChange = { tok = it.trim() }, singleLine = true, label = { T("Токен", 13.sp, C.Sub) },
+            visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(focusedTextColor = C.Text, unfocusedTextColor = C.Text,
+                focusedBorderColor = C.Purple, unfocusedBorderColor = C.Border),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (status.isNotEmpty()) { Spacer(Modifier.height(8.dp)); T(status, 13.sp, C.Orange) }
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Pill("Из буфера", Lucide.ClipboardPaste) {
+                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                runCatching { cm?.primaryClip?.getItemAt(0)?.coerceToText(ctx)?.toString()?.trim() }.getOrNull()?.let { tok = it }
+            }
+            Pill("Войти", Lucide.LogIn, true) {
+                status = "Проверяю…"
+                // a wrong token stays here with its reason, to fix it; the right one replaces the panel
+                YaAuth.signIn(ctx, tok, 0) { ok, msg -> if (!ok) status = msg }
+            }
+        }
+    }
 }
 
 /** A window of the sign-in: its title, ✕, and [content] in a fixed frame. */
@@ -460,145 +657,6 @@ private fun LoginFrame(title: String, icon: ImageVector, onClose: () -> Unit, ta
             }
             Spacer(Modifier.height(10.dp))
             content()
-        }
-    }
-}
-
-/** Yandex's sign-in page; only the redirect with the token is read, nothing on the page. */
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-private fun WebLoginDialog(onClose: () -> Unit, done: (Boolean, String) -> Unit) {
-    val ctx = LocalContext.current
-    var status by remember { mutableStateOf("Открываю страницу входа Яндекса…") }
-    var finished by remember { mutableStateOf(false) }
-    var view by remember { mutableStateOf<WebView?>(null) }
-    DisposableEffect(Unit) {
-        onDispose {
-            view?.let { runCatching { it.stopLoading(); it.loadUrl("about:blank"); it.destroy() } }
-            YaAuth.clearCookies() // the token is all that is kept
-        }
-    }
-    LoginFrame("Вход в Яндекс", Lucide.LogIn, onClose, tall = true) {
-        T(status, 14.sp, C.Sub)
-        Spacer(Modifier.height(8.dp))
-        Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(14.dp)).background(Color.White)) {
-            AndroidView(modifier = Modifier.fillMaxSize(), factory = { c ->
-                val w = runCatching { WebView(c) }.getOrNull()
-                if (w == null) {
-                    status = "На этой магнитоле нет системного WebView: вставьте токен"
-                    return@AndroidView android.view.View(c)
-                }
-                view = w
-                w.settings.apply {
-                    javaScriptEnabled = true // Yandex's page needs it; no JavaScript interface is added
-                    domStorageEnabled = true
-                    allowFileAccess = false
-                    allowContentAccess = false
-                    setSupportMultipleWindows(false)
-                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                }
-                /** True: the link is ours to handle (the token, an error, a page off Yandex). Never logged. */
-                fun check(url: String?): Boolean {
-                    if (finished || url == null) return finished
-                    val r = YaApi.fromRedirect(url)
-                    if (r != null) {
-                        finished = true
-                        val (tok, exp, _) = r
-                        if (tok == null) { done(false, "Вход отменён"); onClose(); return true }
-                        status = "Проверяю вход…"
-                        YaAuth.signIn(ctx, tok, exp?.toLongOrNull() ?: 0) { ok, msg -> done(ok, msg); onClose() }
-                        return true
-                    }
-                    return !YaAuth.yandexPage(url)
-                }
-                w.webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest) = check(r.url.toString())
-                    @Deprecated("for Android 6")
-                    override fun shouldOverrideUrlLoading(v: WebView, url: String) = check(url)
-                    override fun onPageStarted(v: WebView, url: String?, f: Bitmap?) { if (check(url)) v.stopLoading() }
-                    override fun onPageFinished(v: WebView, url: String?) {
-                        if (finished) return
-                        check(url)
-                        if (!finished) status = "Введите логин, пароль и код на странице Яндекса. Приложение не видит и не хранит пароль."
-                    }
-                    override fun doUpdateVisitedHistory(v: WebView, url: String?, reload: Boolean) { check(url) }
-                    override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
-                        if (r.isForMainFrame && !finished) status = "Страница Яндекса не открылась: проверьте интернет и попробуйте позже"
-                    }
-                }
-                w.loadUrl(YaAuth.AUTHORIZE)
-                w
-            })
-        }
-    }
-}
-
-/** The device flow: a code to confirm on the phone (ya.ru/device). */
-@Composable
-private fun CodeLoginDialog(onClose: () -> Unit, done: (Boolean, String) -> Unit) {
-    val ctx = LocalContext.current
-    var shown by remember { mutableStateOf("· · ·") }
-    var status by remember { mutableStateOf("Получаю код…") }
-    LaunchedEffect(Unit) {
-        val code = withContext(Dispatchers.IO) { runCatching { YaAuth.requestCode() }.getOrNull() }
-        if (code == null) { status = "Сервис недоступен, попробуйте позже"; return@LaunchedEffect }
-        shown = code.userCode
-        status = "Откройте ${code.url.removePrefix("https://")} и введите код"
-        var interval = code.intervalMs
-        while (System.currentTimeMillis() < code.deadline) {
-            delay(interval)
-            val (tok, info) = withContext(Dispatchers.IO) { runCatching { YaAuth.pollCode(code) }.getOrDefault(null to "") }
-            when {
-                tok != null -> {
-                    status = "Проверяю вход…"
-                    YaAuth.signIn(ctx, tok, info.toLongOrNull() ?: 0) { ok, msg -> done(ok, msg); onClose() }
-                    return@LaunchedEffect
-                }
-                info == "slow_down" -> interval += 2000
-                info.isEmpty() || info == "authorization_pending" -> {}
-                else -> { status = if (info == "access_denied") "Вход отклонён на телефоне" else "Яндекс не подтвердил вход"; return@LaunchedEffect }
-            }
-        }
-        status = "Код истёк: закройте окно и попробуйте снова"
-    }
-    LoginFrame("Вход с телефона", Lucide.Smartphone, onClose, tall = false) {
-        T("На телефоне, где вы вошли в Яндекс, откройте ya.ru/device и введите этот код:", 14.sp, C.Sub)
-        Spacer(Modifier.height(16.dp))
-        T(I18n.raw(shown), 48.sp, C.Violet, FontWeight.Bold, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-        Spacer(Modifier.height(8.dp))
-        T(status, 15.sp, C.Text, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-        Spacer(Modifier.height(12.dp))
-        T("Код действует несколько минут. Подтвердите вход аккаунтом с подпиской: приложение получит только токен доступа.", 13.sp, C.Sub)
-    }
-}
-
-/** «Вставить токен»: for those who have one. */
-@Composable
-private fun PasteTokenDialog(onClose: () -> Unit, done: (Boolean, String) -> Unit) {
-    val ctx = LocalContext.current
-    var tok by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf("") }
-    LoginFrame("Вставить токен", Lucide.KeyRound, onClose, tall = false) {
-        T("Токен Яндекс Музыки (обычно начинается с «y0_»). Он будет проверен и сохранён зашифрованным; никуда, кроме Яндекса, не отправляется.", 14.sp, C.Sub)
-        Spacer(Modifier.height(12.dp))
-        androidx.compose.material3.OutlinedTextField(
-            value = tok, onValueChange = { tok = it.trim() }, singleLine = true, label = { T("Токен", 13.sp, C.Sub) },
-            visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(focusedTextColor = C.Text, unfocusedTextColor = C.Text,
-                focusedBorderColor = C.Purple, unfocusedBorderColor = C.Border),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        if (status.isNotEmpty()) { Spacer(Modifier.height(8.dp)); T(status, 13.sp, C.Orange) }
-        Spacer(Modifier.height(14.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Pill("Из буфера", Lucide.ClipboardPaste) {
-                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                runCatching { cm?.primaryClip?.getItemAt(0)?.coerceToText(ctx)?.toString()?.trim() }.getOrNull()?.let { tok = it }
-            }
-            Pill("Войти", Lucide.LogIn, true) {
-                status = "Проверяю…"
-                YaAuth.signIn(ctx, tok, 0) { ok, msg -> if (ok) { done(true, msg); onClose() } else status = msg }
-            }
         }
     }
 }
