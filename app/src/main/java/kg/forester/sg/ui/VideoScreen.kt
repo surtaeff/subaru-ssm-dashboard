@@ -485,11 +485,7 @@ private fun AltHome(play: (AltVideo) -> Unit) {
     val version by AltStore.version.collectAsState()
     val recent = remember(version) { AltStore.recent(20) }
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item("about") {
-            T("ts.kg и oc.kg работают только в Кыргызстане: из других стран их серверы и сами видео отвечают отказом. " +
-                "Здесь легальные сервисы: Rutube в его собственном плеере, YouTube, VK Видео и приложения онлайн-кинотеатров.", 14.sp, C.Sub)
-        }
-        item("apps") { AppTiles(title = "Приложения", hint = true) }
+        item("apps") { AppTiles(title = "Приложения") }
         if (recent.isNotEmpty()) item("recent") {
             RowTitle(Lucide.History, "Продолжить просмотр")
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -577,13 +573,10 @@ private fun AltCard(v: AltVideo, progress: Float? = null, onClick: () -> Unit) {
 
 /** The official apps of the online cinemas that are installed: opened as they are, with the driver's own subscription. */
 @Composable
-private fun AppTiles(title: String, hint: Boolean = false) {
+private fun AppTiles(title: String) {
     val ctx = LocalContext.current
     val apps by produceState(emptyList<VideoApp>()) { value = withContext(Dispatchers.IO) { VideoApps.installed(ctx) } }
-    if (apps.isEmpty()) {
-        if (hint) T("Установите Кинопоиск, Okko, Wink, ivi, Start, Premier, VK Видео или YouTube: их кнопки появятся здесь.", 14.sp, C.Sub)
-        return
-    }
+    if (apps.isEmpty()) return
     Column {
         RowTitle(Lucide.Clapperboard, title)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
