@@ -96,7 +96,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun VideoScreen() {
     val ctx = LocalContext.current
-    remember { VideoRegion.init(ctx) }
+    remember { VideoRegion.init(ctx); true }
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) { VideoStore.load(ctx) }
         VideoRegion.refresh(ctx)
@@ -448,7 +448,7 @@ private fun EpisodeRow(d: VideoDetails, e: VideoEpisode, current: Boolean, @Supp
 @Composable
 private fun OtherVideo(openRegion: () -> Unit) {
     val ctx = LocalContext.current
-    remember { YouTube.loadKey(ctx) }
+    remember { YouTube.loadKey(ctx); true }
     LaunchedEffect(Unit) { withContext(Dispatchers.IO) { AltStore.load(ctx) } }
     var query by rememberSaveable { mutableStateOf("") }
     var searched by rememberSaveable { mutableStateOf<String?>(null) }
@@ -624,7 +624,7 @@ private fun VideoRegionDialog(onClose: () -> Unit) {
 fun VideoRegionSetting() {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    remember { VideoRegion.init(ctx) }
+    remember { VideoRegion.init(ctx); true }
     val setting by VideoRegion.setting.collectAsState()
     val kg by VideoRegion.inKyrgyzstan.collectAsState()
     T("Регион видео", 15.sp, weight = FontWeight.Medium)
@@ -646,7 +646,7 @@ fun VideoRegionSetting() {
             "и тогда вместо них Rutube и приложения онлайн-кинотеатров.",
     )
     Spacer(Modifier.height(12.dp))
-    remember { YouTube.loadKey(ctx) }
+    remember { YouTube.loadKey(ctx); true }
     val saved by YouTube.key.collectAsState()
     var key by remember(saved) { mutableStateOf(saved) }
     T("Ключ YouTube Data API (необязательно)", 15.sp, weight = FontWeight.Medium)
