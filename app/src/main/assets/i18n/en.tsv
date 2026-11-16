@@ -5460,3 +5460,79 @@ ts.kg и oc.kg работают только в Кыргызстане: из д�
 Код истёк	The code has expired
 Получить новый код	Get a new code
 QR-код страницы входа	QR code of the sign-in page
+// ui/SensorBoxUi.kt ui/MediaYandex.kt ui/DtcScreen.kt ui/CanUi.kt ui/BoxCanUi.kt service/EcuService.kt ssm/SsmP1Defs.kt data/CsvRead.kt data/BoxCan.kt ssm/SsmP1Client.kt
+CAN-шина	CAN bus
+CAN-H шины	bus CAN-H
+CAN-L шины	bus CAN-L
+CAN-трансивер	CAN transceiver
+Старый ЭБУ (SSM1): {}	Old ECU (SSM1): {}
+Вместо CANable может быть SensorBox на ESP32-S3 с трансивером CAN (прошивка 6): включите «CAN-шина» в «Датчики и экраны», скорость там своя. Если CANable на USB нет, приложение берёт кадры с коробки	Instead of a CANable it can be a SensorBox on an ESP32-S3 with a CAN transceiver (firmware 6): turn on «CAN bus» in «Sensors and screens», its speed is set there. With no CANable on USB the app takes the frames from the box
+TXD модуля	module TXD
+RXD модуля	module RXD
+S модуля (тихий режим)	module S (silent mode)
+VIO модуля	module VIO
+3V3 модуля	module 3V3
+Трансивер TJA1051T/3 (модуль с выводом VIO)	TJA1051T/3 transceiver (module with a VIO pin)
+Трансивер SN65HVD230 (модуль VP230)	SN65HVD230 transceiver (VP230 module)
+только на ESP32-S3	ESP32-S3 only
+выключена: вместо CANable	off: a CANable instead
+{}, ждёт плату	{}, waiting for the board
+bus off: проверьте проводку и скорость	bus off: check the wiring and the speed
+{} · {} · {} кадр/с	{} · {} · {} frames/s
+слушает	listening
+ESP32-S3 читает CAN своим контроллером через модуль-трансивер, отдельный CANable не нужен. Кадры идут туда же, что и от CANable: «Что идёт по CAN», свои значения из CAN, поток Link. Датчики и выходы платы работают как прежде	The ESP32-S3 reads CAN with its own controller through a transceiver module, no separate CANable needed. The frames go where a CANable's do: «What is on CAN», own CAN values, the Link stream. The board's sensors and outputs work as before
+CAN есть только у ESP32-S3: у неё свой контроллер CAN (TWAI). У Arduino Nano, Uno, Pro Micro и Mega его нет. Выберите ESP32-S3 на шаге «Плата», если она у вас	Only the ESP32-S3 has CAN: it has its own CAN controller (TWAI). The Arduino Nano, Uno, Pro Micro and Mega have none. Pick the ESP32-S3 at the «Board» step if you have one
+На плате прошивка {}: CAN появился в прошивке #. Обновите её на шаге «Прошивка», датчики и выходы останутся как были	The board has firmware {}: CAN came in firmware #. Update it at the «Firmware» step, the sensors and outputs stay as they were
+Читать CAN-шину	Read the CAN bus
+Коробка вместо CANable: в «Машина и адаптер» выберите «CAN-адаптер», и если CANable на USB нет, приложение берёт кадры с коробки. С другим адаптером кадры видны в «Что идёт по CAN» и в своих значениях	The box instead of a CANable: in «Car and adapter» pick «CAN adapter», and with no CANable on USB the app takes the frames from the box. With another adapter the frames show in «What is on CAN» and in own values
+Какая шина	Which bus
+Шина машины: только слушать	The car's bus: listen only
+Своя шина датчиков	Own sensor bus
+Коробка не подтверждает кадры и не шлёт ошибок, а вывод S держит передатчик трансивера выключенным: на шину машины она не влияет никак	The box doesn't acknowledge frames or send errors, and the S pin keeps the transceiver's transmitter off: it has no effect on the car's bus at all
+Обычный режим: коробка подтверждает кадры (ACK), иначе датчик на своей шине уйдёт в ошибку. Только для своей шины (CAN-датчики, ЭБУ на стенде), не для шины машины: там это может вызвать ошибки ABS, SRS, иммобилайзера	Normal mode: the box acknowledges frames (ACK), otherwise a sensor on its own bus goes into error. Only for your own bus (CAN sensors, an ECU on the bench), not the car's: there it can set ABS, SRS and immobiliser faults
+Моторная шина и OBD-II обычно 500 кбит, комфортная VW 100 (до 2000 года 62,5), Mercedes CAN-B 83,3, Haltech и часть ЭБУ 1 Мбит. Скорость неверная: кадров нет, растут ошибки приёма	The engine bus and OBD-II are usually 500 kbit, VW comfort 100 (62.5 before 2000), Mercedes CAN-B 83.3, Haltech and some ECUs 1 Mbit. A wrong speed: no frames, receive errors grow
+Трансивер	Transceiver
+Лучший выбор: вывод S выключает передатчик аппаратно, а VIO даёт логику 3,3 В для ESP32-S3. Берите именно T/3 (с VIO): у TJA1050 и TJA1051T без /3 логика 5 В	The best choice: the S pin turns the transmitter off in hardware, and VIO gives 3.3 V logic for the ESP32-S3. Take exactly the T/3 (with VIO): the TJA1050 and the TJA1051T without /3 have 5 V logic
+Модуль на 3,3 В. Вывода S у него нет (Rs на массе), тихий режим только программный. Для шины машины лучше TJA1051T/3	A 3.3 V module. It has no S pin (Rs to ground), silent mode is software only. For the car's bus the TJA1051T/3 is better
+Без S тихий режим только программный: трансивер по умолчанию в обычном режиме	Without S silent mode is software only: by default the transceiver is in normal mode
+CAN выключен	CAN off
+Прошивка платы без CAN	Board firmware without CAN
+Плата открывает шину…	The board opens the bus…
+Шина {}: {} кадров в секунду, всего {}	Bus {}: {} frames per second, {} in all
+Ошибки приёма: {}. Растут: не та скорость, перепутаны CAN-H и CAN-L, нет терминатора на своей шине	Receive errors: {}. Growing: the wrong speed, CAN-H and CAN-L swapped, no terminator on your own bus
+Потеряно кадров: в контроллере {}, на USB {}. Шина загружена сильнее, чем успевает магнитола: поставьте фильтр по ID	Frames lost: {} in the controller, {} on USB. The bus is busier than the head unit keeps up with: set an ID filter
+Фильтр по ID	ID filter
+Пусто: все кадры. Фильтр работает в самой плате и разгружает USB, когда шина забита, а нужны пара ID. Маска: единичные биты должны совпасть (7FF: ровно этот ID, 7F0: шестнадцать подряд)	Empty: all frames. The filter works in the board itself and eases USB when the bus is packed and a couple of IDs are needed. Mask: the set bits must match (7FF: exactly this ID, 7F0: sixteen in a row)
+Маска, hex	Mask, hex
+{} → пин {} платы (CAN TX)	{} → board pin {} (CAN TX)
+{} → пин {} платы (CAN RX)	{} → board pin {} (CAN RX)
+{} → пин {} платы, и резистор # кОм от S к 3V3: пока плата загружается, трансивер молчит (без резистора у TJA1051 S внутри подтянут к массе, это обычный режим)	{} → board pin {}, and a # kΩ resistor from S to 3V3: while the board boots the transceiver stays silent (without the resistor the TJA1051's S is pulled to ground inside, which is normal mode)
+{} → пин {} платы: трансивер питается от # В	{} → board pin {}: the transceiver runs on # V
+{} → пин {} платы: уровни TXD и RXD # В, как у ESP32-S3	{} → board pin {}: TXD and RXD levels # V, as on the ESP32-S3
+{} → пин {} платы	{} → board pin {}
+{} → GND платы. Масса коробки и шины должна быть общей (у магнитолы она общая с кузовом)	{} → board GND. The box and the bus must share ground (the head unit's is common with the body)
+{} → провод CAN-H шины (на разъёме OBD-II это пин #)	{} → the bus's CAN-H wire (pin # on the OBD-II connector)
+{} → провод CAN-L шины (на OBD-II пин #). CAN-H и CAN-L это витая пара, не раскручивайте её дальше, чем нужно	{} → the bus's CAN-L wire (OBD-II pin #). CAN-H and CAN-L are a twisted pair, don't untwist it more than needed
+Перемычку (или джампер) 120 Ом на модуле снимите: у шины машины уже есть свои два терминатора. Мультиметр между CAN-H и CAN-L при выключенном зажигании покажет около 60 Ом	Remove the 120 Ω link (or jumper) on the module: the car's bus already has its own two terminators. A multimeter between CAN-H and CAN-L with the ignition off shows about 60 Ω
+Своя шина: по терминатору 120 Ом на двух её концах. Коробка на конце шины: перемычку 120 Ом на модуле оставьте. Проверка мультиметром без питания: 60 Ом хорошо, 120 не хватает одного, около 40 один лишний	Own bus: a 120 Ω terminator at each of its two ends. The box at an end of the bus: leave the module's 120 Ω link on. Multimeter check without power: 60 Ω is right, 120 is one short, about 40 is one too many
+Плату USB-кабелем в магнитолу, как обычно. Коробка питается от USB, +12 В машины ей не нужно	The board into the head unit with a USB cable, as usual. The box is powered over USB, it doesn't need the car's +12 V
+Где подключиться к машине. OBD-II пины 6 и 14: проще всего, но на многих машинах там только диагностика за шлюзом (gateway), и по шине почти ничего не идёт. Больше данных за разъёмом магнитолы (комфортная или мультимедийная шина), у блока кузова (BCM) или климата. Врезка пайкой с термоусадкой или T-разветвитель OBD, не скрутка	Where to connect to the car. OBD-II pins 6 and 14: the easiest, but on many cars only diagnostics behind a gateway are there, and next to nothing runs on the bus. More data behind the head unit's connector (comfort or infotainment bus), at the body module (BCM) or the climate unit. Tap in by soldering with heat shrink or with an OBD T-splitter, not a twist
+Защита: TVS-сборка для CAN (PESD1CAN, NUP2105L) между CAN-H, CAN-L и массой у самого разъёма. Если своя шина питается от машины: предохранитель 1 А и автомобильный DC-DC, не напрямую от 12 В. Шина машины только на прослушивание: передача в неё может вызвать ошибки ABS, SRS, иммобилайзера	Protection: a CAN TVS array (PESD1CAN, NUP2105L) between CAN-H, CAN-L and ground right at the connector. If your own bus is powered from the car: a 1 A fuse and an automotive DC-DC, not straight from 12 V. The car's bus is for listening only: sending into it can set ABS, SRS and immobiliser faults
+Не подойдут без другого трансивера: K-CAN BMW (отказоустойчивая шина 100 кбит, нужен TJA1055), однопроводная GMLAN 33,3 кбит (TH8056). CAN FD плата не читает: такие кадры для неё ошибки	Won't do without another transceiver: BMW K-CAN (a fault-tolerant 100 kbit bus, needs a TJA1055), single-wire GMLAN 33.3 kbit (TH8056). The board doesn't read CAN FD: such frames are errors to it
+Найден старый ЭБУ (SSM1), ROM {}: подключаюсь…	Old ECU (SSM1) found, ROM {}: connecting…
+Старый ЭБУ (SSM1), ROM {}: такого ЭБУ пока нет в базе приложения. Отправьте журнал (Настройки, Машина и адаптер), его добавят	Old ECU (SSM1), ROM {}: the app has no such ECU in its base yet. Send the log (Settings, Car and adapter) and it will be added
+Старый ЭБУ (SSM1) · {} · ROM {}. Опрос медленный, пара обновлений в секунду	Old ECU (SSM1) · {} · ROM {}. Polling is slow, a couple of updates a second
+SSM1, адрес 0x#	SSM1, address 0x#
+слушает шину	listening to the bus
+на шине (обычный режим)	on the bus (normal mode)
+шина отключена (bus off): проводка или скорость	bus disconnected (bus off): wiring or speed
+восстанавливается после bus off	recovering after bus off
+остановлена	stopped
+// data/CsvRead.kt ssm/SsmP1Client.kt
+SSM1: кабель не берёт скорость 1953 бод	SSM1: the cable does not take the speed of 1953 baud
+// left by I18nCoverageTest (ui/VideoScreen.kt, ui/CanSnifferUi.kt, ui/BoxCanUi.kt, ui/CanUi.kt)
+Найдено	Found
+байт {}	byte {}
+байт {}: {}	byte {}: {}
+Нужна прошивка 6: обновите	Firmware 6 needed: update
+Значение выходит за {} байт кадра	The value goes past the frame's {} bytes

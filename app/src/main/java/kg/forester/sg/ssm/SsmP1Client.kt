@@ -28,7 +28,7 @@ class SsmP1Client(private val port: UsbSerialPort) {
         try {
             port.setParameters(BAUD, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
         } catch (e: Exception) {
-            throw IOException("SSM1: this cable does not take 1953 бод", e)
+            throw IOException("SSM1: кабель не берёт скорость 1953 бод", e)
         }
         runCatching { port.dtr = true }
         runCatching { port.rts = true }

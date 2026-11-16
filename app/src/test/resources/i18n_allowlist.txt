@@ -58,3 +58,5 @@ CarPulse: журнал обмена
 [субтитры]
 Сериал
 похож
+// Column names a log CSV may have for its time (data/CsvRead.kt): compared, never shown.
+дата
