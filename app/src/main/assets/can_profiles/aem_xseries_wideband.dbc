@@ -1,0 +1,22 @@
+VERSION ""
+
+CM_ "CarPulse: AEM X-Series wideband UEGO controller (30-0300, 30-0310 and the like), first controller. Written for CarPulse from public facts: AEM's 30-0300 manual (500 kbit/s, 29-bit id 0x180-0x18F, 100 Hz, big endian, lambda 0.0001/bit) and the decoder in rusEFI (AemXSeriesLambda.cpp: byte 6 bit 7 = lambda valid, byte 7 bit 6 = sensor fault). The second controller sends on 0x181, and so on.";
+
+BS_:
+
+BU_: AEM_X
+
+BO_ 2147484032 AEM_X_SERIES_1: 8 AEM_X
+ SG_ Lambda : 7|16@0+ (0.0001,0) [0|6.5535] "lambda" Vector__XXX
+ SG_ Oxygen : 23|16@0- (0.001,0) [-32.768|32.767] "%" Vector__XXX
+ SG_ SystemVolts : 32|8@1+ (0.1,0) [0|25.5] "V" Vector__XXX
+ SG_ LambdaValid : 55|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ SensorFault : 62|1@1+ (1,0) [0|1] "" Vector__XXX
+
+CM_ SG_ 2147484032 Lambda "Lambda, 16 bit unsigned, 0.0001 per bit, high byte first";
+CM_ SG_ 2147484032 LambdaValid "1 = the lambda value is valid (sensor warmed up)";
+CM_ SG_ 2147484032 SensorFault "1 = sensor fault";
+BA_ "GenMsgCycleTime" BO_ 2147484032 10;
+BA_ "Baudrate" 500000;
+VAL_ 2147484032 LambdaValid 0 "not valid" 1 "valid" ;
+VAL_ 2147484032 SensorFault 0 "ok" 1 "fault" ;

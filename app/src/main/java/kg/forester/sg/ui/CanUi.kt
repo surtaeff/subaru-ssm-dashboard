@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import com.composables.icons.lucide.Activity
+import com.composables.icons.lucide.Layers
 import com.composables.icons.lucide.ListPlus
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Plus
@@ -58,6 +59,7 @@ fun CanablePanel() {
     var kbit by remember { mutableStateOf(s.canKbit) }
     var monitor by remember { mutableStateOf(false) }
     var channels by remember { mutableStateOf(false) }
+    var profiles by remember { mutableStateOf(false) }
     T("CANable: скорость шины", 15.sp)
     Spacer(Modifier.height(6.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -85,12 +87,15 @@ fun CanablePanel() {
             "Точнее станет после заправок до полного", 11.sp, C.Sub, modifier = Modifier.weight(1f))
     }
     Spacer(Modifier.height(8.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Chip("Что идёт по CAN", false, { monitor = true }, Lucide.Activity)
         Chip("Свои значения из CAN", false, { channels = true }, Lucide.ListPlus)
+        Chip("Готовые профили", false, { profiles = true }, Lucide.Layers)
+        CanImportChip()
     }
     if (monitor) CanMonitorDialog { monitor = false }
     if (channels) CanChannelsDialog(null) { channels = false }
+    if (profiles) CanProfilesDialog { profiles = false }
     Spacer(Modifier.height(14.dp))
 }
 
@@ -205,17 +210,28 @@ private fun CanChannelForm(start: CanChannel, onDone: () -> Unit) {
     var units by remember { mutableStateOf(start.units) }
     var dec by remember { mutableStateOf(start.decimals) }
     var role by remember { mutableStateOf(start.role) }
+    // a bit-level signal (DBC start bit and length) instead of whole bytes
+    var bitMode by remember { mutableStateOf(start.bits) }
+    var sbText by remember { mutableStateOf(if (start.bits) start.startBit.toString() else "") }
+    var blText by remember { mutableStateOf(if (start.bits) start.bitLen.toString() else "") }
+    val sb = sbText.trim().toIntOrNull()
+    val bl = blText.trim().toIntOrNull()
     val canId = idText.trim().removePrefix("0x").removePrefix("0X").toIntOrNull(16)
     val muxN = mux.trim().takeIf { it.isNotEmpty() }?.toIntOrNull()
     val error = when {
         name.isBlank() -> "Введите название"
         canId == null || canId > (if (ext) 0x1FFFFFFF else 0x7FF) -> "ID в шестнадцатеричном виде: 3E8 для 1000 (у Link ID в PCLink десятичный)"
         mux.isNotBlank() && (muxN == null || muxN !in 0..255) -> "Номер кадра: число 0–255 или пусто"
-        byte + len > 8 -> "Значение выходит за 8 байт кадра"
+        bitMode && (sb == null || sb !in 0..511) -> "Стартовый бит: число 0–511"
+        bitMode && (bl == null || bl !in 1..64) -> "Длина: 1–64 бит"
+        bitMode && kg.forester.sg.data.CanBits.positions(sb!!, bl!!, be, 64) == null -> "Сигнал выходит за пределы кадра"
+        !bitMode && byte + len > 8 -> "Значение выходит за 8 байт кадра"
         RrExpr.parse(formula.ifBlank { "x" }) == null -> "Формула: x, числа, + − * / и скобки"
         else -> null
     }
-    val draft = if (canId != null) CanChannel(start.id, name, canId, ext, muxN ?: -1, byte, len, be, signed, formula.ifBlank { "x" }, units, dec, role) else null
+    val draft = if (canId != null) CanChannel(start.id, name, canId, ext, muxN ?: -1, byte, len, be, signed, formula.ifBlank { "x" }, units, dec, role,
+        startBit = if (bitMode && sb != null && bl != null) sb else -1, bitLen = if (bitMode && sb != null && bl != null) bl else 0,
+        muxStart = start.muxStart, muxLen = start.muxLen, muxBe = start.muxBe) else null
     val rows by CanMonitor.rows.collectAsState()
     val row = draft?.let { d -> rows.firstOrNull { it.id == d.canId && it.ext == d.ext && (d.mux < 0 || it.mux == d.mux) } }
     val preview = row?.let { r -> draft.raw(r.data)?.let { raw -> raw to draft.decode(r.data) } }
@@ -240,8 +256,16 @@ private fun CanChannelForm(start: CanChannel, onDone: () -> Unit) {
         }
         Spacer(Modifier.height(10.dp))
         Labeled("ID") { Chip("11 бит", !ext, { ext = false }); Chip("29 бит", ext, { ext = true }) }
-        Labeled("Первый байт") { (0..7).forEach { n -> Chip("$n", byte == n, { byte = n }) } }
-        Labeled("Длина") { listOf(1, 2, 4).forEach { n -> Chip("$n байт", len == n, { len = n }) } }
+        Labeled("Разметка") { Chip("байты", !bitMode, { bitMode = false }); Chip("биты (как в DBC)", bitMode, { bitMode = true }) }
+        if (bitMode) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FormField("Стартовый бит", sbText, Modifier.width(170.dp), KeyboardType.Number) { sbText = it.filter { c -> c.isDigit() }.take(3) }
+            FormField("Длина, бит", blText, Modifier.width(170.dp), KeyboardType.Number) { blText = it.filter { c -> c.isDigit() }.take(2) }
+            T("Как в DBC: у Intel стартовый бит младший, у Motorola старший; биты считаются от младшего бита байта 0 (байт 1 = биты 8–15)",
+                11.sp, C.Sub, modifier = Modifier.weight(1f))
+        } else {
+            Labeled("Первый байт") { (0..7).forEach { n -> Chip("$n", byte == n, { byte = n }) } }
+            Labeled("Длина") { listOf(1, 2, 4).forEach { n -> Chip("$n байт", len == n, { len = n }) } }
+        }
         Labeled("Порядок байт") { Chip("младший первым (Intel)", !be, { be = false }); Chip("старший первым (Motorola)", be, { be = true }) }
         Labeled("Знак") { Chip("без знака", !signed, { signed = false }); Chip("со знаком", signed, { signed = true }) }
         Labeled("Знаков после запятой") { (0..3).forEach { n -> Chip("$n", dec == n, { dec = n }) } }

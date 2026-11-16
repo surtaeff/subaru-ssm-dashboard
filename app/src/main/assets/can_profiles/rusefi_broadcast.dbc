@@ -1,0 +1,43 @@
+VERSION ""
+
+CM_ "CarPulse: rusEFI ECU broadcast on its default base id 0x200 (512), low byte first. A short own description of the frames 0x201-0x209 for a dash; ids, bit positions and scales are taken as facts from rusEFI's public CAN broadcast description (rusEFI_CAN_verbose.dbc), whose file is not copied here. The base id and the bus speed are set in TunerStudio.";
+
+BS_:
+
+BU_: RUSEFI
+
+BO_ 513 RUSEFI_BASE1: 8 RUSEFI
+ SG_ RPM : 0|16@1+ (1,0) [0|0] "rpm" Vector__XXX
+ SG_ IgnitionTiming : 16|16@1- (0.02,0) [0|0] "deg" Vector__XXX
+ SG_ InjectorDuty : 32|8@1+ (0.5,0) [0|100] "%" Vector__XXX
+ SG_ VehicleSpeed : 48|8@1+ (1,0) [0|255] "km/h" Vector__XXX
+ SG_ FlexEthanol : 56|8@1+ (1,0) [0|100] "%" Vector__XXX
+
+BO_ 514 RUSEFI_BASE2: 8 RUSEFI
+ SG_ PedalPosition : 0|16@1- (0.01,0) [0|100] "%" Vector__XXX
+ SG_ TPS1 : 16|16@1- (0.01,0) [0|100] "%" Vector__XXX
+
+BO_ 515 RUSEFI_BASE3: 8 RUSEFI
+ SG_ MAP : 0|16@1+ (0.03333333,0) [0|0] "kPa" Vector__XXX
+ SG_ CoolantTemperature : 16|8@1+ (1,-40) [-40|200] "C" Vector__XXX
+ SG_ IntakeTemperature : 24|8@1+ (1,-40) [-40|200] "C" Vector__XXX
+ SG_ McuTemperature : 48|8@1+ (1,-40) [-40|100] "C" Vector__XXX
+ SG_ FuelLevel : 56|8@1+ (0.5,0) [0|100] "%" Vector__XXX
+
+BO_ 516 RUSEFI_BASE4: 8 RUSEFI
+ SG_ OilPressure : 16|16@1+ (0.03333333,0) [0|0] "kPa" Vector__XXX
+ SG_ OilTemperature : 32|8@1+ (1,-40) [-40|215] "C" Vector__XXX
+ SG_ FuelTemperature : 40|8@1+ (1,-40) [-40|215] "C" Vector__XXX
+ SG_ BatteryVoltage : 48|16@1+ (0.001,0) [0|25] "V" Vector__XXX
+
+BO_ 519 RUSEFI_BASE7: 8 RUSEFI
+ SG_ Lambda1 : 0|16@1+ (0.0001,0) [0|2] "lambda" Vector__XXX
+ SG_ Lambda2 : 16|16@1+ (0.0001,0) [0|2] "lambda" Vector__XXX
+ SG_ FuelPressureLow : 32|16@1+ (0.03333333,0) [0|0] "kPa" Vector__XXX
+ SG_ FuelPressureHigh : 48|16@1+ (0.1,0) [0|0] "bar" Vector__XXX
+
+BO_ 521 RUSEFI_BASE9: 8 RUSEFI
+ SG_ EGT1 : 0|8@1+ (5,0) [0|1250] "C" Vector__XXX
+ SG_ EGT2 : 8|8@1+ (5,0) [0|1250] "C" Vector__XXX
+ SG_ EGT3 : 16|8@1+ (5,0) [0|1250] "C" Vector__XXX
+ SG_ EGT4 : 24|8@1+ (5,0) [0|1250] "C" Vector__XXX

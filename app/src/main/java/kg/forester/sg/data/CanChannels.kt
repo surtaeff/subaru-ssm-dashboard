@@ -32,12 +32,29 @@ data class CanChannel(
     val decimals: Int,
     /** One of [ROLES]: a SensorBox role (°C, pressures in [units] or bar, % ethanol) or "fault" (the Link's fault code number). */
     val role: String,
+    /**
+     * A bit-level signal as a DBC (or RealDash's startbit/bitcount) gives it: its start bit, Intel or Motorola by
+     * [bigEndian] (see [CanBits]); -1 = the byte model of [byte] and [len], which then stay a rough fallback.
+     */
+    val startBit: Int = -1,
+    /** 1–64 bits of the bit-level signal. */
+    val bitLen: Int = 0,
+    /** Where a DBC multiplexor lies when it is not byte 0: start bit, -1 = byte 0 (the Link's compound stream). */
+    val muxStart: Int = -1,
+    val muxLen: Int = 8,
+    val muxBe: Boolean = false,
 ) {
     private val expr by lazy { RrExpr.parse(formula.ifBlank { "x" }) }
 
+    val bits get() = startBit >= 0 && bitLen > 0
+
     /** The raw number in [d], or null when the frame is too short (or not the right frame of a compound stream). */
     fun raw(d: ByteArray): Long? {
-        if (mux >= 0 && (d.isEmpty() || (d[0].toInt() and 0xFF) != mux)) return null
+        if (mux >= 0) {
+            val m = if (muxStart >= 0) CanBits.get(d, muxStart, muxLen, muxBe, false) else d.firstOrNull()?.let { it.toLong() and 0xFF }
+            if (m != mux.toLong()) return null
+        }
+        if (bits) return CanBits.get(d, startBit, bitLen, bigEndian, signed)
         if (byte < 0 || byte + len > d.size) return null
         var u = 0L
         for (i in 0 until len) {
@@ -48,7 +65,18 @@ data class CanChannel(
         return u
     }
 
-    fun decode(d: ByteArray): Double? = raw(d)?.let { x -> expr?.eval(x.toDouble()) { _, _ -> null } ?: x.toDouble() }
+    fun decode(d: ByteArray): Double? = raw(d)?.let { r ->
+        // all 64 bits unsigned: past Long's range
+        val x = if (bits && bitLen == 64 && !signed && r < 0) r.toULong().toDouble() else r.toDouble()
+        // RealDash's names in a formula: V the value, B0… its bytes from the first one
+        expr?.eval(x) { ref, _ ->
+            when {
+                ref == "V" -> x
+                ref.length > 1 && ref[0] == 'B' && ref.drop(1).all { it.isDigit() } -> d.getOrNull(byte + ref.drop(1).toInt())?.let { (it.toInt() and 0xFF).toDouble() }
+                else -> null
+            }
+        } ?: x
+    }
 
     fun matches(id: Int, isExt: Boolean) = id == canId && isExt == ext
 
@@ -58,11 +86,17 @@ data class CanChannel(
         storage = "", expr = null, deps = emptyList(), conversions = emptyMap(),
     )
 
-    fun idText() = (if (ext) "%08X" else "%03X").format(canId) + (if (mux >= 0) " #$mux" else "") + ", байт $byte" + (if (len > 1) "–${byte + len - 1}" else "")
+    fun idText() = (if (ext) "%08X" else "%03X").format(canId) + (if (mux >= 0) " #$mux" else "") +
+        if (bits) ", биты $startBit|$bitLen" + (if (bigEndian) "@0" else "@1") else ", байт $byte" + (if (len > 1) "–${byte + len - 1}" else "")
 
     fun toJson(): JSONObject = JSONObject().put("id", id).put("name", name).put("can", canId).put("ext", ext).put("mux", mux)
         .put("byte", byte).put("len", len).put("be", bigEndian).put("signed", signed).put("formula", formula)
         .put("units", units).put("dec", decimals).put("role", role)
+        .apply {
+            // only when used: a list without them reads the same in an older version
+            if (bits) put("sb", startBit).put("bits", bitLen)
+            if (muxStart >= 0) put("msb", muxStart).put("mbits", muxLen).put("mbe", muxBe)
+        }
 
     companion object {
         /** The SensorBox roles (but the tank wire's volts) and the Link's fault code. */
@@ -73,6 +107,10 @@ data class CanChannel(
             o.getString("id"), o.optString("name"), o.getInt("can"), o.optBoolean("ext"), o.optInt("mux", -1),
             o.optInt("byte").coerceIn(0, 7), o.optInt("len", 2).let { if (it in setOf(1, 2, 4)) it else 2 }, o.optBoolean("be"),
             o.optBoolean("signed"), o.optString("formula", "x"), o.optString("units"), o.optInt("dec", 1), o.optString("role"),
+            startBit = o.optInt("sb", -1).takeIf { it in 0..511 && o.optInt("bits") in 1..64 } ?: -1,
+            bitLen = o.optInt("bits").takeIf { it in 1..64 && o.optInt("sb", -1) in 0..511 } ?: 0,
+            muxStart = o.optInt("msb", -1).takeIf { it in 0..511 } ?: -1, muxLen = o.optInt("mbits", 8).coerceIn(1, 32),
+            muxBe = o.optBoolean("mbe"),
         )
     }
 }

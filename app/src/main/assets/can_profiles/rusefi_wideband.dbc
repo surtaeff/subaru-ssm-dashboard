@@ -1,0 +1,23 @@
+VERSION ""
+
+CM_ "CarPulse: rusEFI wideband controller (mck1117/wideband, MIT), first controller, standard ids 0x190 (data) and 0x191 (diagnostics), 100 Hz, low byte first. Written for CarPulse from the controller's public wideband_can.h and rusEFI's decoder: byte 1 bit 0 = valid, lambda 0.0001 per bit. The second controller sends on 0x192 and 0x193.";
+
+BS_:
+
+BU_: WBO
+
+BO_ 400 RUSEFI_WBO_1: 8 WBO
+ SG_ ProtocolVersion : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Valid : 8|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Lambda : 16|16@1+ (0.0001,0) [0|6.5535] "lambda" Vector__XXX
+ SG_ SensorTemperature : 32|16@1+ (1,0) [0|1000] "C" Vector__XXX
+
+BO_ 401 RUSEFI_WBO_1_DIAG: 8 WBO
+ SG_ Esr : 0|16@1+ (1,0) [0|0] "Ohm" Vector__XXX
+ SG_ NernstVoltage : 16|16@1+ (0.001,0) [0|0] "V" Vector__XXX
+ SG_ PumpDuty : 32|8@1+ (0.392157,0) [0|100] "%" Vector__XXX
+ SG_ Status : 40|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ HeaterDuty : 48|8@1+ (0.392157,0) [0|100] "%" Vector__XXX
+
+BA_ "GenMsgCycleTime" BO_ 400 10;
+VAL_ 401 Status 0 "Preheat" 1 "Warmup" 2 "Running" 3 "Sensor didn't heat" 4 "Sensor overheat" 5 "Sensor underheat" ;
