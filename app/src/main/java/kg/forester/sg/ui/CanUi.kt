@@ -39,6 +39,7 @@ import com.composables.icons.lucide.ListPlus
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Plus
 import com.composables.icons.lucide.Trash2
+import com.composables.icons.lucide.Wand
 import kg.forester.sg.data.CanChannel
 import kg.forester.sg.data.CanChannels
 import kg.forester.sg.data.Repo
@@ -58,10 +59,11 @@ fun CanablePanel() {
     var kbit by remember { mutableStateOf(s.canKbit) }
     var monitor by remember { mutableStateOf(false) }
     var channels by remember { mutableStateOf(false) }
+    var wizard by remember { mutableStateOf(false) }
     T("CANable: скорость шины", 15.sp)
     Spacer(Modifier.height(6.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Slcan.SPEEDS.forEach { k -> Chip(if (k >= 1000) "1 Мбит" else "$k кбит", kbit == k, { kbit = k; s.canKbit = k }) }
+        kg.forester.sg.ssm.CanBitrates.CHOICES.forEach { k -> Chip(kg.forester.sg.ssm.CanBitrates.label(k), kbit == k, { kbit = k; s.canKbit = k }) }
     }
     Spacer(Modifier.height(4.dp))
     SettingHint("Та же, что у CAN-шины ЭБУ, к которой подключён адаптер (у Link в PCLink: ECU Controls, CAN Setup). Потоки Link " +
@@ -85,11 +87,13 @@ fun CanablePanel() {
             "Точнее станет после заправок до полного", 11.sp, C.Sub, modifier = Modifier.weight(1f))
     }
     Spacer(Modifier.height(8.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Chip("Мастер подключения CAN", false, { wizard = true }, Lucide.Wand)
         Chip("Что идёт по CAN", false, { monitor = true }, Lucide.Activity)
         Chip("Свои значения из CAN", false, { channels = true }, Lucide.ListPlus)
     }
     if (monitor) CanMonitorDialog { monitor = false }
+    if (wizard) CanWizardDialog { wizard = false; kbit = s.canKbit }
     if (channels) CanChannelsDialog(null) { channels = false }
     Spacer(Modifier.height(14.dp))
 }
@@ -99,43 +103,9 @@ private fun DialogBox(onClose: () -> Unit, head: (@Composable () -> Unit)? = nul
     CarSheet(onClose, 860.dp, 620.dp, head = head?.let { h -> { h() } }) { content() }
 }
 
-/** Every id on the bus with its bytes and rate; a tap starts an own value from that id. */
+/** Every id on the bus with its bytes and rate: the sniffer (ui/CanSnifferUi.kt); a row opens its bits, and an own value from them. */
 @Composable
-fun CanMonitorDialog(onClose: () -> Unit) {
-    val rows by CanMonitor.rows.collectAsState()
-    var start by remember { mutableStateOf<CanChannel?>(null) }
-    start?.let { c -> CanChannelsDialog(c) { start = null }; return }
-    DialogBox(onClose, head = {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            T("Что идёт по CAN", 18.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            Chip("Готово", true, onClose)
-        }
-        Spacer(Modifier.height(4.dp))
-    }) {
-        val link = LinkDash.id
-        T((if (link != null) "Поток Link ${LinkDash.format?.title} найден на ID $link (0x%03X). ".format(link) else "") +
-            "Нажмите на строку, чтобы взять из неё своё значение. Где лежит нужное: меняйте его на машине (газ, прогрев) и смотрите, какие байты меняются",
-            12.sp, C.Sub)
-        Spacer(Modifier.height(8.dp))
-        if (rows.isEmpty()) T("Кадров нет. CANable подключён, адаптер в настройках CANable (или Авто), скорость шины верная, зажигание включено?", 14.sp, C.Sub)
-        Column {
-            rows.forEach { r ->
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 2.dp).clip(RoundedCornerShape(8.dp)).background(C.CardHi)
-                        .clickable {
-                            start = CanChannel(CanChannels.newId(), "", r.id, r.ext, r.mux ?: -1, if (r.mux != null) 2 else 0, 2,
-                                bigEndian = r.mux == null, signed = false, formula = "x", units = "", decimals = 0, role = "")
-                        }.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(r.idText, Modifier.width(150.dp), color = C.Violet, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
-                    Text(r.bytesText, Modifier.weight(1f), color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
-                    T("%.0f Гц".format(r.hz), 12.sp, C.Sub, modifier = Modifier.width(70.dp))
-                }
-            }
-        }
-    }
-}
+fun CanMonitorDialog(onClose: () -> Unit) = CanSnifferDialog(onClose)
 
 /** The own values off the bus; [start] opens the form for a new one at once (from the monitor). */
 @Composable

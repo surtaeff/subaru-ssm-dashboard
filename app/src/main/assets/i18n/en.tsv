@@ -1800,6 +1800,210 @@ CANable: скорость шины	CANable: bus speed
 Открытие при 14 В, мс	Opening at 14 V, ms
 Без MAF расход считается по времени впрыска: впишите производительность своих форсунок и время открытия при 14 В (как в настройке Link, от напряжения приложение пересчитает само). Пусто: штатные 380 у турбо, 260 у атмо, 0,6 мс. Точнее станет после заправок до полного	Without MAF, consumption is calculated by injection time: enter your injectors' flow and opening time at 14 V (as in the Link setup, the app recalculates by voltage). Empty: stock 380 turbo, 260 NA, 0.6 ms. More accurate after full refills
 Свои значения из CAN	Your CAN values
+// CAN tools: wizard, sniffer, logs (ui/CanWizard.kt, ui/CanSnifferUi.kt, data/CanBusGuide.kt)
+CANable: подбираю скорость шины (только приём)	CANable: finding the bus speed (listen-only)
+CANable не включил режим «только приём»: шина машины не открыта. Обновите прошивку slcan или выключите этот режим в мастере CAN	The CANable did not switch to listen-only: the car's bus is not opened. Update the slcan firmware or turn this mode off in the CAN wizard
+Мастер подключения CAN	CAN connection wizard
+Свой датчик	Your own sensor
+CAN-плата или датчик (широкополосная лямбда, ЕГТ, давление) на своей шине: адаптер и датчик вдвоём	A CAN board or sensor (wideband lambda, EGT, pressure) on a bus of its own: the adapter and the sensor alone
+Шина машины	The car's bus
+Подслушать штатную шину: обороты, скорость, кнопки, климат. Только приём, в шину ничего не отправляется	Listen to the factory bus: engine speed, road speed, buttons, climate. Receive only, nothing is sent to the bus
+Спортивный ЭБУ	Sports ECU
+Поток для дашборда от Link, Haltech, ECUMaster и других: ЭБУ шлёт его сам	The dash stream of a Link, Haltech, ECUMaster and others: the ECU sends it by itself
+обычная двухпроводная	ordinary two-wire
+отказоустойчивая (ISO 11898-3)	fault-tolerant (ISO 11898-3)
+однопроводная (SAE J2411)	single-wire (SAE J2411)
+Нужен другой трансивер: отказоустойчивый TJA1055 (ISO 11898-3). Обычный CANable эту шину не прочитает, а подключённый к ней может мешать	Needs another transceiver: a fault-tolerant TJA1055 (ISO 11898-3). An ordinary CANable can't read this bus, and connected to it may disturb it
+Нужен однопроводный трансивер (TH8056 или похожий, SAE J2411): у шины один провод и масса. Обычный CANable её не прочитает	Needs a single-wire transceiver (TH8056 or similar, SAE J2411): the bus is one wire and ground. An ordinary CANable can't read it
+Комфорт (Komfort) и инфотейнмент	Comfort (Komfort) and infotainment
+Разъём магнитолы или блока комфорта: витая пара CAN-H/CAN-L	Head unit or comfort module connector: the CAN-H/CAN-L twisted pair
+До 2000 г. шина комфорта шла на 62,5 кбит. У VW ID.4 и других на платформе MEB комфорт 500 кбит	Before 2000 the comfort bus ran at 62.5 kbit. On the VW ID.4 and other MEB cars comfort is 500 kbit
+Силовая (Antrieb)	Drivetrain (Antrieb)
+На разъёме OBD через шлюз (Gateway): там обычно только диагностика, поток силовой шины берут за шлюзом	At the OBD socket through the gateway: usually only diagnostics there; the drivetrain traffic is taken behind the gateway
+У VW ID.4 силовая шина 2 Мбит (CAN FD)	On the VW ID.4 the drivetrain bus is 2 Mbit (CAN FD)
+K-CAN (кузов, E-серия)	K-CAN (body, E series)
+Разъём магнитолы или блока климата	Head unit or climate module connector
+У E9x K-CAN на OBD не выведена	On the E9x the K-CAN is not on the OBD socket
+PT-CAN (двигатель)	PT-CAN (engine)
+За шлюзом, у блоков двигателя и коробки	Behind the gateway, at the engine and gearbox modules
+На разъёме OBD у BMW диагностика через шлюз	BMW's OBD socket gives diagnostics through the gateway
+CAN-B (салон)	CAN-B (interior)
+Разъём магнитолы или приборной панели	Head unit or instrument cluster connector
+Скорость около 83,3 кбит: не у всех адаптеров она есть	Speed about 83.3 kbit: not every adapter has it
+CAN-C (двигатель)	CAN-C (engine)
+GMLAN однопроводная (кузов)	GMLAN single-wire (body)
+На OBD это контакт 1 (один провод, масса на 4/5), или провод GMLAN у магнитолы	On the OBD socket it is pin 1 (one wire, ground on 4/5), or the GMLAN wire at the head unit
+HS-GMLAN (двигатель)	HS-GMLAN (engine)
+HS-CAN (двигатель, АКПП, ABS)	HS-CAN (engine, automatic, ABS)
+MS-CAN (кузов, климат, магнитола)	MS-CAN (body, climate, head unit)
+Контакты 3 (CAN-H) и 11 (CAN-L) разъёма OBD	Pins 3 (CAN-H) and 11 (CAN-L) of the OBD socket
+Скорость до 125 кбит	Speed up to 125 kbit
+C-CAN (двигатель, кузов)	C-CAN (engine, body)
+С 2018 г. на OBD стоит шлюз SGW: подключайтесь за ним (разъём магнитолы или перемычка в обход SGW)	Since 2018 the OBD socket has the SGW gateway: connect behind it (head unit connector or an SGW bypass cable)
+Высокоскоростная (2009+)	High speed (2009+)
+Обороты, педаль, скорость, температуры, передача слышны прямо на OBD	Engine speed, pedal, road speed, temperatures, gear are heard right at the OBD socket
+Обычная шина двигателя (HS-CAN)	Ordinary engine bus (HS-CAN)
+Скорость у большинства машин 500 кбит. Не уверены: «Подобрать скорость» найдёт сама	Most cars run 500 kbit. Not sure: «Find the speed» finds it by itself
+Шина салона за магнитолой	Interior bus behind the head unit
+Скорость бывает 33,3–500 кбит: подберите автоматически	The speed may be 33.3–500 kbit: find it automatically
+У VW, Audi, Skoda и Seat примерно с 2004 г. разъём OBD подключён через шлюз (Gateway): на нём тишина, пока не спросишь. Поток шин берут за шлюзом	On VW, Audi, Skoda and Seat from about 2004 the OBD socket is behind a gateway: it stays quiet until asked. Bus traffic is taken behind the gateway
+У BMW разъём OBD за шлюзом, а K-CAN (E9x) на него не выведена: подключайтесь у магнитолы или блока климата	On BMW the OBD socket is behind a gateway, and the K-CAN (E9x) is not on it: connect at the head unit or the climate module
+У GM с архитектурой Global B (примерно 2019–2022) разъём закрыт шлюзом SDGM: слушать надо за ним	On GM's Global B architecture (about 2019–2022) the socket is closed by the SDGM gateway: listen behind it
+У Jeep, Chrysler, Dodge, Fiat с 2018 г. на OBD стоит шлюз безопасности SGW: на разъёме только диагностика	On Jeep, Chrysler, Dodge, Fiat from 2018 the OBD socket has the SGW security gateway: only diagnostics there
+Скорость и поток задаются в PCLink (ECU Controls, CAN Setup). Dash2Pro и Generic Dash приложение находит само	The speed and the stream are set in PCLink (ECU Controls, CAN Setup). The app finds Dash2Pro and Generic Dash by itself
+1 Мбит, 11-битные ID; обороты и давление во впуске на 0x360	1 Mbit, 11-bit IDs; engine speed and manifold pressure on 0x360
+500 кбит или 1 Мбит, базовый ID 0x600	500 kbit or 1 Mbit, base ID 0x600
+AEM X-Series (лямбда)	AEM X-Series (lambda)
+Базовый ID 0x180, у каждого контроллера свой; своего терминатора у него нет	Base ID 0x180, each controller its own; it has no terminator of its own
+Другой	Other
+Скорость в настройках CAN самого ЭБУ; не знаете: «Подобрать скорость»	The speed is in the ECU's own CAN settings; don't know it: «Find the speed»
+Почти ноль: H и L замкнуты между собой или с массой, или зажигание включено. Выключите зажигание и проверьте провода	Almost zero: H and L shorted to each other or to ground, or the ignition is on. Switch the ignition off and check the wires
+Около 40 Ом: на шине лишний терминатор (три по 120). Уберите свой: у адаптера выключите, у датчика не ставьте	About 40 Ω: an extra terminator on the bus (three of 120). Remove yours: switch it off on the adapter, don't fit one at the sensor
+Около 60 Ом: два терминатора по 120 на концах шины, как надо. Свой не добавляйте	About 60 Ω: two 120 terminators at the bus ends, as it should be. Don't add your own
+Между 60 и 120: плохой контакт щупов или повреждённый терминатор. Перемерьте	Between 60 and 120: poor probe contact or a damaged terminator. Measure again
+Около 120 Ом: один терминатор есть, второго нет. На своей шине поставьте 120 Ом на втором конце (у адаптера включите свой)	About 120 Ω: one terminator is there, the other is missing. On your own bus fit 120 Ω at the other end (switch on the adapter's own)
+Больше 150 Ом: терминаторов нет или щупы не на тех проводах. На своей шине нужно 120 Ом на обоих концах	Over 150 Ω: no terminators, or the probes are not on the right wires. Your own bus needs 120 Ω at both ends
+Воспроизведение	Replay
+Запись	Recording
+Только меняющиеся	Only changing
+Нажмите кнопку	Press the button
+Записать лог	Record a log
+Стоп записи	Stop recording
+Логи и воспроизведение	Logs and replay
+Воспроизведение лога «{}»: кадр {} из {}. Значения ниже из файла, не из машины	Replaying the log “{}”: frame {} of {}. The values below come from the file, not the car
+Стоп	Stop
+Идёт запись: {} кадров, {} с · {}	Recording: {} frames, {} s · {}
+# кадров/с	# frames/s
+загрузка шины ≈ # % при {}	bus load ≈ # % at {}
+поток Link {} на ID {} (0x#)	Link {} stream on ID {} (0x#)
+Нажмите на строку: биты кадра, из них своё значение. Подсвечены байты, которые только что изменились	Tap a row: the frame's bits, and your value from them. Highlighted bytes have just changed
+Кадров нет. CANable подключён, адаптер в настройках CANable (или Авто), скорость шины верная, зажигание включено? Без машины: «Логи и воспроизведение», откройте лог	No frames. Is the CANable connected, adapter set to CANable (or Auto), the bus speed right, ignition on? Without a car: «Logs and replay», open a log
+Сейчас ничего не меняется	Nothing is changing now
+Какой ID и бит у кнопки, рычага, двери	Which ID and bit a button, lever or door has
+Сначала ничего не трогайте: приложение запомнит всё, что меняется само (счётчики, обороты). Потом нажимайте кнопку: останутся только биты, которые сдвинулись от неё	First touch nothing: the app notes everything that changes by itself (counters, engine speed). Then press the button: only the bits it moved remain
+Ничего не трогать	Touch nothing
+Нажимать кнопку	Press the button
+Начать	Start
+Ничего не трогайте… {} с	Touch nothing… {} s
+Запоминаю, что меняется само	Noting what changes by itself
+Нажмите кнопку сейчас! {} с	Press the button now! {} s
+Нажимайте несколько раз, держите, отпускайте	Press it a few times, hold it, let go
+Ничего не сдвинулось только от кнопки	Nothing moved because of the button alone
+От кнопки изменилось: {}	Changed by the button: {}
+Ещё раз	Again
+Кнопка на другой шине, или её кадр идёт только при нажатии реже, чем окно. Попробуйте окно подольше	The button is on another bus, or its frame only comes when pressed, less often than the window. Try a longer window
+новый ID: появился только с кнопкой	new ID: came only with the button
+Биты ID {}	Bits of ID {}
+Intel (младший первым)	Intel (low byte first)
+Motorola (старший первым)	Motorola (high byte first)
+Сбросить выбор	Clear the selection
+Кадров с этим ID сейчас нет	No frames with this ID now
+Нажмите на первый и последний бит значения. Биты считаются как в DBC: бит # младший в байте #{}	Tap the first and the last bit of the value. Bits are counted as in DBC: bit # is the lowest of byte #{}
+. В рамке: что изменилось от кнопки	. Framed: what the button changed
+Ничего не выбрано	Nothing selected
+Стартовый бит {}, длина {}, {}: {}	Start bit {}, length {}, {}: {}
+x = {} (0x#), со знаком {}	x = {} (0x#), signed {}
+за пределами кадра	beyond the frame
+Сделать своим значением	Make it your value
+Значения из отдельных битов появятся вместе с профилями CAN (DBC). Пока выберите целые байты: 1, 2 или 4 подряд в первых восьми	Values from single bits will come with CAN profiles (DBC). For now pick whole bytes: 1, 2 or 4 in a row within the first eight
+Отправить лог CAN	Send CAN log
+Не удалось отправить: {}	Could not send: {}
+В «{}» нет кадров CAN в формате SavvyCAN (CSV) или candump	“{}” has no CAN frames in SavvyCAN (CSV) or candump format
+«{}»: {} кадров, {} ID, {} с. Воспроизводится	“{}”: {} frames, {} IDs, {} s. Replaying
+Не удалось прочитать: {}	Could not read: {}
+Логи CAN	CAN logs
+Открыть лог	Open a log
+Запись идёт в CSV SavvyCAN; отправить можно и как candump. Открытый лог (SavvyCAN CSV или candump) воспроизводится сюда и в свои значения: удобно разбираться без машины	Recordings are SavvyCAN CSV; they can be sent as candump too. An opened log (SavvyCAN CSV or candump) replays here and into your values: handy for working things out without the car
+Логов пока нет	No logs yet
+ · пишется	 · being written
+Воспроизвести	Replay
+«{}» удалится с магнитолы.	“{}” will be deleted from the head unit.
+Что подключаем	What we connect
+Машина и шина	Car and bus
+Терминатор	Terminator
+не выбрано	not chosen
+скорость из настроек ЭБУ	speed from the ECU settings
+своя шина	own bus
+120 Ом на обоих концах	120 Ω at both ends
+за магнитолой	behind the head unit
+разъём OBD	OBD socket
+мультиметром, ~60 Ом	with a multimeter, ~60 Ω
+, только приём	, listen-only
+{} ID на шине	{} IDs on the bus
+Дальше: {}	Next: {}
+Что подключаем к адаптеру CAN	What we connect to the CAN adapter
+На шине машины адаптер только слушает: не подтверждает кадры и ничего не отправляет. На своей шине (адаптер и датчик вдвоём) адаптер работает обычно, иначе датчику некому подтверждать кадры	On the car's bus the adapter only listens: it acknowledges no frames and sends nothing. On your own bus (the adapter and a sensor alone) it works normally, or the sensor has nobody to acknowledge its frames
+Сначала выберите, что подключаем	First choose what we connect
+Своя шина: адаптер и датчик	Own bus: the adapter and a sensor
+Скорость задаёт датчик (обычно 500 кбит или 1 Мбит, смотрите его инструкцию). На шаге «Скорость» её можно подобрать автоматически. Датчику нужен ответ на кадры: адаптер работает в обычном режиме	The sensor sets the speed (usually 500 kbit or 1 Mbit, see its manual). The «Speed» step can find it automatically. The sensor needs its frames acknowledged: the adapter works in normal mode
+Машина	Car
+Шлюз: {}	Gateway: {}
+OBD: контакты {} (CAN-H) и {} (CAN-L)	OBD: pins {} (CAN-H) and {} (CAN-L)
+не на OBD	not on OBD
+Скорости типичные: на конкретной машине бывает иначе. Шаг «Скорость» проверит её по живой шине, ничего в неё не отправляя	Typical speeds: a given car may differ. The «Speed» step checks it on the live bus without sending anything
+Своя шина: 120 Ом на обоих концах	Own bus: 120 Ω at both ends
+Шина ЭБУ для дашборда	ECU dash bus
+CAN-H к CAN-H, CAN-L к CAN-L, витой парой (скрутите провода, шаг 2–3 см). Длина до нескольких метров не важна	CAN-H to CAN-H, CAN-L to CAN-L, as a twisted pair (twist the wires, 2–3 cm pitch). A length of a few metres doesn't matter
+На каждом конце шины по резистору 120 Ом между H и L. У CANable свой терминатор (перемычка или переключатель): включите его, если адаптер на конце	A 120 Ω resistor between H and L at each end of the bus. The CANable has its own terminator (jumper or switch): switch it on if the adapter is at an end
+Масса датчика и масса машины общие. Питание датчика от +12 В через предохранитель, не от адаптера	The sensor's ground and the car's ground are common. Power the sensor from +12 V through a fuse, not from the adapter
+Ответвление к датчику в середине шины короткое, до 30 см	A branch to a sensor in the middle of the bus is short, up to 30 cm
+У многих ЭБУ терминатор уже стоит внутри (у Link, Haltech настраивается). Проверьте на шаге «Терминатор»	Many ECUs have the terminator inside already (configurable on Link, Haltech). Check it at the «Terminator» step
+Подключение за магнитолой или блоком	Connecting behind the head unit or a module
+Найдите витую пару CAN в разъёме магнитолы или блока (по схеме машины: CAN-H, CAN-L; у однопроводной один провод)	Find the CAN twisted pair in the head unit's or module's connector (by the car's wiring diagram: CAN-H, CAN-L; single-wire has one wire)
+Подключитесь параллельно, не разрезая: прокалывающие клеммы или пайка с термоусадкой. Отвод к адаптеру до 30 см, тоже витой	Connect in parallel without cutting: piercing taps or solder with heat shrink. The branch to the adapter up to 30 cm, twisted too
+Терминатор на адаптере выключите: на шине машины оба уже стоят	Switch the adapter's terminator off: the car's bus has both already
+Масса адаптера на массу машины (там же в разъёме)	Adapter ground to the car's ground (in the same connector)
+Подключение к разъёму OBD	Connecting to the OBD socket
+Контакт {} к CAN-H адаптера, {} к CAN-L, контакт # (сигнальная масса) к GND	Pin {} to the adapter's CAN-H, {} to CAN-L, pin # (signal ground) to GND
+Контакт 16 (+12 В) к адаптеру не подключайте: CANable питается от USB	Don't connect pin 16 (+12 V) to the adapter: the CANable is powered over USB
+Готовый кабель OBD → DB9 подходит, если его распиновка совпадает с адаптером: проверьте мультиметром	A ready OBD → DB9 cable will do if its pinout matches the adapter: check with a multimeter
+Разъём OBD-II (вид спереди)	OBD-II socket (front view)
+16: +12 В, не подключать	16: +12 V, do not connect
+терминатор адаптера: выкл	adapter terminator: off
+Блок / шлюз\n(120 Ом внутри)	Module / gateway\n(120 Ω inside)
+Магнитола\n(120 Ом внутри)	Head unit\n(120 Ω inside)
+один провод CAN + масса	one CAN wire + ground
+витая пара CAN-H / CAN-L	CAN-H / CAN-L twisted pair
+отвод до 30 см	branch up to 30 cm
+на конце шины	at the bus end
+Ещё датчик	Another sensor
+терминатор вкл	terminator on
+Между H и L при выключенном питании: около 60 Ом	Between H and L with the power off: about 60 Ω
+Проверка терминатора мультиметром	Checking the terminator with a multimeter
+Зажигание выключено, ключ вынут; подождите пару минут, пока блоки уснут. На своей шине выключите питание датчиков	Ignition off, key out; wait a couple of minutes for the modules to sleep. On your own bus switch the sensors' power off
+Адаптер от шины отключите (или выключите его терминатор)	Disconnect the adapter from the bus (or switch its terminator off)
+Мультиметр в режим сопротивления, предел 200 Ом	Multimeter on resistance, 200 Ω range
+Щупы на контакты {} и {} разъёма OBD	Probes on pins {} and {} of the OBD socket
+Щупы на провода CAN-H и CAN-L	Probes on the CAN-H and CAN-L wires
+У этой шины ({}) терминаторы другие, и # Ом там не будет: этот шаг для обычной двухпроводной шины	This bus ({}) has other terminators, and there won't be # Ω: this step is for an ordinary two-wire bus
+Показал, Ом	Reading, Ω
+Два резистора по 120 Ом параллельно дают 60. На шине машины они уже стоят в блоках: свой не нужен, лишний портит сигнал	Two 120 Ω resistors in parallel give 60. On the car's bus they are already in the modules: yours is not needed, an extra one spoils the signal
+Скорость шины	Bus speed
+Только приём	Listen-only
+На шине машины всегда: адаптер не подтверждает кадры и ничего не отправляет	Always on the car's bus: the adapter acknowledges no frames and sends nothing
+Для своей шины выключено: датчику нужен кто-то, кто подтверждает кадры	Off for your own bus: the sensor needs somebody to acknowledge its frames
+Подобрать скорость	Find the speed
+Приложение по очереди слушает шину на 500, 250, 125, 1000, 100, 83,3, 50 и 33,3 кбит в режиме «только приём» и выбирает скорость, на которой идут целые кадры без ошибок. В шину при этом ничего не отправляется. Зажигание должно быть включено	The app listens to the bus at 500, 250, 125, 1000, 100, 83.3, 50 and 33.3 kbit in turn, listen-only, and picks the speed at which whole frames come with no errors. Nothing is sent to the bus. The ignition must be on
+Жду CANable на USB… Адаптер подключён и выбран в настройках (CANable или Авто)?	Waiting for the CANable on USB… Is the adapter connected and chosen in the settings (CANable or Auto)?
+Слушаю на {}…	Listening at {}…
+Остановить	Stop
+Найдено: {}. Сохранено	Found: {}. Saved
+Ни на одной скорости не пришло целых кадров. Зажигание включено? Провода H и L не перепутаны? Шина за шлюзом или нужна другая (см. «Машина и шина»)	No whole frames came at any speed. Is the ignition on? H and L not swapped? The bus may be behind a gateway or need another transceiver (see «Car and bus»)
+Адаптер не включил режим «только приём», поэтому подбор не запускался: на чужой скорости он засыпал бы шину машины ошибками. Обновите прошивку slcan или выберите скорость вручную	The adapter did not switch to listen-only, so the search did not run: at a wrong speed it would flood the car's bus with errors. Update the slcan firmware or pick the speed by hand
+Остановлено	Stopped
+Подобрать ещё раз	Find again
+адаптер не умеет эту скорость	the adapter can't do this speed
+тишина	silence
+кадров {}, ID {}	frames {}, IDs {}
+, ошибок {}	, errors {}
+Проверка вживую	Live check
+Адаптер не на связи	Adapter not connected
+ID на шине	IDs on the bus
+кадров/с	frames/s
+загрузка шины	bus load
+Кадров нет: проверьте скорость, провода и зажигание. Подбор скорости на шаге 5	No frames: check the speed, the wires and the ignition. The speed search is at step 5
+Шина загружена сильно: на медленном USB или Bluetooth часть кадров может теряться	The bus is heavily loaded: over slow USB or Bluetooth some frames may be lost
+Открыть «Что идёт по CAN»	Open «What is on CAN»
 Поток Link {} найден на ID {} (0x{}). 	Link stream {} found on ID {} (0x{}). 
 {}Нажмите на строку, чтобы взять из неё своё значение. Где лежит нужное: меняйте его на машине (газ, прогрев) и смотрите, какие байты меняются	{}Tap a row to take your value from it. Where the one you need is: change it on the car (throttle, warm-up) and watch which bytes change
 Кадров нет. CANable подключён, адаптер в настройках CANable (или Авто), скорость шины верная, зажигание включено?	No frames. Is the CANable connected, adapter set to CANable (or Auto), the bus speed right, ignition on?

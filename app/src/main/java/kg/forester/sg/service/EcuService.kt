@@ -1444,11 +1444,24 @@ class EcuService : Service() {
      * Dash2Pro or Generic Dash is found on its own; anything else is read with the driver's own CAN channels.
      */
     private suspend fun canableSession(port: UsbSerialPort) {
+        // «Подобрать скорость» (the CAN wizard): listen-only at each speed before the session opens the bus
+        if (kg.forester.sg.ssm.CanBaudProbe.requested) {
+            Repo.link.value = LinkState.CONNECTING
+            Repo.linkMessage.value = "CANable: подбираю скорость шины (только приём)"
+            kg.forester.sg.ssm.CanBaudProbe.runOn(port) { Repo.settings.canKbit = it }
+        }
         val kbit = Repo.settings.canKbit
+        val listenOnly = Repo.settings.canListenOnly
         val bus = kg.forester.sg.ssm.SlcanPort(port)
-        bus.open(kbit)
-        SsmTrace.log("CANable: bus open at $kbit kbit/s")
-        canSession(bus, kbit) { Repo.settings.canKbit == kbit }
+        if (!bus.open(kbit, listenOnly)) {
+            Repo.link.value = LinkState.NO_ECU
+            Repo.linkMessage.value = "CANable не включил режим «только приём»: шина машины не открыта. Обновите прошивку slcan или выключите этот режим в мастере CAN"
+            SsmTrace.log("CANable: listen-only refused")
+            delay(5000)
+            return
+        }
+        SsmTrace.log("CANable: bus open at $kbit kbit/s" + if (listenOnly) ", listen-only" else "")
+        canSession(bus, kbit) { Repo.settings.canKbit == kbit && Repo.settings.canListenOnly == listenOnly && !kg.forester.sg.ssm.CanBaudProbe.requested }
     }
 
     /** The frames of [bus] (a CANable or the Link demo) through the Link's decoding, while [on]. */

@@ -271,6 +271,19 @@ class Settings(ctx: Context) {
         get() = p.getInt("canKbit", 500)
         set(v) = p.edit().putInt("canKbit", v).apply()
 
+    /** The CANable never drives the bus (no ACK, no error frames): a car's own bus. Set by the CAN wizard. */
+    var canListenOnly: Boolean
+        get() = p.getBoolean("canListenOnly", false)
+        set(v) = p.edit().putBoolean("canListenOnly", v).apply()
+
+    /** The CAN wizard's answers: "sensor", "car" or "ecu", and the bus picked (CanBusGuide ids). */
+    var canScenario: String
+        get() = p.getString("canScenario", "")!!
+        set(v) = p.edit().putString("canScenario", v).apply()
+    var canBusId: String
+        get() = p.getString("canBusId", "")!!
+        set(v) = p.edit().putString("canBusId", v).apply()
+
     /** The fuel gauge wire's hand-made calibration, "volts,litres;…" (see FuelLine). */
     var fuelLinePoints: String
         get() = p.getString("fuelLinePoints", "")!!

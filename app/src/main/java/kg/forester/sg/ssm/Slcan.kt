@@ -63,18 +63,33 @@ class SlcanPort(private val port: UsbSerialPort) : CanSource {
 
     private fun send(cmd: String) = port.write((cmd + "\r").toByteArray(Charsets.US_ASCII), 500)
 
-    fun open(kbit: Int) {
+    /**
+     * [listenOnly]: the adapter never drives the bus (no ACK, no error frames), for a car's own bus; see [SlcanListen].
+     * Returns false when the adapter refused that: the bus then stays closed.
+     */
+    fun open(kbit: Int, listenOnly: Boolean = false): Boolean {
         runCatching { port.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE) }
         runCatching { port.dtr = true; port.rts = true }
         // a bus left open by another app (or by us before a crash) takes no speed: close it first
         send("C")
         Thread.sleep(50)
         drain()
-        send("S${Slcan.speedCode(kbit)}")
+        // 83.3 and 33.3 kbit go as Lawicel's "s" with bit timing (see CanBitrates)
+        send(CanBitrates.slcanCommand(kbit) ?: "S${Slcan.speedCode(kbit)}")
         Thread.sleep(30)
+        val dev = runCatching { port.driver.device }.getOrNull()
+        val canableFw = dev != null && SlcanListen.canableFw(dev.vendorId, dev.productId)
+        if (listenOnly) {
+            drain()
+            val ok = SlcanListen.open(SlcanUsbIo(port), canableFw)
+            errors = 0
+            return ok
+        }
+        if (canableFw) { send("M0"); Thread.sleep(20) } // a listen-only run (or the speed probe) may have left it silent
         send("O")
         Thread.sleep(30)
         errors = 0
+        return true
     }
 
     private fun drain() { repeat(5) { if (port.read(buf, 50) <= 0) return } }
