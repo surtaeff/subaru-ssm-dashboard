@@ -68,6 +68,8 @@ fun CanablePanel() {
     Spacer(Modifier.height(4.dp))
     SettingHint("Та же, что у CAN-шины ЭБУ, к которой подключён адаптер (у Link в PCLink: ECU Controls, CAN Setup). Потоки Link " +
         "Dash2Pro и Generic Dash приложение находит само; другие данные, например ЕГТ в своём потоке, добавляются в «Свои значения»")
+    SettingHint("Вместо CANable может быть SensorBox на ESP32-S3 с трансивером CAN (прошивка 6): включите «CAN-шина» в «Датчики и экраны», " +
+        "скорость там своя. Если CANable на USB нет, приложение берёт кадры с коробки")
     Spacer(Modifier.height(10.dp))
     var cc by remember { mutableStateOf(s.injectorCc.takeIf { it > 0 }?.toString() ?: "") }
     var dead by remember { mutableStateOf(s.injectorDeadMs.takeIf { it > 0f }?.let { "%.2f".format(it) } ?: "") }

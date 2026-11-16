@@ -1,5 +1,7 @@
 package kg.forester.sg
 
+import kg.forester.sg.data.BoxCan
+import kg.forester.sg.data.BoxCanBus
 import kg.forester.sg.data.CanBits
 import kg.forester.sg.ssm.ByteLink
 import kg.forester.sg.ssm.CanBitChannel
@@ -147,5 +149,31 @@ class CanIntegrationTest {
         assertTrue("s451C" in normal.sent)
         assertTrue("O" in normal.sent)
         assertTrue(n.canTransmit)
+    }
+
+    @Test fun sensorBoxFramesReachTheHub() {
+        CanMonitor.clear()
+        val seen = ArrayList<CanFrame>()
+        val l = CanBus.Listener { f, _, _ -> seen += f }
+        CanBus.listeners += l
+        try {
+            // no CAN session on the box: straight to the hub (a standard id through the Subaru broadcast table first)
+            BoxCanBus.onFrame(BoxCan.parseLine("T18DAF1104A1B2C3D4")!!, 1000)
+            BoxCanBus.onFrame(BoxCan.parseLine("t3E82AABB")!!, 1001)
+            assertEquals(listOf(0x18DAF110, 0x3E8), seen.map { it.id })
+            // a session on it: the frames wait for its source, which only listens
+            BoxCanBus.Source().use { src ->
+                assertEquals("SensorBox", src.title)
+                assertFalse(src.canTransmit)
+                BoxCanBus.onFrame(BoxCan.parseLine("t1238DEADBEEF00112233")!!, 1002)
+                val got = src.read(50)
+                assertEquals(0x123, got.single().id)
+                assertEquals(8, got.single().len)
+            }
+            assertEquals(2, seen.size)
+        } finally {
+            CanBus.listeners -= l
+            CanMonitor.clear()
+        }
     }
 }

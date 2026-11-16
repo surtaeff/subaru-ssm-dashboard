@@ -295,6 +295,16 @@ class EcuService : Service() {
             // the SensorBox (an Arduino next to the cable) and devices still being asked whether they are it
             val drivers = SensorBoxLink.forEcu(all)
             val driver = pickDriver(kind, drivers)
+            // no CANable on USB: a SensorBox with CAN (an ESP32-S3, firmware 6+) takes its place. Its CAN is switched on by
+            // hand, so it goes before a USB serial chip that would only be asked what protocol it speaks (CanLinks); a
+            // protocol picked by hand keeps that chip
+            val unknownChip = driver != null && !isCanable(driver) && kg.forester.sg.data.CanConfig.protocol == "auto"
+            if ((driver == null || unknownChip) && kind == "canable" && kg.forester.sg.data.BoxCanBus.available()) {
+                Repo.adapterFound.value = "SensorBox → CAN (${kg.forester.sg.data.BoxCan.speedTitle(kg.forester.sg.data.BoxCan.cfg.value.kbit)})"
+                boxCanSession()
+                delay(500)
+                continue
+            }
             if (driver == null) {
                 if (!triedHostFix && System.currentTimeMillis() - noCableSince > 8000) {
                     triedHostFix = true
@@ -1554,7 +1564,27 @@ class EcuService : Service() {
         }
     }
 
-    /** The frames of [bus] (a CANable, a RealDash CAN or GVRET device, or the Link demo) through the Link's decoding, while [on]. */
+    /**
+     * The SensorBox's own CAN (an ESP32-S3 with a transceiver) in place of a CANable: the same session, the frames
+     * come through [SensorBoxLink]'s connection to the box. Its speed and mode are the box's settings («Датчики и экраны», CAN-шина).
+     */
+    private suspend fun boxCanSession() {
+        val kbit = kg.forester.sg.data.BoxCan.cfg.value.kbit
+        SsmTrace.log("SensorBox CAN: session at $kbit kbit/s")
+        // the box takes the speed it is set to: the wizard's speed probe is for slcan adapters
+        kg.forester.sg.ssm.CanBaudProbe.unsupported("SensorBox")
+        kg.forester.sg.data.BoxCanBus.Source().use { bus ->
+            canSession(bus, kbit) {
+                Repo.settings.adapter == "canable" && kg.forester.sg.data.BoxCanBus.available() && kg.forester.sg.data.BoxCan.cfg.value.kbit == kbit &&
+                    !kg.forester.sg.ssm.CanBaudProbe.requested
+            }
+        }
+    }
+
+    /**
+     * The frames of [bus] (a CANable, a RealDash CAN or GVRET device, the SensorBox or the Link demo) through the Link's
+     * decoding, while [on]. The status line names the adapter by its [kg.forester.sg.ssm.CanSource.title].
+     */
     private suspend fun canSession(bus: kg.forester.sg.ssm.CanSource, kbit: Int, on: () -> Boolean) {
         val link = kg.forester.sg.ssm.LinkDash
         link.reset()

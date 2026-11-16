@@ -63,6 +63,9 @@ object SensorBoxLink {
     /** A real box with outputs (firmware 3+) is on the cable. */
     fun canDrive() = SensorBox.info.value?.let { it.via.startsWith("USB") && it.fw >= 3 } == true
 
+    /** The box can read a CAN bus (an ESP32-S3 with firmware 6+ and the transceiver), see [kg.forester.sg.data.BoxCan]. */
+    fun canCan() = kg.forester.sg.data.BoxCan.supported()
+
     /** The box can draw on displays (firmware 5+). */
     fun canDisplay() = SensorBox.info.value?.let { it.via.startsWith("USB") && it.fw >= 5 } == true
 
@@ -247,13 +250,22 @@ object SensorBoxLink {
                 runCatching { port.dtr = true } // a 32U4 sends nothing until the host raises DTR; a Nano restarts on it
                 delay(2200) // a Nano's bootloader
             }
-            val buf = ByteArray(512)
+            // a busy CAN bus comes as ~90 KB/s of frame lines (firmware 6+ on an ESP32-S3)
+            val buf = ByteArray(16384)
             val line = StringBuilder()
+            var canSent: kg.forester.sg.data.BoxCanCfg? = null
             var lastData = System.currentTimeMillis()
             var askedAt = 0L
             while (true) {
                 if (paused || !lease.permitted || !currentCoroutineContext().isActive) return known
                 if (known) while (true) { val l = outbox.poll() ?: break; port.write("$l\n".toByteArray(Charsets.ISO_8859_1), 300) }
+                // the CAN settings to a box that has CAN: once per session, and again whenever they change
+                val can = kg.forester.sg.data.BoxCan.cfg.value
+                if (known && can != canSent && canCan()) {
+                    canSent = can
+                    kg.forester.sg.data.BoxCan.commands(can).forEach { port.write("$it\n".toByteArray(Charsets.ISO_8859_1), 300) }
+                    SsmTrace.log("SensorBox CAN: ${kg.forester.sg.data.BoxCan.commands(can).joinToString(" | ")}")
+                }
                 val now = System.currentTimeMillis()
                 if (now - askedAt > 3000 && now - lastData > 1500) {
                     port.write("?\r\n".toByteArray(), 300)
@@ -271,6 +283,11 @@ object SensorBoxLink {
                         if (line.isNotEmpty()) {
                             val s = line.toString()
                             line.clear()
+                            // a CAN frame (firmware 6+): the commonest line on a busy bus, so the first looked at
+                            if (known && (s[0] == 't' || s[0] == 'T')) {
+                                kg.forester.sg.data.BoxCan.parseLine(s)?.let { kg.forester.sg.data.BoxCanBus.onFrame(it) }
+                                continue
+                            }
                             SensorBox.parseInfo(s, "USB $id")?.let {
                                 if (!known) { SsmTrace.log("SensorBox: $s"); outbox.clear(); session++; remember(d.device) }
                                 known = true
@@ -286,7 +303,7 @@ object SensorBoxLink {
                 }
             }
         } finally {
-            if (SensorBox.info.value?.via == "USB $id") { SensorBox.info.value = null; SensorBox.readings.value = emptyMap() }
+            if (SensorBox.info.value?.via == "USB $id") { SensorBox.info.value = null; SensorBox.readings.value = emptyMap(); kg.forester.sg.data.BoxCan.status.value = null }
             runCatching { port.close() }
             runCatching { conn.close() }
         }

@@ -432,17 +432,21 @@ data class BoxFrame(val timeMs: Long, val vccMv: Int, val raw: Map<String, Float
                     /** The outputs as the box reports them ("Q=10w-"), and its failsafe. */
                     val outs: String = "", val failsafe: Boolean = false,
                     /** Every thermocouple the frame has (TC0…TC3): its °C, or null with its fault in [tcFaults]. */
-                    val tcs: Map<String, Float?> = emptyMap(), val tcFaults: Map<String, Int> = emptyMap())
+                    val tcs: Map<String, Float?> = emptyMap(), val tcFaults: Map<String, Int> = emptyMap(),
+                    /** The CAN bus's state (firmware 6+, see [BoxCan.parseStatus]); empty while it is closed. */
+                    val can: String = "")
 
 /** What an input shows now: the value, or why there is none ("обрыв"), and the raw reading under it. */
 data class BoxReading(val value: Float?, val problem: String?, val rawText: String)
 
 data class BoxInfo(val board: String, val id: String, val rate: Int, val inputs: List<String>, val via: String, val fw: Int = 0,
                    /** The display the box found on I2C: "oled", "lcd" or "none". */
-                   val disp: String = "none")
+                   val disp: String = "none",
+                   /** The CAN controller the box has ("twai" on an ESP32-S3 with firmware 6+), empty when none. */
+                   val can: String = "")
 
 /** The firmware version shipped in the app (FW_VERSION in hardware/sensorbox/sensorbox.ino; a unit test keeps them equal). */
-const val BOX_FIRMWARE = 5
+const val BOX_FIRMWARE = 6
 
 object SensorBox {
     /** The configured inputs (saved), the board the driver said they have. */
@@ -465,13 +469,14 @@ object SensorBox {
             List(a.length()) { BoxSlot.fromJson(a.getJSONObject(it)) }
         }.getOrDefault(emptyList())
         tcCs.value = o.optJSONObject("tcCs")?.let { m -> m.keys().asSequence().associateWith { m.getString(it) } } ?: emptyMap()
+        BoxCan.load(o.optJSONObject("can"))
     }
 
     private fun save() {
         runCatching {
             Repo.settings.sensorBox = JSONObject().put("on", enabled.value).put("board", board.value.id)
                 .put("slots", JSONArray().also { a -> slots.value.forEach { a.put(it.toJson()) } })
-                .put("tcCs", JSONObject(tcCs.value as Map<*, *>)).toString()
+                .put("tcCs", JSONObject(tcCs.value as Map<*, *>)).put("can", BoxCan.cfg.value.toJson()).toString()
         } // (no settings in the unit tests)
     }
 
@@ -495,6 +500,9 @@ object SensorBox {
 
     fun setTcCs(input: String, pin: String) { tcCs.value = tcCs.value + (input to pin); save() }
 
+    /** The box's CAN settings (sent to the box by [kg.forester.sg.service.SensorBoxLink] when they change). */
+    fun setCan(c: BoxCanCfg) { BoxCan.cfg.value = c; save() }
+
     /**
      * Who holds each pin of the board besides the sensor inputs: the outputs, the displays (I2C, a TM1637's two, a
      * colour screen's CS and DC) and the extra thermocouples' CS. One table for every picker, so no two things are
@@ -513,6 +521,9 @@ object SensorBox {
             }
         }
         tcCs.value.forEach { (input, pin) -> put(pin, "термопара $input (CS)", "tc:$input") }
+        BoxCan.cfg.value.takeIf { it.on && b == BoxBoard.ESP32S3 }?.let { c ->
+            put(c.tx, "CAN (TX)", "can"); put(c.rx, "CAN (RX)", "can"); put(c.s, "CAN (S)", "can")
+        }
         return m
     }
 
@@ -603,6 +614,7 @@ object SensorBox {
         readings.value = slots.value.associate { it.input to read(it, f) }
         Relays.boxStates.value = f.outs
         Relays.boxFailsafe.value = f.failsafe
+        BoxCan.onStatus(f.can, f.timeMs)
     }
 
     /** [s]'s value in frame [f]. */
@@ -725,7 +737,7 @@ object SensorBox {
         if (!line.startsWith("I SENSORBOX")) return null
         val kv = line.split(' ').mapNotNull { w -> w.indexOf('=').takeIf { it > 0 }?.let { w.substring(0, it) to w.substring(it + 1) } }.toMap()
         return BoxInfo(kv["board"] ?: "?", kv["id"] ?: "?", kv["rate"]?.toIntOrNull() ?: 0, kv["ch"]?.split(',')?.filter { it.isNotBlank() } ?: emptyList(), via,
-            kv["fw"]?.toIntOrNull() ?: 1, kv["disp"] ?: "none")
+            kv["fw"]?.toIntOrNull() ?: 1, kv["disp"] ?: "none", kv["can"] ?: "")
     }
 
     /** "D t=81234 vcc=4987 A0=512.3 A1=88.0 TC0=745.25 F0=0.0", "TC0=!1" for a thermocouple fault. */
@@ -740,6 +752,7 @@ object SensorBox {
         var hz: Float? = null
         var outs = ""
         var fs = false
+        var can = ""
         val raw = HashMap<String, Float>()
         for (w in line.substring(2).split(' ')) {
             val i = w.indexOf('=')
@@ -759,10 +772,11 @@ object SensorBox {
                 k == "F0" -> hz = v.toFloatOrNull()
                 k == "Q" -> outs = v
                 k == "fs" -> fs = v == "1"
+                k == "can" -> can = v
                 k.startsWith("A") -> v.toFloatOrNull()?.let { raw[k] = it }
             }
         }
-        return BoxFrame(t, vcc, raw, tc, fault, hz, outs, fs, tcs, faults)
+        return BoxFrame(t, vcc, raw, tc, fault, hz, outs, fs, tcs, faults, can)
     }
 }
 
