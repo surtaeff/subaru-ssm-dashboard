@@ -632,7 +632,7 @@ private fun ScreenBody(screen: Screen) {
         Screen.Drive -> kg.forester.sg.ui.DriveScreen()
         // the text's floor, and the player's own controls, which keep their sizes and places at a glance
         Screen.Media -> kg.forester.sg.ui.Parked(tap = 48.dp) { kg.forester.sg.ui.MediaScreen() }
-        // read parked; the players themselves pause and hide the picture while the car moves
+        // the catalog read parked; the players are full-screen dialogs of their own
         Screen.Video -> kg.forester.sg.ui.Parked { kg.forester.sg.ui.VideoScreen() }
         Screen.Fuel -> kg.forester.sg.ui.Parked { FuelScreen() }
         Screen.Gearbox -> kg.forester.sg.ui.Parked { kg.forester.sg.ui.TransmissionScreen() }

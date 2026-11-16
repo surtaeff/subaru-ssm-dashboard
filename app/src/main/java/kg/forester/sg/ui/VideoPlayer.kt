@@ -63,7 +63,6 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import com.composables.icons.lucide.CircleParking
 import com.composables.icons.lucide.ExternalLink
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Pause
@@ -73,7 +72,6 @@ import com.composables.icons.lucide.RotateCw
 import com.composables.icons.lucide.SkipBack
 import com.composables.icons.lucide.SkipForward
 import com.composables.icons.lucide.X
-import kg.forester.sg.data.Repo
 import kg.forester.sg.video.AltStore
 import kg.forester.sg.video.AltVideo
 import kg.forester.sg.video.Rutube
@@ -81,7 +79,6 @@ import kg.forester.sg.video.YouTube
 import kg.forester.sg.video.VideoApps
 import kg.forester.sg.video.VideoCatalog
 import kg.forester.sg.video.VideoDetails
-import kg.forester.sg.video.VideoDriving
 import kg.forester.sg.video.VideoEpisode
 import kg.forester.sg.video.VideoNet
 import kg.forester.sg.video.VideoPolicy
@@ -89,19 +86,7 @@ import kg.forester.sg.video.VideoRegion
 import kg.forester.sg.video.VideoStore
 import kg.forester.sg.video.VideoText
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
-
-/** The car moves (see [VideoDriving]): Compose state, read by the players to pause and cover the picture. */
-@Composable
-fun rememberCarMoving(): Boolean {
-    var moving by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        combine(Repo.live, Repo.gps) { e, g -> VideoDriving.speed(e.speedKmh, g, android.os.SystemClock.elapsedRealtime()) }
-            .collect { moving = VideoDriving.moving(moving, it) }
-    }
-    return moving
-}
 
 /** The whole screen for a player: no system bars, the screen stays on while it is up. */
 @Composable
@@ -123,22 +108,6 @@ private fun FullScreen(onClose: () -> Unit, content: @Composable () -> Unit) {
     }
 }
 
-/** Over the picture while the car moves: the video is paused and not shown. */
-@Composable
-private fun DrivingCover(onClose: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
-            Icon(Lucide.CircleParking, null, tint = C.Warn, modifier = Modifier.size(64.dp))
-            Spacer(Modifier.height(16.dp))
-            T("Видео только на стоянке", 22.sp, Color.White, FontWeight.SemiBold, textAlign = TextAlign.Center)
-            Spacer(Modifier.height(8.dp))
-            T("Машина едет: видео и звук на паузе. Остановитесь, и можно смотреть дальше с того же места.", 15.sp, Color(0xFFBBBBBB), textAlign = TextAlign.Center)
-            Spacer(Modifier.height(20.dp))
-            Chip("Закрыть", false, onClose, Lucide.X)
-        }
-    }
-}
-
 @Composable
 private fun RoundButton(icon: ImageVector, desc: String, size: Dp = 64.dp, enabled: Boolean = true, onClick: () -> Unit) {
     Box(
@@ -149,7 +118,7 @@ private fun RoundButton(icon: ImageVector, desc: String, size: Dp = 64.dp, enabl
 
 /**
  * ts.kg / oc.kg in ExoPlayer: from where it stopped, saved every 5 s and on pause, the next episode by itself at the
- * end (on oc.kg also the next season), paused and hidden while the car moves.
+ * end (on oc.kg also the next season).
  */
 @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 @Composable
@@ -167,7 +136,6 @@ fun VideoPlayerDialog(start: VideoDetails, startEpisode: VideoEpisode, onClose: 
     var controls by remember { mutableStateOf(true) }
     var touched by remember { mutableIntStateOf(0) }
     var retry by remember { mutableIntStateOf(0) }
-    val moving = rememberCarMoving()
 
     val player = remember {
         val http = DefaultHttpDataSource.Factory().setUserAgent(VideoNet.UA).setAllowCrossProtocolRedirects(true)
@@ -239,9 +207,8 @@ fun VideoPlayerDialog(start: VideoDetails, startEpisode: VideoEpisode, onClose: 
         player.setMediaItem(item, VideoStore.resumeOf(details, episode))
         loaded = details to episode
         player.prepare()
-        player.playWhenReady = !moving
+        player.playWhenReady = true
     }
-    LaunchedEffect(moving) { if (moving) { player.pause(); controls = true } }
     LaunchedEffect(Unit) {
         var n = 0
         while (true) {
@@ -260,7 +227,6 @@ fun VideoPlayerDialog(start: VideoDetails, startEpisode: VideoEpisode, onClose: 
     }
 
     FullScreen(onClose) {
-        if (moving) { DrivingCover(onClose); return@FullScreen }
         Box(
             Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { controls = !controls; touched++ },
             contentAlignment = Alignment.Center,
@@ -320,20 +286,18 @@ fun VideoPlayerDialog(start: VideoDetails, startEpisode: VideoEpisode, onClose: 
 }
 
 /**
- * Rutube's or YouTube's own embedded player (their controls, their ads), full screen. Taken off the screen while the car
- * moves; after the stop it comes back where it was: Rutube's embed tells the time (postMessage) and starts at `t`.
+ * Rutube's or YouTube's own embedded player (their controls, their ads), full screen. Rutube's embed tells the time
+ * (postMessage), so the next opening starts at `t` where it stopped.
  */
 @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
 @Composable
 fun AltPlayerDialog(v: AltVideo, onClose: () -> Unit) {
     val ctx = LocalContext.current
-    val moving = rememberCarMoving()
     // the last time and length the embed told, in ms
     val pos = remember { longArrayOf(AltStore.get(v.key)?.pos ?: 0L, AltStore.get(v.key)?.dur ?: 0L) }
     fun save() { if (v.service == AltVideo.Service.RUTUBE) AltStore.save(ctx, v, pos[0], pos[1]) }
     DisposableEffect(Unit) { onDispose { save() } }
     FullScreen(onClose) {
-        if (moving) { DrivingCover(onClose); return@FullScreen }
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 RoundButton(Lucide.X, "Закрыть", 52.dp, onClick = onClose)
@@ -342,7 +306,7 @@ fun AltPlayerDialog(v: AltVideo, onClose: () -> Unit) {
                 Spacer(Modifier.width(10.dp))
                 Chip("Открыть в ${v.service.label}", false, { save(); VideoApps.openInApp(ctx, v) }, Lucide.ExternalLink)
             }
-            val start = remember(moving) { VideoPolicy.resumePosition(pos[0], pos[1]) / 1000 }
+            val start = remember { VideoPolicy.resumePosition(pos[0], pos[1]) / 1000 }
             AndroidView(
                 factory = { c ->
                     WebView(c).apply {

@@ -1,12 +1,10 @@
 package kg.forester.sg
 
-import kg.forester.sg.data.GpsFix
 import kg.forester.sg.video.OcKgParser
 import kg.forester.sg.video.Rutube
 import kg.forester.sg.video.TsKgParser
 import kg.forester.sg.video.VideoCard
 import kg.forester.sg.video.VideoDetails
-import kg.forester.sg.video.VideoDriving
 import kg.forester.sg.video.VideoEpisode
 import kg.forester.sg.video.VideoPolicy
 import kg.forester.sg.video.VideoRegion
@@ -126,19 +124,6 @@ class VideoTest {
         assertEquals(50_000L, VideoPolicy.resumePosition(50_000, 100_000))
         assertFalse(VideoPolicy.isCompleted(50_000, 0))
         assertEquals("С1 Э2", d.label(d.episodes[1]))
-    }
-
-    @Test fun drivingLock() {
-        val fresh = GpsFix(speedKmh = 30f, altitudeM = 0.0, accuracyM = 5f, satellites = 8, timeMs = 0, arrivedMs = 10_000)
-        assertEquals(30f, VideoDriving.speed(null, fresh, 12_000), 0f)
-        // a stale fix says nothing; the ECU still does
-        assertEquals(0f, VideoDriving.speed(null, fresh, 30_000), 0f)
-        assertEquals(40f, VideoDriving.speed(40, fresh, 30_000), 0f)
-        // the gap between moving off and stopping
-        assertTrue(VideoDriving.moving(false, 5f))
-        assertFalse(VideoDriving.moving(false, 4f))
-        assertTrue(VideoDriving.moving(true, 3f))
-        assertFalse(VideoDriving.moving(true, 1f))
     }
 
     @Test fun regionProbe() {

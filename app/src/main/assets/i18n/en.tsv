@@ -5435,8 +5435,6 @@ ts.kg и oc.kg работают только в Кыргызстане: из д�
 Ключ YouTube Data API (необязательно)	YouTube Data API key (optional)
 Сохранён	Saved
 С ключом поиск YouTube работает прямо здесь и видео играет во встроенном плеере YouTube. Ключ бесплатный: Google Cloud Console → YouTube Data API v3 → «Создать учётные данные». Хранится только на этом устройстве. Без ключа кнопка YouTube открывает поиск в приложении YouTube.	With a key YouTube search works right here and videos play in YouTube's embedded player. The key is free: Google Cloud Console → YouTube Data API v3 → «Create credentials». It is kept on this device only. Without a key the YouTube button opens the search in the YouTube app.
-Видео только на стоянке	Video only when parked
-Машина едет: видео и звук на паузе. Остановитесь, и можно смотреть дальше с того же места.	The car is moving: video and sound are paused. Stop, and you can go on from the same place.
 {} открывается только из Кыргызстана	{} opens only from Kyrgyzstan
 Видео не воспроизводится. Попробуйте ещё раз или другую серию	The video doesn't play. Try again or another episode
 Предыдущая серия	Previous episode
@@ -5457,4 +5455,4 @@ ts.kg и oc.kg работают только в Кыргызстане: из д�
 Кинопоиск	Kinopoisk
 Видео	Video
 Экран «Видео»	«Video» screen
-Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах Rutube, YouTube и приложения кинотеатров. Смотреть можно только на стоянке	Films and series: ts.kg and oc.kg in Kyrgyzstan, Rutube, YouTube and the cinema apps elsewhere. Watching only when parked
+Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах Rutube, YouTube и приложения кинотеатров	Films and series: ts.kg and oc.kg in Kyrgyzstan, Rutube, YouTube and the cinema apps elsewhere

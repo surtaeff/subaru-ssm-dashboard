@@ -814,7 +814,7 @@ private fun FeatureSettings() {
                 F("sensors", "Экран «Датчики»", "Все параметры ЭБУ из базы RomRaider")
                 F("health", "Экран «Мониторинг»", "Мотор, ТО, шины и журнал предупреждений (сами предупреждения настраиваются слева)")
                 F("mine", "Экран «Мой экран»", "Свой экран из любых карточек; выключите, если хватает главного")
-                F("video", "Экран «Видео»", "Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах Rutube, YouTube и приложения кинотеатров. Смотреть можно только на стоянке")
+                F("video", "Экран «Видео»", "Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах Rutube, YouTube и приложения кинотеатров")
                 if (s.feature("video")) Box(Modifier.fillMaxWidth().clip(Rounded).background(C.CardHi).padding(10.dp)) { Column { VideoRegionSetting() } }
                 // SSM only (the fast poll, the transmission unit): another make has neither
                 if (!kg.forester.sg.data.CarKind.other.collectAsState().value) TcuRateSetting()
