@@ -129,7 +129,10 @@ dependencies {
     // the Media screen's own player: files from a USB stick, SD card or memory, with a media session
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
-    implementation("androidx.media3:media3-exoplayer-hls:1.4.1") // some internet stations stream HLS (.m3u8)
+    implementation("androidx.media3:media3-exoplayer-hls:1.4.1") // some internet stations stream HLS (.m3u8), ts.kg episodes too
+    // «Видео»: the ts.kg pages. 1.15.3 is the last one that runs on Android 6 without library desugaring
+    // (1.15.4 went over to java.util.function, API 24+)
+    implementation("org.jsoup:jsoup:1.15.3")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
     // offline speech synthesis for the warnings (k2-fsa sherpa-onnx, Apache-2.0; ARM-only copy of the v1.13.8 AAR)
     implementation(files("libs/sherpa-onnx-1.13.8-arm.aar"))

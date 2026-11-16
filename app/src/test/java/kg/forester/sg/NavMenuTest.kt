@@ -17,7 +17,7 @@ class NavMenuTest {
 
     @Test fun everyScreenEnumIsInTodaysOrder() {
         assertEquals(
-            listOf("Home", "Mine", "Drive", "Media", "Fuel", "Gearbox", "Battery", "Dtc", "Sensors", "Perf", "Health", "Log", "Apps", "Settings"),
+            listOf("Home", "Mine", "Drive", "Media", "Video", "Fuel", "Gearbox", "Battery", "Dtc", "Sensors", "Perf", "Health", "Log", "Apps", "Settings"),
             Screen.entries.map { it.name },
         )
     }
