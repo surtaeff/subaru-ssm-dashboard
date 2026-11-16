@@ -547,7 +547,7 @@ private fun CarModsSettings() {
 private fun MiniPlayerSetting() {
     val where by Repo.miniPlayer.collectAsState()
     T("Мини-плеер", 15.sp)
-    SettingHint("Что играет и кнопки на всех экранах, кроме «Медиа»")
+    SettingHint("Что играет и кнопки на всех экранах, кроме «Медиа» и тех, где включена карточка «Плеер»")
     Spacer(Modifier.height(6.dp))
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         listOf("bottom" to "Снизу", "top" to "Сверху", "off" to "Выключен").forEach { (k, l) ->

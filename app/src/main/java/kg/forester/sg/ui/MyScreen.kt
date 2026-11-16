@@ -50,7 +50,7 @@ fun myRowWeight(t: TileCfg) = when {
     else -> 0.8f
 }
 
-private val MyEdit by lazy {
+internal val MyEdit by lazy {
     BoardEdit(MyBoard, gaugeable = MyBoard.defaults.map { it.id }.filter { it !in kg.forester.sg.data.EXTRA_CARDS && !it.startsWith("outw_") }.toSet(), rowWeight = ::myRowWeight)
 }
 

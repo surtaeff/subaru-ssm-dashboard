@@ -117,6 +117,12 @@ val WIDGET_CARDS = listOf("navmap", "player", "gearsel")
 val EXTRA_CARDS = listOf("defi", "navcluster", "gmeter", "incline", "iam", "btarget", "peaks", "run", "turbo", "tyres", "service") + (1..6).map { "s$it" } + GAUGE_PANELS + WIDGET_CARDS
 
 /**
+ * The «Плеер» card is shown on a board whose layout (as shown, after the screen's factory picks) is [layout]: switched
+ * on, in the grid and in the free layout alike. Then the mini-player strip under that screen stays away.
+ */
+fun playerCardOn(board: Board, layout: String): Boolean = board.parse(layout).any { it.id == "player" && it.on }
+
+/**
  * The width a widget card starts with on a board of [columns] columns: the map and the player wide, the selector a
  * narrow column (on the 5-column home grid 2, 2 and 1). Null for the other cards.
  */

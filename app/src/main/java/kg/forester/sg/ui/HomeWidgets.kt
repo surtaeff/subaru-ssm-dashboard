@@ -640,3 +640,27 @@ private fun PlayButton(now: NowPlaying?, size: Dp, onClick: () -> Unit) {
             tint = C.activeText(C.OnAccent), modifier = Modifier.size(size * 0.46f))
     }
 }
+
+/** The editable board a main screen shows, by the screen's name: «Главная», «Динамика», «Мой экран»; null for the rest. */
+internal fun boardOfScreen(name: String): BoardEdit? = when (name) {
+    "Home" -> HomeEdit
+    "Drive" -> DriveEdit
+    "Mine" -> MyEdit
+    else -> null
+}
+
+/**
+ * The screen named [name] shows the «Плеер» card: then the mini-player strip stays away from it. Read from the board's
+ * own layout as that screen shows it (the factory picks of the screen's size and the car included), so switching the
+ * card on or off in the editor moves the strip at once.
+ */
+@Composable
+fun playerCardOnScreen(name: String): Boolean {
+    val edit = boardOfScreen(name)
+    val saved by Repo.boardFlow(edit?.board?.key ?: kg.forester.sg.data.HomeLayout.board.key).collectAsState()
+    val small = LocalCar.current.small
+    val carTurbo by Repo.carTurbo.collectAsState()
+    val other by kg.forester.sg.data.CarKind.other.collectAsState()
+    val obd by Repo.obdMode.collectAsState()
+    return remember(edit, saved, small, carTurbo, other, obd) { edit != null && kg.forester.sg.data.playerCardOn(edit.board, edit.shown(saved, small)) }
+}

@@ -551,7 +551,10 @@ fun App() {
             // `screen`, which nothing here shows, and leave this one on the screen
             androidx.activity.compose.BackHandler(enabled = picked != Screen.Home) { picked = Screen.Home; screen = Screen.Home }
             LaunchedEffect(opened) { opened?.let { (_, name) -> screenRestored(name)?.let { picked = it } } }
-            val narrowSlot = kg.forester.sg.service.miniSlot(miniWhere, onMedia = !phone && picked == Screen.Media, editingFree = false, shown = mini.known)
+            // a screen with the «Плеер» card on keeps the strip away; the driver's panel has no such card
+            val narrowCard = kg.forester.sg.ui.playerCardOnScreen(if (!phone && picked != Screen.Home) picked.name else "")
+            val narrowSlot = kg.forester.sg.service.miniSlot(miniWhere, onMedia = !phone && picked == Screen.Media, editingFree = false, shown = mini.known,
+                playerCard = narrowCard)
             Column(Modifier.fillMaxSize()) {
                 if (narrowSlot == kg.forester.sg.service.MiniSlot.TOP) kg.forester.sg.ui.MiniPlayerStrip(mini) { picked = Screen.Media; screen = Screen.Media }
                 Box(Modifier.weight(1f)) {
@@ -588,7 +591,9 @@ fun App() {
         }
         // editing a free layout: the bottom bar's room goes to the area, so the grid keeps its scale under the edit bar
         val freeEditing by Repo.freeEditing.collectAsState()
-        val slot = kg.forester.sg.service.miniSlot(miniWhere, screen == Screen.Media, freeEditing, mini.known)
+        // the «Плеер» card on the board shown (Главная, Динамика, Мой экран) is the player already: no strip under it
+        val playerCard = kg.forester.sg.ui.playerCardOnScreen(screen.name)
+        val slot = kg.forester.sg.service.miniSlot(miniWhere, screen == Screen.Media, freeEditing, mini.known, playerCard = playerCard)
         val openMedia = { screen = Screen.Media }
         when (navPos) {
             "top", "bottom" -> Column(Modifier.fillMaxSize().padding(10.dp)) {

@@ -69,7 +69,7 @@ val DriveCards: CardNames = linkedMapOf(
     "pressure" to ("Абс. давление" to Lucide.Gauge),
 ) + ExtraCards
 
-private val DriveEdit = BoardEdit(
+internal val DriveEdit = BoardEdit(
     DriveBoard,
     gaugeable = setOf("pedal", "throttle", "boost", "load", "rpm", "avcs", "injDuty", "maf", "throttleMotor", "wgdc"),
     rowWeight = ::driveRowWeight,

@@ -1,5 +1,9 @@
 package kg.forester.sg
 
+import kg.forester.sg.data.DriveBoard
+import kg.forester.sg.data.HomeLayout
+import kg.forester.sg.data.MyBoard
+import kg.forester.sg.data.playerCardOn
 import kg.forester.sg.service.MiniHold
 import kg.forester.sg.service.MiniSlot
 import kg.forester.sg.service.NowPlaying
@@ -122,6 +126,21 @@ class MiniPlayerTest {
         assertEquals("Media is the player itself", MiniSlot.NONE, miniSlot("bottom", onMedia = true, editingFree = false, shown = true))
         assertEquals("nothing known", MiniSlot.NONE, miniSlot("top", onMedia = false, editingFree = false, shown = false))
         assertEquals("the free grid keeps its scale under the edit bar", MiniSlot.NONE, miniSlot("bottom", onMedia = false, editingFree = true, shown = true))
+        assertEquals("the «Плеер» card on the screen is the player", MiniSlot.NONE, miniSlot("top", onMedia = false, editingFree = false, shown = true, playerCard = true))
+    }
+
+    @Test fun playerCardOnTheShownBoard() {
+        for (b in listOf(HomeLayout.board, DriveBoard, MyBoard)) {
+            assertFalse("factory layouts have the card off: ${b.key}", playerCardOn(b, ""))
+            val on = b.parse("").map { if (it.id == "player") it.copy(on = true) else it }
+            assertTrue(b.key, playerCardOn(b, b.format(on)))
+            assertTrue("the free layout too: ${b.key}", playerCardOn(b, b.format(on, free = true)))
+            // switched off again in the editor: the strip comes back
+            assertFalse(b.key, playerCardOn(b, b.format(on.map { if (it.id == "player") it.copy(on = false) else it })))
+        }
+        // the decision is taken where the strip is placed, for the screen shown, from the boards' own flows
+        val main = File(File("src/main/java").takeIf { it.isDirectory } ?: File("app/src/main/java"), "kg/forester/sg/MainActivity.kt").readText()
+        assertTrue(main.contains("playerCardOnScreen(") && main.contains("playerCard = "))
     }
 
     // ---- by source

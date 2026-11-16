@@ -66,9 +66,13 @@ class MiniHold {
 
 enum class MiniSlot { NONE, TOP, BOTTOM }
 
-/** Where the strip goes for the setting [where] ("bottom", "top", "off"). */
-fun miniSlot(where: String, onMedia: Boolean, editingFree: Boolean, shown: Boolean): MiniSlot = when {
-    !shown || onMedia || editingFree || where == "off" -> MiniSlot.NONE
+/**
+ * Where the strip goes for the setting [where] ("bottom", "top", "off"). None on Media, while a free layout is edited and
+ * when the screen shown has the «Плеер» card on ([playerCard], see [kg.forester.sg.data.playerCardOn]): the card is
+ * the same player, twice would only take room.
+ */
+fun miniSlot(where: String, onMedia: Boolean, editingFree: Boolean, shown: Boolean, playerCard: Boolean = false): MiniSlot = when {
+    !shown || onMedia || editingFree || playerCard || where == "off" -> MiniSlot.NONE
     where == "top" -> MiniSlot.TOP
     else -> MiniSlot.BOTTOM
 }
