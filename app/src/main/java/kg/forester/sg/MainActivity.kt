@@ -103,6 +103,7 @@ enum class Screen(val title: String, val icon: ImageVector) {
     Mine("Мой экран", Lucide.LayoutDashboard),
     Drive("Динамика", Lucide.Gauge),
     Media("Медиа", Lucide.Music),
+    Video("Видео", Lucide.Clapperboard),
     Fuel("Расход", Lucide.ChartColumn),
     Gearbox("АКПП", Lucide.Cog),
     Battery("АКБ", Lucide.BatteryCharging),
@@ -631,6 +632,8 @@ private fun ScreenBody(screen: Screen) {
         Screen.Drive -> kg.forester.sg.ui.DriveScreen()
         // the text's floor, and the player's own controls, which keep their sizes and places at a glance
         Screen.Media -> kg.forester.sg.ui.Parked(tap = 48.dp) { kg.forester.sg.ui.MediaScreen() }
+        // read parked; the players themselves pause and hide the picture while the car moves
+        Screen.Video -> kg.forester.sg.ui.Parked { kg.forester.sg.ui.VideoScreen() }
         Screen.Fuel -> kg.forester.sg.ui.Parked { FuelScreen() }
         Screen.Gearbox -> kg.forester.sg.ui.Parked { kg.forester.sg.ui.TransmissionScreen() }
         Screen.Battery -> kg.forester.sg.ui.Parked { kg.forester.sg.ui.BatteryScreen() }
@@ -742,6 +745,7 @@ internal fun availableScreens(): List<Screen> {
     if (!s.feature("perf")) list = list - Screen.Perf
     if (!s.feature("health")) list = list - Screen.Health
     if (!s.feature("mine")) list = list - Screen.Mine
+    if (!s.feature("video")) list = list - Screen.Video
     return list
 }
 

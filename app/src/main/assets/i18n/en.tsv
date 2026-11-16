@@ -4868,3 +4868,65 @@ JDM цифровой розовый	JDM digital pink
 Как в теме	As in the theme
 Жёлтый	Yellow
 Розовый	Pink
+// ui/VideoScreen.kt ui/VideoPlayer.kt video/*.kt: the «Видео» screen (2026-11-16)
+Определяем, откуда смотреть видео…	Finding out where to watch video from…
+Если долго нет ответа, проверьте интернет или выберите регион сами.	If there is no answer for long, check the internet or pick the region yourself.
+Проверить снова	Check again
+Выбрать регион	Pick the region
+Название фильма или сериала	Film or series title
+Продолжить просмотр	Continue watching
+Убрать из «Продолжить»	Remove from «Continue»
+Приложения кинотеатров	Online cinema apps
+Повторить	Retry
+Продолжить{} · {}	Continue{} · {}
+Смотреть · {}	Watch · {}
+Смотреть	Watch
+С начала	From the start
+Нет серий для просмотра	No episodes to watch
+КП {}	KP {}
+Сезоны и части	Seasons and parts
+Сезон {}	Season {}
+Похожие	Similar
+Серия {}	Episode {}
+просмотрено	watched
+Поиск на Rutube	Search Rutube
+Поиск на Rutube и YouTube	Search Rutube and YouTube
+VK Видео	VK Video
+Другая страна	Another country
+ts.kg и oc.kg работают только в Кыргызстане: из других стран их серверы и сами видео отвечают отказом. Здесь легальные сервисы: Rutube в его собственном плеере, YouTube, VK Видео и приложения онлайн-кинотеатров.	ts.kg and oc.kg work only in Kyrgyzstan: from other countries their servers and the videos themselves refuse. Here are legal services instead: Rutube in its own player, YouTube, VK Video and the online cinemas' apps.
+ключ API не подходит или кончилась дневная квота	the API key is wrong or the daily quota is used up
+Установите Кинопоиск, Okko, Wink, ivi, Start, Premier, VK Видео или YouTube: их кнопки появятся здесь.	Install Kinopoisk, Okko, Wink, ivi, Start, Premier, VK Video or YouTube: their buttons will appear here.
+Регион видео	Video region
+Проверить сейчас	Check now
+Кыргызстан: ts.kg и oc.kg	Kyrgyzstan: ts.kg and oc.kg
+другая страна: Rutube и приложения кинотеатров	another country: Rutube and the cinema apps
+ещё не определён	not known yet
+{}ts.kg и oc.kg открываются только из Кыргызстана. «Авто» спрашивает их сервер раз в # часов: отказ значит другую страну, и тогда вместо них Rutube и приложения онлайн-кинотеатров.	{}ts.kg and oc.kg open only from Kyrgyzstan. «Auto» asks their server once every # hours: a refusal means another country, and then Rutube and the online cinemas' apps take their place.
+Ключ YouTube Data API (необязательно)	YouTube Data API key (optional)
+Сохранён	Saved
+С ключом поиск YouTube работает прямо здесь и видео играет во встроенном плеере YouTube. Ключ бесплатный: Google Cloud Console → YouTube Data API v3 → «Создать учётные данные». Хранится только на этом устройстве. Без ключа кнопка YouTube открывает поиск в приложении YouTube.	With a key YouTube search works right here and videos play in YouTube's embedded player. The key is free: Google Cloud Console → YouTube Data API v3 → «Create credentials». It is kept on this device only. Without a key the YouTube button opens the search in the YouTube app.
+Видео только на стоянке	Video only when parked
+Машина едет: видео и звук на паузе. Остановитесь, и можно смотреть дальше с того же места.	The car is moving: video and sound are paused. Stop, and you can go on from the same place.
+{} открывается только из Кыргызстана	{} opens only from Kyrgyzstan
+Видео не воспроизводится. Попробуйте ещё раз или другую серию	The video doesn't play. Try again or another episode
+Ещё раз	Again
+Предыдущая серия	Previous episode
+Следующая серия	Next episode
+Открыть в {}	Open in {}
+С{} Э{}	S{} E{}
+{} открывается только из Кыргызстана. В других странах смотрите Rutube и приложения кинотеатров: Настройки → Функции → «Регион видео».	{} opens only from Kyrgyzstan. In other countries watch Rutube and the cinema apps: Settings → Features → «Video region».
+{} не отвечает. Попробуйте позже	{} doesn't answer. Try later
+{}: не удалось загрузить	{}: could not load
+Не удалось загрузить	Could not load
+Новые серии	New episodes
+Новое	New
+Популярное	Popular
+В тренде	Trending
+Топ фильмов	Top films
+Новинки кино	New films
+Топ сериалов	Top series
+Мультфильмы	Cartoons
+Кинопоиск	Kinopoisk
+Видео	Video
+Экран «Видео»	«Video» screen
+Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах Rutube, YouTube и приложения кинотеатров. Смотреть можно только на стоянке	Films and series: ts.kg and oc.kg in Kyrgyzstan, Rutube, YouTube and the cinema apps elsewhere. Watching only when parked
