@@ -1,9 +1,9 @@
 {
- "tag": "v1.0-beta5",
- "name": "1.0-beta5",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta5/subaru-ssm-dashboard.apk",
- "size": 125733560,
- "notes": "K-Line стабильнее при быстром опросе и АКПП, режим «другой прибор на линии», плата Arduino находится сама, расход без MAF по давлению во впуске, доработки машины в подсказках и замерах, масштаб двумя пальцами и открытие CSV в логах, надёжное обновление.",
+ "tag": "v1.0-beta7",
+ "name": "1.0-beta7",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta7/subaru-ssm-dashboard.apk",
+ "size": 126336297,
+ "notes": "Старые Subaru до 1999 года по SSM1 (показания и коды, нужен кабель на контакты 12 и 13), 10 циферблатов с японскими картинками, 6 цифровых JDM-приборов, эффект стекла, подробности по кодам ошибок из obdex.",
  "logUrl": "https://script.google.com/macros/s/AKfycbyItYtasioVogj8klr_jO6DD3v2052wrEYNdCeyKa0b5J9jsX2sAIYam7JFS9xnCrmYkA/exec",
- "sha256": "03b55815b39f311b8c116a95ca4f71b5c697514a50ffffa6907b1d340bbed98e"
+ "sha256": "17331e42042df80be43fb2eba9d6fce1ea7ecb5f3a5521744278a2f382ba5889"
 }
