@@ -210,7 +210,7 @@ class GvretSource(
             val n = link.read(buf, 50)
             if (n > 0) decoder.feed(buf, 0, n, pending)
         }
-        val bps = kbit * 1000
+        val bps = CanBitrates.bps(kbit) // 83 is 83.3 kbit, 33 is 33.3
         link.write(Gvret.setupBuses(Gvret.busWord(bps, true, listenOnly(0)),
             if ((decoder.info.buses ?: 2) > 1) Gvret.busWord(bps, true, listenOnly(1)) else 0L))
         lastKeepAlive = System.currentTimeMillis()

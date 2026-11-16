@@ -22,14 +22,11 @@ object Slcan {
     /** candleLight firmware (gs_usb): a CANable too, but not a serial port; Android can't open it without a driver of its own. */
     fun isCandleLight(vid: Int, pid: Int) = vid == 0x1D50 && pid == 0x606F
 
-    /** Bus speeds offered in the settings, kbit/s: a comfort bus runs at 50–125, a dash or a sensor bus at 250–1000. */
-    val SPEEDS = listOf(50, 100, 125, 250, 500, 1000)
-
-    /** The "S" command's digit for [kbit]. */
-    fun speedCode(kbit: Int): Char = when (kbit) {
-        10 -> '0'; 20 -> '1'; 50 -> '2'; 100 -> '3'; 125 -> '4'; 250 -> '5'; 750 -> '7'; 1000 -> '8'
-        else -> '6'
-    }
+    /**
+     * The command that sets [kbit]: Lawicel's "S0"–"S8", or "s" with bit timing for 83.3 and 33.3 (one table for the
+     * settings, the wizard and the probe: [CanBitrates]); a speed it has no way to set falls back to 500 ("S6").
+     */
+    fun speedCommand(kbit: Int): String = CanBitrates.slcanCommand(kbit) ?: "S6"
 
     /** One line without its CR; null for anything but a data frame (OK, error, a remote request). */
     fun parse(line: String): Frame? {
@@ -81,26 +78,45 @@ class SlcanPort(private val port: UsbSerialPort) : CanSource {
 
     private fun send(cmd: String) = port.write((cmd + "\r").toByteArray(Charsets.US_ASCII), 500)
 
-    fun open(kbit: Int) {
+    /** Opened listen-only: nothing goes out, not even what the transmit gate let through. */
+    @Volatile private var silent = false
+
+    /**
+     * [listenOnly]: the adapter never drives the bus (no ACK, no error frames), for a car's own bus; see [SlcanListen].
+     * Returns false when the adapter refused that: the bus then stays closed.
+     */
+    fun open(kbit: Int, listenOnly: Boolean = false): Boolean {
+        silent = listenOnly
         runCatching { port.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE) }
         runCatching { port.dtr = true; port.rts = true }
         // a bus left open by another app (or by us before a crash) takes no speed: close it first
         send("C")
         Thread.sleep(50)
         drain()
-        send("S${Slcan.speedCode(kbit)}")
+        // 83.3 and 33.3 kbit go as Lawicel's "s" with bit timing (see CanBitrates)
+        send(Slcan.speedCommand(kbit))
         Thread.sleep(30)
+        val dev = runCatching { port.driver.device }.getOrNull()
+        val canableFw = dev != null && SlcanListen.canableFw(dev.vendorId, dev.productId)
+        if (listenOnly) {
+            drain()
+            val ok = SlcanListen.open(SlcanUsbIo(port), canableFw)
+            errors = 0
+            return ok
+        }
+        if (canableFw) { send("M0"); Thread.sleep(20) } // a listen-only run (or the speed probe) may have left it silent
         send("O")
         Thread.sleep(30)
         errors = 0
+        return true
     }
 
     private fun drain() { repeat(5) { if (port.read(buf, 50) <= 0) return } }
 
-    override val canTransmit get() = true
+    override val canTransmit get() = !silent
 
     override fun transmit(f: CanFrame, permit: CanTx.Permit): Boolean {
-        if (!permit.covers(f)) return false
+        if (silent || !permit.covers(f)) return false
         if (f.data.size > (if (f.fd) CanFrame.MAX_FD else CanFrame.MAX_CLASSIC)) return false
         return runCatching { send(Slcan.format(f)) }.isSuccess
     }

@@ -4,7 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import kg.forester.sg.data.CanConfig
+import kg.forester.sg.data.Repo
 import kg.forester.sg.ssm.ByteLink
+import kg.forester.sg.ssm.CanBaudProbe
 import kg.forester.sg.ssm.CanFrame
 import kg.forester.sg.ssm.CanProbe
 import kg.forester.sg.ssm.CanSource
@@ -12,7 +14,11 @@ import kg.forester.sg.ssm.CanTx
 import kg.forester.sg.ssm.GvretSource
 import kg.forester.sg.ssm.RealDashSource
 import kg.forester.sg.ssm.Slcan
+import kg.forester.sg.ssm.SlcanIo
+import kg.forester.sg.ssm.SlcanLinkIo
+import kg.forester.sg.ssm.SlcanListen
 import kg.forester.sg.ssm.SlcanPort
+import kg.forester.sg.ssm.SlcanUsbIo
 import kg.forester.sg.ssm.SsmTrace
 import kg.forester.sg.ssm.StreamByteLink
 import kg.forester.sg.ssm.UsbByteLink
@@ -24,6 +30,9 @@ import java.util.concurrent.TimeUnit
  * Opening the CAN adapter the driver set up (protocol and link in [CanConfig]): a USB serial device the ECU loop found,
  * a Bluetooth one (classic SPP or BLE UART, by what the device is), or a Wi-Fi one (TCP, found by mDNS). The CANable
  * known by its USB ids keeps its own path (slcan, see EcuService.canableSession).
+ *
+ * Two probes, in this order: [CanProbe] finds the protocol, then, on an slcan adapter and only when the CAN wizard asked
+ * for it, [CanBaudProbe] finds the bus speed, listen-only. RealDash CAN and GVRET devices take the speed they are told.
  */
 object CanLinks {
     /** USB devices that answered as no CAN adapter, by device name: asked again after [RETRY_MS] (a RealDash board on a quiet bus). */
@@ -57,16 +66,32 @@ object CanLinks {
             CanConfig.setUsbProtocol(id, proto)
         }
         notCan.remove(device)
+        lastNote = ""
         val source = open(proto, link, kbit, port)
         // a GVRET board that does not answer is not the one remembered: asked again next time
         if (source is GvretSource && !source.info.answered && picked == "auto") CanConfig.setUsbProtocol(id, null)
-        lastNote = "${source?.title ?: proto} ($how)"
+        // no source: open said why (an slcan adapter that would not listen only)
+        if (source != null || lastNote.isEmpty()) lastNote = "${source?.title ?: proto} ($how)"
         return source
     }
 
-    /** [proto] on [link], set up for [kbit]; [usb] when it is a USB port (slcan there keeps the CANable's own code). */
+    /**
+     * [proto] on [link], set up for [kbit]; [usb] when it is a USB port (slcan there keeps the CANable's own code).
+     * slcan: the speed probe first when the wizard asked for it (the speed found is saved in the settings and used),
+     * then the bus opened, listen-only on the car's bus ([CanConfig.slcanListenOnly]); null when the adapter refused
+     * listen-only (the bus stays closed, [lastNote] says why). Any other protocol answers a speed probe as unsupported.
+     */
     fun open(proto: String, link: ByteLink, kbit: Int, usb: UsbSerialPort? = null): CanSource? = when (proto) {
-        "slcan" -> if (usb != null) SlcanPort(usb).also { it.open(kbit) } else SlcanLinkSource(link).also { it.open(kbit) }
+        "slcan" -> {
+            val dev = usb?.driver?.device
+            val canableFw = dev != null && SlcanListen.canableFw(dev.vendorId, dev.productId)
+            val k = probeSpeed(if (usb != null) SlcanUsbIo(usb).also { it.setUp() } else SlcanLinkIo(link), canableFw, kbit)
+            val listenOnly = CanConfig.slcanListenOnly()
+            val source: CanSource? = if (usb != null) SlcanPort(usb).takeIf { it.open(k, listenOnly) }
+                else SlcanLinkSource(link).takeIf { it.open(k, listenOnly) }
+            if (source == null) lastNote = "slcan: адаптер не включил режим «только приём», шина не открыта"
+            source
+        }
         "realdash" -> {
             link.setBaud(CanConfig.baudFor(proto))
             RealDashSource(link, kbit, CanConfig.realdashConfig, CanConfig.listenOnly(0)).also { it.open() }
@@ -76,6 +101,14 @@ object CanLinks {
             GvretSource(link, kbit, CanConfig::listenOnly).also { it.open() }
         }
         else -> null
+    }.also { if (proto != "slcan") CanBaudProbe.unsupported(it?.title ?: proto) }
+
+    /** The CAN wizard's «Подобрать скорость» on an slcan adapter: listen-only at each speed; the speed to open at. */
+    private fun probeSpeed(io: SlcanIo, canableFw: Boolean, kbit: Int): Int {
+        if (!CanBaudProbe.requested) return kbit
+        var found = kbit
+        CanBaudProbe.runOn(io, canableFw) { found = it; Repo.settings.canKbit = it }
+        return found
     }
 
     /** A link without serial settings (Bluetooth, Wi-Fi): the protocol picked, else found by asking, [order] first. */
@@ -178,15 +211,26 @@ class SlcanLinkSource(private val link: ByteLink) : CanSource {
     override var errors = 0
         private set
     override val title get() = "slcan"
-    override val canTransmit get() = true
+    override val canTransmit get() = !silent
 
     private fun send(cmd: String) = link.write((cmd + "\r").toByteArray(Charsets.US_ASCII))
 
-    fun open(kbit: Int) {
+    /** Opened listen-only: nothing goes out, not even what the transmit gate let through. */
+    @Volatile private var silent = false
+
+    /** [listenOnly]: Lawicel's "L", never "O" (see [SlcanListen]); false when the adapter refused it (the bus stays closed). */
+    fun open(kbit: Int, listenOnly: Boolean = false): Boolean {
+        silent = listenOnly
         send("C"); Thread.sleep(50); link.drain(100)
-        send("S${Slcan.speedCode(kbit)}"); Thread.sleep(30)
+        send(Slcan.speedCommand(kbit)); Thread.sleep(30)
+        if (listenOnly) {
+            val ok = SlcanListen.open(SlcanLinkIo(link), canableFw = false)
+            errors = 0
+            return ok
+        }
         send("O"); Thread.sleep(30)
         errors = 0
+        return true
     }
 
     override fun read(timeoutMs: Int): List<CanFrame> {
@@ -204,7 +248,7 @@ class SlcanLinkSource(private val link: ByteLink) : CanSource {
     }
 
     override fun transmit(f: CanFrame, permit: CanTx.Permit): Boolean =
-        permit.covers(f) && runCatching { send(Slcan.format(f)) }.isSuccess
+        !silent && permit.covers(f) && runCatching { send(Slcan.format(f)) }.isSuccess
 
     override fun close() { runCatching { send("C") }; link.close() }
 }

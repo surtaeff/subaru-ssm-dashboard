@@ -76,22 +76,27 @@ interface CanSource : Closeable {
 }
 
 /**
- * Every frame heard, whatever the adapter: the monitor («Что идёт по CAN»), the driver's own channels and, on a sports
- * ECU's dash CAN, the Link's stream. Anything else that wants the raw frames (a log, a decoder) adds a [listeners] entry.
+ * Every frame heard, whatever the adapter (a CANable, a RealDash CAN or GVRET device, the SensorBox's CAN, the OpenPort
+ * listening) or a log played back ([CanReplay]): the monitor («Что идёт по CAN», the sniffer), the driver's own
+ * channels and, on a sports ECU's dash CAN, the Link's stream. Anything else that wants the raw frames (the log
+ * recorder, the «нажмите кнопку» capture, a decoder) adds a [listeners] entry.
  */
 object CanBus {
+    /** One more consumer of every frame; [mux] is the Link's frame number when the frame was its compound stream. */
+    fun interface Listener { fun frame(f: CanFrame, mux: Int?, now: Long) }
+
     /** Called on the reading thread for every frame: keep it short. */
-    val listeners = CopyOnWriteArrayList<(CanFrame) -> Unit>()
+    val listeners = CopyOnWriteArrayList<Listener>()
 
     /**
-     * [f] to everyone. [link]: look for the Link's dash stream in it too (a CAN adapter session; the OpenPort listening
-     * to a Subaru's bus does not). Returns the Link's Generic Dash frame number when it was that stream.
+     * [f] to everyone. [link]: look for the Link's dash stream in it too (a CAN adapter session, a replay; the OpenPort
+     * listening to a Subaru's bus does not). Returns the Link's Generic Dash frame number when it was that stream.
      */
     fun dispatch(f: CanFrame, now: Long = System.currentTimeMillis(), link: Boolean = false): Int? {
         val mux = if (link && f.bus == 0) LinkDash.feed(f.id, f.ext, f.data, now) else null
-        CanMonitor.feed(f.id, f.ext, f.data, now, mux, f.bus, f.fd)
+        CanMonitor.feed(f, now, mux)
         kg.forester.sg.data.CanChannels.feed(f.id, f.ext, f.data, now)
-        for (l in listeners) runCatching { l(f) }
+        for (l in listeners) runCatching { l.frame(f, mux, now) }
         return mux
     }
 }

@@ -31,8 +31,13 @@ class LinkCanTest {
         assertNull(Slcan.parse("r3E80")) // remote request
         assertNull(Slcan.parse("t3E8")) // cut short
         assertNull(Slcan.parse("t3E89"))
-        assertEquals('6', Slcan.speedCode(500))
-        assertEquals('8', Slcan.speedCode(1000))
+        // one bit rate table (CanBitrates) for the settings, the wizard, the probe and the slcan command
+        assertEquals("S6", Slcan.speedCommand(500))
+        assertEquals("S8", Slcan.speedCommand(1000))
+        assertEquals("S2", Slcan.speedCommand(50))
+        assertEquals("S3", Slcan.speedCommand(100))
+        assertEquals("s451C", Slcan.speedCommand(83))
+        assertEquals("S6", Slcan.speedCommand(42)) // no way to set it: 500
         assertTrue(Slcan.matches(0xAD50, 0x60C4, null))
         assertTrue(Slcan.matches(0x0483, 0x1234, "CANable 2.0"))
         assertFalse(Slcan.matches(0x0483, 0x5740, "STM32 Virtual ComPort"))

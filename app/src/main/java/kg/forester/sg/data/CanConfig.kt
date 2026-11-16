@@ -116,14 +116,28 @@ object CanConfig {
      * The bus may not answer at all (listen-only, no ACK): the car's own buses and any not marked. Only the driver's
      * sensor bus (two nodes need the ACK) and a comfort bus with real transmitting on take part.
      */
-    fun listenOnly(bus: Int): Boolean = when (roles()[bus] ?: CanTx.Role.UNKNOWN) {
+    fun listenOnly(bus: Int): Boolean = (bus == 0 && wizardListenOnly()) || when (roles()[bus] ?: CanTx.Role.UNKNOWN) {
         CanTx.Role.SENSOR -> false
         CanTx.Role.COMFORT -> !(txEnabled && !txSimulate)
         else -> true
     }
 
+    /**
+     * The CAN wizard's answer: the adapter is on the car's own bus (scenario «Шина машины»), or listen-only was switched
+     * on there ([Settings.canListenOnly]). Then the adapter's bus never answers, whatever else is set.
+     */
+    fun wizardListenOnly(): Boolean = runCatching { Repo.settings.canListenOnly || Repo.settings.canScenario == "car" }.getOrDefault(false)
+
+    /**
+     * An slcan adapter (a CANable) opens its bus in normal mode, as on a sports ECU's dash CAN where it may be the only
+     * other node and has to ACK the stream; listen-only (M1 / L, see [kg.forester.sg.ssm.SlcanListen]) on the car's
+     * bus, as the wizard set it.
+     */
+    fun slcanListenOnly(): Boolean = wizardListenOnly()
+
     /** What makes a running CAN session start over when it changes. */
-    fun signature(): String = listOf(protocol, transport, btAddress, tcpHost, baud, realdashConfig, busRoles, txEnabled, txSimulate).joinToString("|")
+    fun signature(): String = listOf(protocol, transport, btAddress, tcpHost, baud, realdashConfig, busRoles, txEnabled, txSimulate,
+        wizardListenOnly()).joinToString("|")
 
     // ---- pure parts (tests)
 

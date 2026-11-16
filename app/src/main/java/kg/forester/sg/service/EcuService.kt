@@ -1451,11 +1451,27 @@ class EcuService : Service() {
      * Dash2Pro or Generic Dash is found on its own; anything else is read with the driver's own CAN channels.
      */
     private suspend fun canableSession(port: UsbSerialPort) {
+        // «Подобрать скорость» (the CAN wizard): listen-only at each speed before the session opens the bus
+        if (kg.forester.sg.ssm.CanBaudProbe.requested) {
+            Repo.link.value = LinkState.CONNECTING
+            Repo.linkMessage.value = "CANable: подбираю скорость шины (только приём)"
+            kg.forester.sg.ssm.CanBaudProbe.runOn(port) { Repo.settings.canKbit = it }
+        }
         val kbit = Repo.settings.canKbit
+        // normal mode on a sports ECU's dash CAN (it may be the only node to ACK the stream), listen-only on the car's bus
+        val listenOnly = kg.forester.sg.data.CanConfig.slcanListenOnly()
         val bus = kg.forester.sg.ssm.SlcanPort(port)
-        bus.open(kbit)
-        SsmTrace.log("CANable: bus open at $kbit kbit/s")
-        canSession(bus, kbit) { Repo.settings.canKbit == kbit }
+        if (!bus.open(kbit, listenOnly)) {
+            Repo.link.value = LinkState.NO_ECU
+            Repo.linkMessage.value = "CANable не включил режим «только приём»: шина машины не открыта. Обновите прошивку slcan или выключите этот режим в мастере CAN"
+            SsmTrace.log("CANable: listen-only refused")
+            delay(5000)
+            return
+        }
+        SsmTrace.log("CANable: bus open at $kbit kbit/s" + if (listenOnly) ", listen-only" else "")
+        canSession(bus, kbit) {
+            Repo.settings.canKbit == kbit && kg.forester.sg.data.CanConfig.slcanListenOnly() == listenOnly && !kg.forester.sg.ssm.CanBaudProbe.requested
+        }
     }
 
     /**
@@ -1463,28 +1479,31 @@ class EcuService : Service() {
      * protocol picked, remembered or asked for, then the same session as the CANable's.
      */
     private suspend fun canUsbSession(port: UsbSerialPort, driver: UsbSerialDriver, id: String) {
-        val kbit = Repo.settings.canKbit
         val sig = kg.forester.sg.data.CanConfig.signature()
         Repo.link.value = LinkState.CONNECTING
         Repo.linkMessage.value = "USB $id: узнаю протокол CAN-адаптера…"
         val serial = UsbDeviceRegistry.serial(driver.device)?.takeIf { it.isNotBlank() }?.let { "/$it" }.orEmpty()
-        val bus = CanLinks.openUsb(port, driver.device.deviceName, id + serial, kbit)
+        // an slcan adapter may find the speed first (the CAN wizard's probe): the one it opened at is in the settings then
+        val bus = CanLinks.openUsb(port, driver.device.deviceName, id + serial, Repo.settings.canKbit)
+        val kbit = Repo.settings.canKbit
         if (bus == null) {
             Repo.link.value = LinkState.ERROR
-            Repo.linkMessage.value = "USB $id не ответил как CAN-адаптер (RealDash CAN, GVRET, slcan). RealDash-адаптер молчит, " +
-                "пока на шине нет кадров: включите зажигание или выберите протокол вручную"
+            Repo.linkMessage.value = if (CanLinks.lastNote.isNotEmpty()) "USB $id → ${CanLinks.lastNote}"
+                else "USB $id не ответил как CAN-адаптер (RealDash CAN, GVRET, slcan). RealDash-адаптер молчит, " +
+                    "пока на шине нет кадров: включите зажигание или выберите протокол вручную"
             delay(2000)
             return
         }
         Repo.adapterFound.value = "USB $id → ${CanLinks.lastNote}"
         SsmTrace.log("CAN ${bus.title} on USB $id at $kbit kbit/s")
-        canSession(bus, kbit) { Repo.settings.canKbit == kbit && kg.forester.sg.data.CanConfig.signature() == sig }
+        canSession(bus, kbit) {
+            Repo.settings.canKbit == kbit && kg.forester.sg.data.CanConfig.signature() == sig && !kg.forester.sg.ssm.CanBaudProbe.requested
+        }
     }
 
     /** The CAN adapter on Bluetooth (SPP or BLE UART) or Wi-Fi (TCP, GVRET's port 23 by default, found by mDNS). */
     private suspend fun canRemoteSession() {
         val cfg = kg.forester.sg.data.CanConfig
-        val kbit = Repo.settings.canKbit
         val sig = cfg.signature()
         Repo.link.value = LinkState.CONNECTING
         val link = if (cfg.transport == "bt") {
@@ -1515,16 +1534,21 @@ class EcuService : Service() {
         }
         try {
             val order = if (cfg.transport == "tcp") listOf("gvret", "realdash", "slcan") else listOf("realdash", "gvret", "slcan")
-            val bus = CanLinks.openRemote(link, kbit, order)
+            val bus = CanLinks.openRemote(link, Repo.settings.canKbit, order)
+            // the speed the adapter was opened at (an slcan one may have found it by the wizard's probe)
+            val kbit = Repo.settings.canKbit
             if (bus == null) {
                 Repo.link.value = LinkState.ERROR
-                Repo.linkMessage.value = "${link.label}: не похоже на CAN-адаптер (RealDash CAN, GVRET, slcan). " +
-                    "RealDash-адаптер молчит, пока на шине нет кадров: включите зажигание или выберите протокол вручную"
+                Repo.linkMessage.value = if (CanLinks.lastNote.startsWith("slcan:")) "${link.label} → ${CanLinks.lastNote}"
+                    else "${link.label}: не похоже на CAN-адаптер (RealDash CAN, GVRET, slcan). " +
+                        "RealDash-адаптер молчит, пока на шине нет кадров: включите зажигание или выберите протокол вручную"
                 return
             }
             Repo.adapterFound.value = "${link.label} → ${bus.title} (${CanLinks.lastNote})"
             SsmTrace.log("CAN ${bus.title} on ${link.label} at $kbit kbit/s")
-            canSession(bus, kbit) { Repo.settings.adapter == "canable" && Repo.settings.canKbit == kbit && cfg.signature() == sig }
+            canSession(bus, kbit) {
+                Repo.settings.adapter == "canable" && Repo.settings.canKbit == kbit && cfg.signature() == sig && !kg.forester.sg.ssm.CanBaudProbe.requested
+            }
         } finally {
             runCatching { link.close() }
         }
