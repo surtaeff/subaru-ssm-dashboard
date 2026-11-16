@@ -1021,6 +1021,7 @@ object Repo {
             Thread({ BoxPresets.load(ctx.applicationContext) }, "box presets").start()
             SensorBox.load()
             Wideband.load()
+            CanConfig.init(ctx.applicationContext)
             Relays.load()
             Displays.load()
             UsbScreen.load()

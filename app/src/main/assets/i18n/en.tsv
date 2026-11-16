@@ -4868,3 +4868,91 @@ JDM цифровой розовый	JDM digital pink
 Как в теме	As in the theme
 Жёлтый	Yellow
 Розовый	Pink
+// ui/CanAdapterUi.kt
+CAN: протокол адаптера	CAN: adapter protocol
+Текстовый протокол Lawicel: CANable, CANtact и клоны. Поддерживает CAN FD у CANable 2.0 (кадры d/b)	Lawicel text protocol: CANable, CANtact and clones. CAN FD on a CANable 2.0 (d/b frames)
+Протокол RealDash CAN: самодельные платы (Arduino с MCP2515, ESP32) и мосты CAN–Bluetooth. Адаптер сам шлёт кадры 44/66 (66 с CRC32, до 64 байт для CAN FD); скорость и режим ему передаются кадрами 67, если он их понимает	RealDash CAN protocol: home-made boards (Arduino with an MCP2515, ESP32) and CAN–Bluetooth bridges. The adapter sends 44/66 frames by itself (66 with CRC32, up to 64 bytes for CAN FD); the speed and mode go to it in 67 frames, if it understands them
+Протокол GVRET, как у SavvyCAN: ESP32RET, M2RET, A0RET. USB на 1 Мбод или Wi-Fi, порт 23. Несколько шин, CAN FD	GVRET protocol, as in SavvyCAN: ESP32RET, M2RET, A0RET. USB at 1 Mbaud or Wi-Fi, port 23. Several buses, CAN FD
+Приложение узнает протокол само: слушает кадры RealDash, спрашивает GVRET, затем slcan. Найденный запоминается для этого USB-устройства. Опрашиваются только устройства, которые не оказались SensorBox	The app finds the protocol itself: listens for RealDash frames, asks GVRET, then slcan. What it finds is remembered for that USB device. Only devices that turned out not to be the SensorBox are asked
+Скорость USB	USB speed
+по протоколу	by protocol
+1 Мбод	1 Mbaud
+2 Мбод	2 Mbaud
+По протоколу: GVRET 1 Мбод (ESP32RET), RealDash и slcan 115200. У CANable скорость порта не важна	By protocol: GVRET 1 Mbaud (ESP32RET), RealDash and slcan 115200. A CANable does not care about the port speed
+RealDash: передавать адаптеру скорость и режим (кадр 67)	RealDash: send the adapter the speed and mode (frame 67)
+Передача в CAN: включена{}	CAN transmit: on{}
+ (симуляция)	 (simulation)
+Передача в CAN: выключена	CAN transmit: off
+Шины адаптера	Adapter buses
+Силовая и неотмеченная шина: адаптер только слушает (без подтверждений, если он это умеет), передача запрещена. Своя шина датчиков: адаптер участвует в обмене (иначе датчик без подтверждений уйдёт в ошибку). Шину с потоком Link приложение всегда считает силовой	Powertrain and unmarked bus: the adapter only listens (no acknowledgements, if it can do that), transmitting is forbidden. Own sensor bus: the adapter takes part (otherwise a sensor without acknowledgements goes into error). A bus with a Link stream always counts as powertrain
+Ищу BLE…	Searching BLE…
+Найти BLE-адаптер	Find a BLE adapter
+Классический Bluetooth (SPP) сопрягите в настройках Android. BLE-адаптер (сервис UART: Nordic, HM-10, Microchip) можно найти поиском здесь, сопрягать не нужно	Pair classic Bluetooth (SPP) in the Android settings. A BLE adapter (UART service: Nordic, HM-10, Microchip) can be found with the search here, no pairing needed
+Адрес (IP:порт), пусто: поиск по mDNS, затем {}	Address (IP:port), empty: mDNS search, then {}
+Ищу в сети…	Searching the network…
+Найти в сети (mDNS)	Find on the network (mDNS)
+Ничего не найдено. Магнитола в сети адаптера (ESP32RETSSID)? Адрес в своей сети ESP32RET — 192.168.4.1:23	Nothing found. Is the head unit on the adapter's network (ESP32RETSSID)? On its own network the ESP32RET is 192.168.4.1:23
+Передача в CAN	CAN transmit
+Осторожно	Caution
+Кадр, отправленный в шину машины, могут принять её блоки: ошибки ABS, подушек, иммобилайзера, отказ узлов на ходу. Передавайте только на стенде или в свою шину датчиков. В силовую шину и в неотмеченную приложение не передаёт никогда, диагностические ID (7DF, 7E0–7EF, 18DA…, 18DB…) запрещены всегда. Сами по себе никакие кадры не шлются: только то, что вы отправите здесь вручную	A frame sent to the car's bus can be taken by its units: ABS, airbag and immobiliser faults, units failing while driving. Transmit only on a bench or to your own sensor bus. The app never transmits to a powertrain or an unmarked bus; diagnostic IDs (7DF, 7E0–7EF, 18DA…, 18DB…) are always forbidden. No frames are sent by themselves: only what you send here by hand
+Разрешить передачу	Allow transmitting
+Выключено по умолчанию. Всё, что проходит через шлюз, записывается в журнал ниже	Off by default. Everything that passes the gate is written to the log below
+Разрешить передачу в CAN?	Allow transmitting to CAN?
+Только для стенда или своей шины датчиков. Симуляция останется включённой, пока вы её не выключите.	Only for a bench or your own sensor bus. Simulation stays on until you switch it off.
+Симуляция	Simulation
+Кадр проходит все проверки и пишется в журнал, но в шину не уходит	The frame goes through all checks and into the log, but not onto the bus
+Разрешённые ID (hex через запятую; 29-битный с x на конце: 18FF0001x)	Allowed IDs (hex, comma-separated; a 29-bit one with x at the end: 18FF0001x)
+Список пуст: не уйдёт ни один кадр	The list is empty: no frame will go out
+В списке {} ID	{} IDs on the list
+Не чаще, на ID в секунду	At most, per ID per second
+Всего в секунду	In all per second
+Журнал ({})	Log ({})
+Пока ничего не отправлялось.	Nothing sent yet.
+Отправить кадр	Send a frame
+Данные (hex): 01 02 0A FF	Data (hex): 01 02 0A FF
+Кадр	Frame
+обычный (до 8 байт)	classic (up to 8 bytes)
+CAN FD (до 64)	CAN FD (up to 64)
+Впишите ID и данные	Enter the ID and data
+Неверный кадр: ID в hex (до 7FF или 1FFFFFFF), данные парами hex, до 8 байт (CAN FD до 64)	Bad frame: ID in hex (up to 7FF or 1FFFFFFF), data as hex pairs, up to 8 bytes (CAN FD up to 64)
+Сейчас нет CAN-сессии: кадр проверится, но отправлять некуда	No CAN session now: the frame will be checked, but there is nowhere to send it
+// ui/CanUi.kt
+CAN: скорость шины	CAN: bus speed
+Кадров нет. CAN-адаптер подключён, выбран в настройках (или Авто для CANable), скорость шины верная, зажигание включено?	No frames. Is the CAN adapter connected, picked in the settings (or Auto for a CANable), the bus speed right, the ignition on?
+Значение выходит за 64 байта кадра CAN FD	The value goes past the 64 bytes of a CAN FD frame
+// ui/CarSetup.kt
+CAN-адаптер	CAN adapter
+Экспериментально. CAN-адаптер на шине для дашбордов спортивного ЭБУ или своих датчиков: CANable (slcan), платы с протоколом RealDash CAN или GVRET (ESP32RET) по USB, Bluetooth или Wi-Fi. Link G4+/G4X с потоком Dash2Pro или Generic Dash распознаётся сам, остальное добавляется своими значениями. Ничего не запрашивает, только слушает; передача выключена и возможна лишь вручную через шлюз с ограничениями. Коды ошибок Subaru, IAM и проверки по заводским таблицам при этом недоступны.	Experimental. A CAN adapter on a sports ECU's dash bus or your own sensors' bus: CANable (slcan), boards with the RealDash CAN or GVRET (ESP32RET) protocol over USB, Bluetooth or Wi-Fi. A Link G4+/G4X with a Dash2Pro or Generic Dash stream is recognised by itself, anything else is added as your own values. Asks nothing, only listens; transmitting is off and possible only by hand through a gate with limits. Subaru trouble codes, IAM and checks against the factory tables are not available then.
+// service/EcuService.kt
+CAN-адаптер не найден: подключите его к USB магнитолы (CANable, RealDash CAN, GVRET; не ответивший ни по одному протоколу спрошу снова через 20 с, или выберите протокол вручную)	CAN adapter not found: connect it to the head unit's USB (CANable, RealDash CAN, GVRET; one that answered no protocol is asked again in 20 s, or pick the protocol by hand)
+USB {}: узнаю протокол CAN-адаптера…	USB {}: finding out the CAN adapter's protocol…
+USB {} не ответил как CAN-адаптер (RealDash CAN, GVRET, slcan). RealDash-адаптер молчит, пока на шине нет кадров: включите зажигание или выберите протокол вручную	USB {} did not answer as a CAN adapter (RealDash CAN, GVRET, slcan). A RealDash adapter is silent while there are no frames on the bus: switch the ignition on or pick the protocol by hand
+Выберите Bluetooth CAN-адаптер: Настройки → «Машина и адаптер»	Pick the Bluetooth CAN adapter: Settings → «Car and adapter»
+Подключение к CAN-адаптеру {}:{}…	Connecting to the CAN adapter {}:{}…
+Bluetooth CAN-адаптер не отвечает (включено питание? не занят другим приложением?)	The Bluetooth CAN adapter does not answer (is it powered? not taken by another app?)
+Wi-Fi CAN-адаптер не отвечает: магнитола в его сети? Адрес в настройках верный?	The Wi-Fi CAN adapter does not answer: is the head unit on its network? Is the address in the settings right?
+{}: не похоже на CAN-адаптер (RealDash CAN, GVRET, slcan). RealDash-адаптер молчит, пока на шине нет кадров: включите зажигание или выберите протокол вручную	{}: does not look like a CAN adapter (RealDash CAN, GVRET, slcan). A RealDash adapter is silent while there are no frames on the bus: switch the ignition on or pick the protocol by hand
+{}: шина {} кбит открыта, жду кадры	{}: bus open at {} kbit, waiting for frames
+{} на связи, но шина молчит. Зажигание включено? Скорость {} кбит та же, что в настройках CAN у ЭБУ?{}	{} connected, but the bus is silent. Is the ignition on? Is the speed {} kbit the same as in the ECU's CAN settings?{}
+Link ({}, ID #) · {} # кбит	Link ({}, ID #) · {} # kbit
+{}: на шине {} ID, поток Link (Dash2Pro или Generic Dash) не найден. Что идёт по CAN: Настройки, Машина и адаптер	{}: {} IDs on the bus, no Link stream (Dash2Pro or Generic Dash) found. What is on the CAN: Settings, Car and adapter
+// service/CanLinks.kt
+выбран	picked
+запомнен	remembered
+найден опросом	found by asking
+// ssm/CanTx.kt
+не указана	not set
+силовая (двигатель, АКПП, ABS, руль)	powertrain (engine, gearbox, ABS, steering)
+комфорт / кузов	comfort / body
+своя шина датчиков	own sensor bus
+отправлен	sent
+симуляция: проверен, не отправлен	simulation: checked, not sent
+передача выключена	transmitting is off
+ID нет в списке разрешённых	ID not on the allowed list
+диагностический ID: запрещён всегда	diagnostic ID: always forbidden
+неверный кадр (ID или длина)	bad frame (ID or length)
+шина не отмечена как своя или комфорт	bus not marked as own or comfort
+силовая шина: передача запрещена	powertrain bus: transmitting forbidden
+превышен лимит частоты	rate limit exceeded
+нет адаптера, который умеет передавать	no adapter that can transmit
+адаптер не принял кадр	the adapter did not take the frame

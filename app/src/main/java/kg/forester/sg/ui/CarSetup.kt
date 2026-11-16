@@ -49,7 +49,7 @@ import kg.forester.sg.ssm.SsmTrace
 
 private val adapters = listOf(
     "auto" to "Авто", "kkl" to "KKL-кабель", "op2" to "OpenPort 2.0",
-    "elm_usb" to "ELM327 USB", "elm_bt" to "ELM327 Bluetooth", "elm_wifi" to "ELM327 Wi-Fi", "canable" to "CANable (Link)",
+    "elm_usb" to "ELM327 USB", "elm_bt" to "ELM327 Bluetooth", "elm_wifi" to "ELM327 Wi-Fi", "canable" to "CAN-адаптер",
     "mt_bt" to "Multitronics Bluetooth",
 )
 
@@ -58,9 +58,10 @@ private fun adapterNote(k: String) = when (k) {
         "подключена магнитола, или сопряжённый Bluetooth-адаптер. Если ЭБУ не отвечает по протоколу Subaru (SSM), " +
         "ELM327 и OpenPort 2.0 переходят на стандартный OBD-II: основные параметры и ошибки."
     "op2" -> "Tactrix OpenPort 2.0 или китайский клон. Умеет K-Line и CAN, а без SSM — стандартный OBD-II по CAN."
-    "canable" -> "Экспериментально. USB-CAN адаптер CANable (прошивка slcan, как для RealDash) на шине для дашбордов спортивного ЭБУ: " +
-        "Link G4+/G4X с потоком Dash2Pro или Generic Dash распознаётся сам, остальное добавляется своими значениями. Ничего не запрашивает, " +
-        "только слушает. Коды ошибок Subaru, IAM и проверки по заводским таблицам при этом недоступны."
+    "canable" -> "Экспериментально. CAN-адаптер на шине для дашбордов спортивного ЭБУ или своих датчиков: CANable (slcan), платы с " +
+        "протоколом RealDash CAN или GVRET (ESP32RET) по USB, Bluetooth или Wi-Fi. Link G4+/G4X с потоком Dash2Pro или Generic Dash " +
+        "распознаётся сам, остальное добавляется своими значениями. Ничего не запрашивает, только слушает; передача выключена " +
+        "и возможна лишь вручную через шлюз с ограничениями. Коды ошибок Subaru, IAM и проверки по заводским таблицам при этом недоступны."
     "elm_usb" -> "ELM327 с USB-шнуром. SSM по CAN (SH 2009+); K-Line только у оригинальных ELM327 v1.4+. " +
         "Если SSM не отвечает — стандартный OBD-II."
     "elm_bt" -> "Bluetooth-свисток ELM327. SSM по CAN (SH 2009+); K-Line только у оригинальных ELM327 v1.4+, многие " +

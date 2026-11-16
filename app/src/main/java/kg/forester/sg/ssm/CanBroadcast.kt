@@ -35,9 +35,8 @@ object CanBroadcast {
     /** A frame off the bus (any id): kept by id, the latest wins. */
     fun feed(id: Int, data: ByteArray, now: Long = System.currentTimeMillis()) {
         if (id in 0x7E0..0x7EF) return // diagnostics, not broadcast
-        CanMonitor.feed(id, false, data, now)
-        // the driver's own values off the same bus (a CAN sensor board next to the car's units)
-        kg.forester.sg.data.CanChannels.feed(id, false, data, now)
+        // the monitor and the driver's own values off the same bus (a CAN sensor board next to the car's units)
+        CanBus.dispatch(CanFrame(id, false, data), now)
         frames[id] = Frame(data, now)
         lastMs = now
         if (id == 0x362 && now - fuelLoggedMs > 5000) { fuelLoggedMs = now; SsmTrace.log("CAN 362 (Fuel, not decoded yet)", data) }

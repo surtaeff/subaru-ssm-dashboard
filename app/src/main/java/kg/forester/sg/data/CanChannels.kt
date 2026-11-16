@@ -19,7 +19,7 @@ data class CanChannel(
     val ext: Boolean,
     /** Compound stream: byte 0 must be this frame number; -1 = any frame of the id. */
     val mux: Int,
-    /** First byte, 0–7. */
+    /** First byte, 0–7 (up to 63 in a CAN FD frame). */
     val byte: Int,
     /** 1, 2 or 4 bytes. */
     val len: Int,
@@ -65,13 +65,16 @@ data class CanChannel(
         .put("units", units).put("dec", decimals).put("role", role)
 
     companion object {
+        /** The last first byte there can be: a CAN FD frame has 64. */
+        const val MAX_BYTE = 63
+
         /** The SensorBox roles (but the tank wire's volts) and the Link's fault code. */
         val ROLES = listOf("" to "нет") + BoxRoles.all.filter { it.first.isNotEmpty() && it.first != "fuelLevel" } +
             ("fault" to "Код ошибки Link")
 
         fun fromJson(o: JSONObject) = CanChannel(
             o.getString("id"), o.optString("name"), o.getInt("can"), o.optBoolean("ext"), o.optInt("mux", -1),
-            o.optInt("byte").coerceIn(0, 7), o.optInt("len", 2).let { if (it in setOf(1, 2, 4)) it else 2 }, o.optBoolean("be"),
+            o.optInt("byte").coerceIn(0, MAX_BYTE), o.optInt("len", 2).let { if (it in setOf(1, 2, 4)) it else 2 }, o.optBoolean("be"),
             o.optBoolean("signed"), o.optString("formula", "x"), o.optString("units"), o.optInt("dec", 1), o.optString("role"),
         )
     }

@@ -48,8 +48,8 @@ import kg.forester.sg.ssm.RrExpr
 import kg.forester.sg.ssm.Slcan
 
 /**
- * The CANable part of «Машина и адаптер»: the bus speed (as set for the ECU's dash CAN), what goes on the bus, and the
- * driver's own values off it.
+ * The CAN adapter part of «Машина и адаптер»: its protocol and link ([CanAdapterPanel]), the bus speed (as set for the
+ * ECU's dash CAN), what goes on the bus, and the driver's own values off it.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -58,7 +58,8 @@ fun CanablePanel() {
     var kbit by remember { mutableStateOf(s.canKbit) }
     var monitor by remember { mutableStateOf(false) }
     var channels by remember { mutableStateOf(false) }
-    T("CANable: скорость шины", 15.sp)
+    CanAdapterPanel()
+    T("CAN: скорость шины", 15.sp)
     Spacer(Modifier.height(6.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Slcan.SPEEDS.forEach { k -> Chip(if (k >= 1000) "1 Мбит" else "$k кбит", kbit == k, { kbit = k; s.canKbit = k }) }
@@ -117,7 +118,7 @@ fun CanMonitorDialog(onClose: () -> Unit) {
             "Нажмите на строку, чтобы взять из неё своё значение. Где лежит нужное: меняйте его на машине (газ, прогрев) и смотрите, какие байты меняются",
             12.sp, C.Sub)
         Spacer(Modifier.height(8.dp))
-        if (rows.isEmpty()) T("Кадров нет. CANable подключён, адаптер в настройках CANable (или Авто), скорость шины верная, зажигание включено?", 14.sp, C.Sub)
+        if (rows.isEmpty()) T("Кадров нет. CAN-адаптер подключён, выбран в настройках (или Авто для CANable), скорость шины верная, зажигание включено?", 14.sp, C.Sub)
         Column {
             rows.forEach { r ->
                 Row(
@@ -211,7 +212,7 @@ private fun CanChannelForm(start: CanChannel, onDone: () -> Unit) {
         name.isBlank() -> "Введите название"
         canId == null || canId > (if (ext) 0x1FFFFFFF else 0x7FF) -> "ID в шестнадцатеричном виде: 3E8 для 1000 (у Link ID в PCLink десятичный)"
         mux.isNotBlank() && (muxN == null || muxN !in 0..255) -> "Номер кадра: число 0–255 или пусто"
-        byte + len > 8 -> "Значение выходит за 8 байт кадра"
+        byte + len > CanChannel.MAX_BYTE + 1 -> "Значение выходит за 64 байта кадра CAN FD"
         RrExpr.parse(formula.ifBlank { "x" }) == null -> "Формула: x, числа, + − * / и скобки"
         else -> null
     }
@@ -240,7 +241,9 @@ private fun CanChannelForm(start: CanChannel, onDone: () -> Unit) {
         }
         Spacer(Modifier.height(10.dp))
         Labeled("ID") { Chip("11 бит", !ext, { ext = false }); Chip("29 бит", ext, { ext = true }) }
-        Labeled("Первый байт") { (0..7).forEach { n -> Chip("$n", byte == n, { byte = n }) } }
+        // a CAN FD frame on the bus offers its bytes past the eighth
+        val lastByte = maxOf(7, byte, (row?.data?.size ?: 8) - 1).coerceAtMost(CanChannel.MAX_BYTE)
+        Labeled("Первый байт") { (0..lastByte).forEach { n -> Chip("$n", byte == n, { byte = n }) } }
         Labeled("Длина") { listOf(1, 2, 4).forEach { n -> Chip("$n байт", len == n, { len = n }) } }
         Labeled("Порядок байт") { Chip("младший первым (Intel)", !be, { be = false }); Chip("старший первым (Motorola)", be, { be = true }) }
         Labeled("Знак") { Chip("без знака", !signed, { signed = false }); Chip("со знаком", signed, { signed = true }) }

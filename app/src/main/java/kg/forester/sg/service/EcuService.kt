@@ -287,6 +287,8 @@ class EcuService : Service() {
                 "elm_bt" -> { bluetoothSession(s.btAddress, s.btName); delay(3000); continue }
                 "mt_bt" -> { bluetoothSession(s.btAddress, s.btName, multitronics = true); delay(3000); continue }
                 "elm_wifi" -> { wifiSession(explicit = true); delay(3000); continue }
+                // a CAN adapter on Bluetooth or Wi-Fi (RealDash CAN, GVRET); on USB it is found below
+                "canable" -> if (kg.forester.sg.data.CanConfig.transport != "usb") { canRemoteSession(); delay(2000); continue }
             }
             val all = adapterProber.findAllDrivers(usb) + unknownSerial(usb, adapterProber.findAllDrivers(usb))
             logUsbDevices(usb, all)
@@ -314,7 +316,8 @@ class EcuService : Service() {
                     kind == "op2" -> "OpenPort 2.0 не найден"
                     kind == "canable" && usb.deviceList.values.any { kg.forester.sg.ssm.Slcan.isCandleLight(it.vendorId, it.productId) } ->
                         "CANable с прошивкой candleLight: приложение работает с прошивкой slcan (как RealDash). Перепрошейте адаптер на slcan"
-                    kind == "canable" -> "CANable не найден: подключите его к USB магнитолы"
+                    kind == "canable" -> "CAN-адаптер не найден: подключите его к USB магнитолы (CANable, RealDash CAN, GVRET; " +
+                        "не ответивший ни по одному протоколу спрошу снова через 20 с, или выберите протокол вручную)"
                     kind == "elm_usb" -> "USB-адаптер ELM327 не найден"
                     else -> "Кабель KKL не найден (если он подключён — «Отправить журнал»: в журнале коды всех USB-устройств)"
                 }
@@ -354,6 +357,8 @@ class EcuService : Service() {
                         Repo.adapterFound.value = "USB $id → CANable (slcan)"
                         canableSession(port)
                     }
+                    // the CAN adapter picked by hand, on a chip that is not the CANable's: RealDash CAN, GVRET or slcan
+                    kind == "canable" && !isOp2(driver) && !isOp13(driver) -> canUsbSession(port, driver, id)
                     isOp2(driver) -> {
                         Repo.adapterFound.value = "USB $id → OpenPort 2.0"
                         op2 = OpenPort2(port).also { it.open() }
@@ -460,7 +465,9 @@ class EcuService : Service() {
     private fun pickDriver(kind: String, drivers: List<UsbSerialDriver>): UsbSerialDriver? = when (kind) {
         // "OpenPort" picked for an OpenPort 1.3: it is a K-line cable like a KKL, just use it as one
         "op2" -> drivers.firstOrNull { isOp2(it) } ?: drivers.firstOrNull { isOp13(it) }
+        // the CANable by its ids, else a USB serial chip to ask what CAN protocol it speaks (see CanLinks)
         "canable" -> drivers.firstOrNull { isCanable(it) }
+            ?: drivers.firstOrNull { !isOp2(it) && !isOp13(it) && CanLinks.mayProbe(it.device.deviceName) }
         "auto" -> drivers.firstOrNull { isOp2(it) } ?: drivers.firstOrNull { isOp13(it) } ?: drivers.firstOrNull { isCanable(it) } ?: drivers.firstOrNull()
         else -> drivers.firstOrNull { !isOp2(it) && !isCanable(it) }
     }
@@ -1451,7 +1458,79 @@ class EcuService : Service() {
         canSession(bus, kbit) { Repo.settings.canKbit == kbit }
     }
 
-    /** The frames of [bus] (a CANable or the Link demo) through the Link's decoding, while [on]. */
+    /**
+     * The CAN adapter on a USB serial chip (an Arduino or ESP32 with RealDash CAN, an ESP32RET, an slcan clone): its
+     * protocol picked, remembered or asked for, then the same session as the CANable's.
+     */
+    private suspend fun canUsbSession(port: UsbSerialPort, driver: UsbSerialDriver, id: String) {
+        val kbit = Repo.settings.canKbit
+        val sig = kg.forester.sg.data.CanConfig.signature()
+        Repo.link.value = LinkState.CONNECTING
+        Repo.linkMessage.value = "USB $id: узнаю протокол CAN-адаптера…"
+        val serial = UsbDeviceRegistry.serial(driver.device)?.takeIf { it.isNotBlank() }?.let { "/$it" }.orEmpty()
+        val bus = CanLinks.openUsb(port, driver.device.deviceName, id + serial, kbit)
+        if (bus == null) {
+            Repo.link.value = LinkState.ERROR
+            Repo.linkMessage.value = "USB $id не ответил как CAN-адаптер (RealDash CAN, GVRET, slcan). RealDash-адаптер молчит, " +
+                "пока на шине нет кадров: включите зажигание или выберите протокол вручную"
+            delay(2000)
+            return
+        }
+        Repo.adapterFound.value = "USB $id → ${CanLinks.lastNote}"
+        SsmTrace.log("CAN ${bus.title} on USB $id at $kbit kbit/s")
+        canSession(bus, kbit) { Repo.settings.canKbit == kbit && kg.forester.sg.data.CanConfig.signature() == sig }
+    }
+
+    /** The CAN adapter on Bluetooth (SPP or BLE UART) or Wi-Fi (TCP, GVRET's port 23 by default, found by mDNS). */
+    private suspend fun canRemoteSession() {
+        val cfg = kg.forester.sg.data.CanConfig
+        val kbit = Repo.settings.canKbit
+        val sig = cfg.signature()
+        Repo.link.value = LinkState.CONNECTING
+        val link = if (cfg.transport == "bt") {
+            if (cfg.btAddress.isEmpty()) {
+                Repo.link.value = LinkState.NO_CABLE
+                Repo.linkMessage.value = "Выберите Bluetooth CAN-адаптер: Настройки → «Машина и адаптер»"
+                return
+            }
+            if (!btAllowed()) {
+                Repo.link.value = LinkState.NO_PERMISSION
+                Repo.linkMessage.value = "Нет разрешения на Bluetooth (Настройки → «Машина и адаптер»)"
+                return
+            }
+            Repo.linkMessage.value = "Подключение к ${cfg.btName.ifEmpty { cfg.btAddress }}…"
+            CanLinks.bluetooth(this, cfg.btAddress) { btSocket(cfg.btAddress, cfg.btName, quiet = true) }
+        } else {
+            val target = CanLinks.hostPort(cfg.tcpHost)
+                ?: CanLinks.discover(this, 3000).firstOrNull()?.let { CanLinks.hostPort(it.second) }
+                ?: CanLinks.hostPort(CanLinks.DEFAULT_TCP)!!
+            Repo.linkMessage.value = "Подключение к CAN-адаптеру ${target.first}:${target.second}…"
+            CanLinks.tcp(this, target.first, target.second)
+        }
+        if (link == null) {
+            Repo.link.value = LinkState.NO_CABLE
+            Repo.linkMessage.value = if (cfg.transport == "bt") "Bluetooth CAN-адаптер не отвечает (включено питание? не занят другим приложением?)"
+                else "Wi-Fi CAN-адаптер не отвечает: магнитола в его сети? Адрес в настройках верный?"
+            return
+        }
+        try {
+            val order = if (cfg.transport == "tcp") listOf("gvret", "realdash", "slcan") else listOf("realdash", "gvret", "slcan")
+            val bus = CanLinks.openRemote(link, kbit, order)
+            if (bus == null) {
+                Repo.link.value = LinkState.ERROR
+                Repo.linkMessage.value = "${link.label}: не похоже на CAN-адаптер (RealDash CAN, GVRET, slcan). " +
+                    "RealDash-адаптер молчит, пока на шине нет кадров: включите зажигание или выберите протокол вручную"
+                return
+            }
+            Repo.adapterFound.value = "${link.label} → ${bus.title} (${CanLinks.lastNote})"
+            SsmTrace.log("CAN ${bus.title} on ${link.label} at $kbit kbit/s")
+            canSession(bus, kbit) { Repo.settings.adapter == "canable" && Repo.settings.canKbit == kbit && cfg.signature() == sig }
+        } finally {
+            runCatching { link.close() }
+        }
+    }
+
+    /** The frames of [bus] (a CANable, a RealDash CAN or GVRET device, or the Link demo) through the Link's decoding, while [on]. */
     private suspend fun canSession(bus: kg.forester.sg.ssm.CanSource, kbit: Int, on: () -> Boolean) {
         val link = kg.forester.sg.ssm.LinkDash
         link.reset()
@@ -1470,7 +1549,10 @@ class EcuService : Service() {
         Repo.ecuInit.value = null; Repo.ecuInitRaw.value = null
         Repo.tcuStatus.value = "АКПП: нет (спортивный ЭБУ по CAN)"
         Repo.link.value = LinkState.CONNECTING
-        Repo.linkMessage.value = "CANable: шина $kbit кбит открыта, жду кадры"
+        val name = bus.title
+        Repo.linkMessage.value = "$name: шина $kbit кбит открыта, жду кадры"
+        // the one adapter the transmit gate may write to while this session runs
+        kg.forester.sg.ssm.CanTx.attach(bus)
         var lastFrame = System.currentTimeMillis()
         var lastSample = 0L
         var linkLogged = false
@@ -1479,11 +1561,7 @@ class EcuService : Service() {
             while (scope.isActive && !Repo.settings.demo && on() && SensorBoxLink.ecuLease?.permitted != false) {
                 val frames = bus.read(100)
                 val now = System.currentTimeMillis()
-                for (f in frames) {
-                    val mux = link.feed(f.id, f.ext, f.data, now)
-                    kg.forester.sg.ssm.CanMonitor.feed(f.id, f.ext, f.data, now, mux)
-                    kg.forester.sg.data.CanChannels.feed(f.id, f.ext, f.data, now)
-                }
+                for (f in frames) kg.forester.sg.ssm.CanBus.dispatch(f, now, link = true)
                 if (frames.isNotEmpty()) lastFrame = now
                 if (now - lastSample < 200) continue
                 lastSample = now
@@ -1493,7 +1571,7 @@ class EcuService : Service() {
                 }
                 if (now - lastFrame > 3000) {
                     Repo.link.value = LinkState.NO_ECU
-                    Repo.linkMessage.value = "CANable на связи, но шина молчит. Зажигание включено? Скорость $kbit кбит та же, что в настройках CAN у ЭБУ?" +
+                    Repo.linkMessage.value = "$name на связи, но шина молчит. Зажигание включено? Скорость $kbit кбит та же, что в настройках CAN у ЭБУ?" +
                         if (bus.errors > 0) " Адаптер отвечает ошибкой (${bus.errors})" else ""
                     tracker.tick(now)
                     continue
@@ -1502,8 +1580,8 @@ class EcuService : Service() {
                 if (id != null && !linkLogged) { linkLogged = true; SsmTrace.log("Link ${link.format?.title} on CAN id %03X (%d)".format(id, id)) }
                 link.limits(now).takeIf { it != limitsLogged }?.let { limitsLogged = it; if (it.isNotEmpty()) SsmTrace.log("Link limits: ${it.joinToString()}") }
                 Repo.link.value = LinkState.CONNECTED
-                Repo.linkMessage.value = if (id != null) "Link (${link.format?.title}, ID %d) · CANable %d кбит".format(id, kbit)
-                    else "CANable: на шине ${kg.forester.sg.ssm.CanMonitor.idsSeen(now)} ID, поток Link (Dash2Pro или Generic Dash) не найден. Что идёт по CAN: Настройки, Машина и адаптер"
+                Repo.linkMessage.value = if (id != null) "Link (${link.format?.title}, ID %d) · %s %d кбит".format(id, name, kbit)
+                    else "$name: на шине ${kg.forester.sg.ssm.CanMonitor.idsSeen(now)} ID, поток Link (Dash2Pro или Generic Dash) не найден. Что идёт по CAN: Настройки, Машина и адаптер"
                 Repo.rrAvailable.value = kg.forester.sg.data.CanEcu.params()
                 Repo.rrPolled.value = Repo.rrAvailable.value
                 Repo.rrValues.value = kg.forester.sg.data.CanEcu.values(now)
@@ -1512,6 +1590,7 @@ class EcuService : Service() {
                 onSnapshot(snap, now)
             }
         } finally {
+            kg.forester.sg.ssm.CanTx.detach(bus)
             kg.forester.sg.data.CanEcu.active = false
             bus.close()
             Repo.rrAvailable.value = emptyList(); Repo.rrPolled.value = emptyList(); Repo.rrValues.value = emptyMap()
