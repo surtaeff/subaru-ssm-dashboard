@@ -27,7 +27,7 @@ object MusicOnStart {
     fun plan(on: Boolean, playing: Boolean, source: String, musicApp: String): String? = when {
         !on || playing -> null
         source == "apps" && musicApp.isEmpty() -> null
-        source in setOf("files", "bt", "radio", "apps") -> source
+        source in setOf("files", "bt", "radio", "apps", "yandex") -> source
         else -> null
     }
 
@@ -65,6 +65,7 @@ object MusicOnStart {
         val audio = AudioPlatforms.current(ctx)
         when (what) {
             "files" -> LocalMusic.resume(ctx)
+            "yandex" -> kg.forester.sg.service.yandex.YaMusic.resume(ctx)
             "bt" -> { audio.bt.enter(byUser = true); audio.bt.send(Transport.PLAY) }
             "radio" -> {
                 val internet = ctx.getSharedPreferences("radio", Context.MODE_PRIVATE).getBoolean("internet", false)

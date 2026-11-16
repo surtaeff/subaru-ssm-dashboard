@@ -2,4 +2,7 @@
 <!-- Android 11 and older: the device id stays out of the backup, a restore must not carry it to another unit -->
 <full-backup-content>
     <exclude domain="sharedpref" path="device_id.xml" />
+    <!-- the Yandex Music sign-in (its key stays in this unit's Keystore anyway) and its queue -->
+    <exclude domain="sharedpref" path="yamusic.xml" />
+    <exclude domain="sharedpref" path="yamusic_play.xml" />
 </full-backup-content>

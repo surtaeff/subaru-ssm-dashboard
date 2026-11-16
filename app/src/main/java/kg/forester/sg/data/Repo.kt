@@ -352,7 +352,7 @@ class Settings(ctx: Context) {
         get() = p.getString("musicApp", "")!!
         set(v) = p.edit().putString("musicApp", v).apply()
 
-    /** The Media screen's source: "files" (own player), "bt", "radio", "apps". */
+    /** The Media screen's source: "files" (own player), "bt", "radio", "yandex" (Yandex Music in the own player), "apps". */
     var mediaSource: String
         get() = p.getString("mediaSource", "files")!!
         set(v) = p.edit().putString("mediaSource", v).apply()

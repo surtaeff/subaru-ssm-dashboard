@@ -3,8 +3,12 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="device_id.xml" />
+        <exclude domain="sharedpref" path="yamusic.xml" />
+        <exclude domain="sharedpref" path="yamusic_play.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="device_id.xml" />
+        <exclude domain="sharedpref" path="yamusic.xml" />
+        <exclude domain="sharedpref" path="yamusic_play.xml" />
     </device-transfer>
 </data-extraction-rules>

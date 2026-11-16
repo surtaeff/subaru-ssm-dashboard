@@ -12,7 +12,12 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
+import kg.forester.sg.service.yandex.YaMusic
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
 import kg.forester.sg.ssm.SsmTrace
@@ -21,6 +26,7 @@ import kg.forester.sg.ssm.SsmTrace
  * The Media screen's own player for music files: a USB stick, an SD card or the unit's memory, browsed by folder.
  * One ExoPlayer for the app, wrapped in a media session by [PlayerService] (notification, steering wheel keys,
  * other apps pause it). It remembers the folder, the track and the place in it, like a car stereo.
+ * Internet radio and Yandex Music play through the same player (see [kg.forester.sg.service.yandex.YaMusic]).
  */
 @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 object LocalMusic {
@@ -54,6 +60,8 @@ object LocalMusic {
         val artUrl: String = "",
         /** Why it doesn't play (a station that doesn't answer, a broken file), "" when fine. */
         val error: String = "",
+        /** A Yandex Music queue plays (see [kg.forester.sg.service.yandex.YaMusic]): [current] is «ya:» + the track's key. */
+        val yandex: Boolean = false,
     ) {
         val long: Boolean get() = durMs > LONG_MS
         val current: String? get() = queue.getOrNull(index)
@@ -258,7 +266,12 @@ object LocalMusic {
         exo?.let { return it }
         val app = ctx.applicationContext
         appCtx = app
+        // a Yandex item's link is asked for when the player opens it (YaMusic.resolver); files and stations pass as they were.
+        // Constant-bitrate seeking: Yandex's AAC (ADTS) and an MP3 without a seek table can be wound and resumed in the middle
+        val sources = DefaultMediaSourceFactory(ResolvingDataSource.Factory(DefaultDataSource.Factory(app), YaMusic.resolver(app)),
+            DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true))
         val p = ExoPlayer.Builder(app)
+            .setMediaSourceFactory(sources)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
             .setHandleAudioBecomingNoisy(true)
             .build()
@@ -267,12 +280,18 @@ object LocalMusic {
             override fun onEvents(player: Player, events: Player.Events) {
                 refresh(player)
                 if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) || events.contains(Player.EVENT_IS_PLAYING_CHANGED)) save()
+                YaMusic.onEvents(player, events)
+            }
+
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                YaMusic.onDiscontinuity(oldPosition, newPosition, reason)
             }
 
             override fun onAudioSessionIdChanged(audioSessionId: Int) { AudioFx.attach(audioSessionId) }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 SsmTrace.log("player: ${error.errorCodeName} ${p.currentMediaItem?.mediaId}")
+                if (YaMusic.onError(p, error)) return
                 val stream = p.currentMediaItem?.mediaId?.startsWith(STREAM) == true
                 state.value = state.value.copy(error = if (stream) "Станция не отвечает, попробуйте другую" else "Этот файл не играет (${error.errorCodeName})")
             }
@@ -280,6 +299,7 @@ object LocalMusic {
             override fun onIsPlayingChanged(isPlaying: Boolean) { if (isPlaying) state.value = state.value.copy(error = "") }
 
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                YaMusic.onTransition(p, item)
                 // an audiobook chapter picks up where it was left; a finished one forgets its place
                 val sp = prefs() ?: return
                 if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) lastId?.let { sp.edit().remove("book:$it").apply() }
@@ -315,7 +335,8 @@ object LocalMusic {
         val md = p.mediaMetadata
         val path = p.currentMediaItem?.mediaId.orEmpty()
         val old = state.value
-        val art = if (path == old.current && old.art != null) old.art else artFor(md.artworkData, path)
+        val ya = YaMusic.isYa(path)
+        val art = if (path == old.current && old.art != null) old.art else if (ya || path.startsWith(STREAM)) null else artFor(md.artworkData, path)
         val dur = p.duration.takeIf { it != C.TIME_UNSET } ?: 0
         // music always at its own speed, a long file at the speed chosen for books
         val want = if (dur > LONG_MS) bookSpeed() else 1f
@@ -332,12 +353,30 @@ object LocalMusic {
                 art = null, durMs = 0, shuffle = false, repeat = Player.REPEAT_MODE_ALL,
                 nextTitle = if (ni == C.INDEX_UNSET) "" else p.getMediaItemAt(ni).mediaMetadata.station?.toString().orEmpty(),
                 speed = 1f, audioSession = (p as? ExoPlayer)?.audioSessionId ?: 0,
-                stream = true, station = st, artUrl = item?.mediaMetadata?.artworkUri?.toString().orEmpty(),
+                stream = true, station = st, artUrl = item?.mediaMetadata?.artworkUri?.toString().orEmpty(), yandex = false,
             )
             return
         }
+        if (ya) {
+            val t = YaMusic.trackOf(path)
+            val same = path == old.current && old.yandex
+            state.value = old.copy(
+                queue = (0 until p.mediaItemCount).map { p.getMediaItemAt(it).mediaId },
+                index = p.currentMediaItemIndex, playing = p.isPlaying,
+                title = md.title?.toString()?.takeIf { it.isNotBlank() } ?: t?.fullTitle.orEmpty(),
+                artist = md.artist?.toString().orEmpty(), album = md.albumTitle?.toString().orEmpty(),
+                art = if (same) old.art else t?.let { kg.forester.sg.service.yandex.YaLibrary.cachedCover(it.cover, 400) },
+                durMs = dur.takeIf { it > 0 } ?: t?.durationMs ?: 0, shuffle = p.shuffleModeEnabled, repeat = p.repeatMode,
+                nextTitle = if (ni == C.INDEX_UNSET) "" else p.getMediaItemAt(ni).mediaMetadata.title?.toString().orEmpty(),
+                speed = 1f, audioSession = (p as? ExoPlayer)?.audioSessionId ?: 0,
+                stream = false, station = "", artUrl = item?.mediaMetadata?.artworkUri?.toString().orEmpty(), yandex = true,
+            )
+            // the cover comes from the network: shown when it's there, if this track still plays
+            if (state.value.art == null && t != null) YaMusic.loadArt(path, t.cover)
+            return
+        }
         state.value = old.copy(
-            stream = false, station = "", artUrl = "",
+            stream = false, station = "", artUrl = "", yandex = false,
             nextTitle = if (ni == C.INDEX_UNSET) "" else pretty(File(p.getMediaItemAt(ni).mediaId)),
             speed = want,
             audioSession = (p as? ExoPlayer)?.audioSessionId ?: 0,
@@ -404,6 +443,8 @@ object LocalMusic {
         val p = player(ctx)
         startService(ctx)
         state.value = state.value.copy(folder = folder.path, art = null)
+        // after Yandex's wave (no repeat) the files get their own repeat back
+        if (state.value.yandex) p.repeatMode = prefs()?.getInt("repeat", Player.REPEAT_MODE_ALL) ?: Player.REPEAT_MODE_ALL
         p.setMediaItems(tracks.map { MediaItem.Builder().setUri(Uri.fromFile(it)).setMediaId(it.path).build() },
             if (shuffle) tracks.indices.random() else start.coerceIn(tracks.indices), 0L)
         p.shuffleModeEnabled = shuffle
@@ -413,7 +454,7 @@ object LocalMusic {
     }
 
     /** Starts playing; with «плавное начало» the music comes up over a second instead of blasting in. */
-    private fun play(p: ExoPlayer) {
+    internal fun play(p: ExoPlayer) {
         // ExoPlayer takes the media focus (GAIN) on this play, never on prepare: the radio or Bluetooth stops here
         SsmTrace.log("player: play, media focus", keep = true)
         if (!AudioFx.cfg.value.fadeIn) { p.volume = 1f; p.play(); return }
@@ -471,6 +512,9 @@ object LocalMusic {
 
     fun pause() { exo?.pause() }
 
+    /** The player when it has been made, without making it. */
+    fun playerOrNull(): ExoPlayer? = exo
+
     /**
      * «Включи музыку» with nothing playing: the app's own player goes on where it stopped, else plays the folder
      * played last. False when it has never played anything (nothing to go on with).
@@ -484,7 +528,8 @@ object LocalMusic {
         return true
     }
 
-    fun next(ctx: Context) = player(ctx).let { if (it.hasNextMediaItem()) it.seekToNextMediaItem() }
+    /** ⏭; at the last of «Моя волна» it waits for the wave's next tracks. */
+    fun next(ctx: Context) = player(ctx).let { if (it.hasNextMediaItem()) it.seekToNextMediaItem() else YaMusic.nextAtEnd() }
     /** Back to the start of the track after the first seconds, to the one before right at its start, like a CD. */
     fun prev(ctx: Context) = player(ctx).seekToPrevious()
     fun seek(ctx: Context, ms: Long) = player(ctx).seekTo(ms)
@@ -499,7 +544,7 @@ object LocalMusic {
         }
     }
 
-    private fun startService(ctx: Context) {
+    internal fun startService(ctx: Context) {
         runCatching { ctx.startService(Intent(ctx, PlayerService::class.java)) }
     }
 
@@ -512,6 +557,8 @@ object LocalMusic {
         val path = p.currentMediaItem?.mediaId ?: return
         if (path.startsWith(STREAM)) return // a stream has no place to come back to
         lastSaveMs = System.currentTimeMillis()
+        // a Yandex queue keeps its own place; the files' one stays for when they play again
+        if (YaMusic.isYa(path)) { YaMusic.save(p); return }
         if (p.duration > LONG_MS && p.currentPosition > 30_000) prefs()?.edit()?.putLong("book:$path", p.currentPosition)?.apply()
         prefs()?.edit()
             ?.putString("folder", state.value.folder.ifEmpty { File(path).parent.orEmpty() })
