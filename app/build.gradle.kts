@@ -17,6 +17,10 @@ android {
         targetSdk = 34
         versionCode = 48
         versionName = "1.0-beta8"
+        // Yandex Music's code sign-in («Войти с телефона») needs the official app's OAuth client secret. It is not in this
+        // public repo: put yandexClientSecret=… into ~/.gradle/gradle.properties; without it that way in isn't offered
+        // (the sign-in on Yandex's page and a pasted token need no secret)
+        buildConfigField("String", "YANDEX_CLIENT_SECRET", "\"" + (project.findProperty("yandexClientSecret") as String? ?: "") + "\"")
     }
 
     // head units and phones are 32 or 64-bit ARM; the other copies of the native libraries only made the APK bigger
@@ -74,6 +78,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

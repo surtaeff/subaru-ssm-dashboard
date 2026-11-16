@@ -5310,3 +5310,90 @@ P или N: блок АКПП их не различает	P or N: the transmiss
 Положение селектора АКПП столбиком P R N D 3 2 1, текущее подсвечено, и передача, на которой едем.	The automatic transmission selector position as a P R N D 3 2 1 column with the current one lit, and the gear you are in.
 Subaru по SSM: положение селектора и передача из блока АКПП 4EAT (байты 0x6B и 0x4A). P и N блок не различает, поэтому в P или N подсвечены обе. Другие машины по OBD-II положение селектора не передают: тогда показывается передача, посчитанная по оборотам и скорости, или «—», если её не определить.	Subaru over SSM: the selector position and the gear from the 4EAT transmission unit (bytes 0x6B and 0x4A). The unit can't tell P from N, so in P or N both are lit. Other cars over OBD-II don't report the selector position: then the card shows the gear worked out from revs and speed, or «—» if it can't be told.
 В ручном режиме SportShift вместо 3 2 1 показывается M. Если места мало, 3, 2 и 1 делят одну строку.	In the SportShift manual mode M is shown instead of 3 2 1. With little room 3, 2 and 1 share one row.
+// ui/MediaYandex.kt
+Любое	Any
+Бодрое	Energetic
+Весёлое	Fun
+Спокойное	Calm
+Грустное	Sad
+Любой	Any
+Любимое	Favourite
+Незнакомое	Unfamiliar
+Популярное	Popular
+Войдите в Яндекс	Sign in to Yandex
+Моя волна, «Мне нравится», плейлисты и поиск: в списке справа	My Wave, Liked, playlists and search: in the list on the right
+Загружаю Мою волну…	Loading My Wave…
+Моя волна	My Wave
+Нажмите ▶ или выберите музыку в списке	Press ▶ or pick music in the list
+Фрагмент 30 с: нужна подписка Плюс	30 s preview: a Plus subscription is needed
+Мне нравится	Liked
+Плейлисты	Playlists
+Подстраивается под вас: лайки, пропуски, дизлайки	Adapts to you: likes, skips, dislikes
+Слушать	Listen
+Настроение	Mood
+Характер	Character
+Дальше в волне	Next in the wave
+Треков: {}	Tracks: {}
+Треков: {}+	Tracks: {}+
+Здесь пока пусто	Nothing here yet
+Плейлистов нет	No playlists
+Для вас	For you
+Мои плейлисты	My playlists
+Песня, исполнитель, альбом	Song, artist, album
+Найдётся всё, что есть в Яндекс Музыке	Anything in Yandex Music can be found
+Исполнители	Artists
+Треки	Tracks
+Альбомы	Albums
+Моя волна, «Мне нравится», плейлисты и поиск играют прямо здесь: через эквалайзер, кнопки руля и мини-плеер. Нужен аккаунт Яндекса с подпиской Плюс, без неё только 30-секундные фрагменты.	My Wave, Liked, playlists and search play right here: through the equalizer, the steering wheel keys and the mini player. A Yandex account with a Plus subscription is needed, without it only 30-second previews.
+Войти через Яндекс	Sign in with Yandex
+Войти с телефона по коду	Sign in from the phone with a code
+Вставить токен	Paste a token
+Пароль вводится на странице Яндекса, приложение его не видит. Токен хранится только на этой магнитоле, зашифрованный ключом Android Keystore. Доступ к Яндекс Музыке неофициальный, для личного использования.	The password is typed on Yandex's page, the app doesn't see it. The token is kept only on this head unit, encrypted with an Android Keystore key. Access to Yandex Music is unofficial, for personal use.
+Открываю страницу входа Яндекса…	Opening Yandex's sign-in page…
+Вход в Яндекс	Sign in to Yandex
+На этой магнитоле нет системного WebView: вставьте токен	This head unit has no system WebView: paste a token
+Вход отменён	Sign-in cancelled
+Проверяю вход…	Checking the sign-in…
+Введите логин, пароль и код на странице Яндекса. Приложение не видит и не хранит пароль.	Enter the login, password and code on Yandex's page. The app neither sees nor keeps the password.
+Страница Яндекса не открылась: проверьте интернет и попробуйте позже	Yandex's page didn't open: check the internet and try later
+Получаю код…	Getting a code…
+Сервис недоступен, попробуйте позже	The service is unavailable, try later
+Откройте {} и введите код	Open {} and enter the code
+Вход отклонён на телефоне	Sign-in declined on the phone
+Яндекс не подтвердил вход	Yandex didn't confirm the sign-in
+Код истёк: закройте окно и попробуйте снова	The code has expired: close the window and try again
+Вход с телефона	Sign in from the phone
+На телефоне, где вы вошли в Яндекс, откройте ya.ru/device и введите этот код:	On a phone signed in to Yandex, open ya.ru/device and enter this code:
+Код действует несколько минут. Подтвердите вход аккаунтом с подпиской: приложение получит только токен доступа.	The code is valid for a few minutes. Confirm with an account that has a subscription: the app gets only an access token.
+Токен Яндекс Музыки (обычно начинается с «y0_»). Он будет проверен и сохранён зашифрованным; никуда, кроме Яндекса, не отправляется.	A Yandex Music token (usually starts with «y0_»). It is checked and kept encrypted; it is sent nowhere but to Yandex.
+Токен	Token
+Из буфера	From clipboard
+Войти	Sign in
+Вход действует до {}	Signed in until {}
+Токен хранится только на этой магнитоле, зашифрованный ключом Android Keystore. Неофициальный доступ к API: для личного использования.	The token is kept only on this head unit, encrypted with an Android Keystore key. Unofficial API access: for personal use.
+Обновить	Refresh
+Выйти из Яндекса?	Sign out of Yandex?
+Токен, сохранённая очередь и данные аккаунта будут удалены с магнитолы.	The token, the saved queue and the account data will be removed from the head unit.
+// service/yandex/YaApi.kt
+Вход в Яндекс устарел, войдите снова	The Yandex sign-in has expired, sign in again
+Не найдено в Яндекс Музыке	Not found in Yandex Music
+// service/yandex/YaAuth.kt
+Сохранённый вход не читается, войдите снова	The saved sign-in can't be read, sign in again
+Это не похоже на токен Яндекса	This doesn't look like a Yandex token
+Яндекс не принял вход, попробуйте ещё раз	Yandex didn't accept the sign-in, try again
+Хранилище ключей недоступно: вход действует до перезапуска	The key store is unavailable: the sign-in lasts until a restart
+Вы вошли: {}	Signed in: {}
+Подписки Плюс нет: доступны только 30-секундные фрагменты	No Plus subscription: only 30-second previews
+Плюс активен	Plus is active
+Плюс активен до {}	Plus is active until {}
+// service/yandex/YaLibrary.kt
+Добавлено в «Мне нравится»	Added to Liked
+Убрано из «Мне нравится»	Removed from Liked
+// service/yandex/YaMusic.kt
+Не получилось: сервис недоступен	Didn't work: the service is unavailable
+Не нашёл в Яндекс Музыке: {}	Not found in Yandex Music: {}
+Включаю: {}	Playing: {}
+В «Мне нравится» пока пусто	Liked is empty so far
+// ui/MediaScreen.kt
+Яндекс	Yandex
+// service/Voice.kt

@@ -14,6 +14,8 @@ import kg.forester.sg.service.audio.RadioCap
 import kg.forester.sg.service.audio.VolumeSet
 import kg.forester.sg.service.audio.ownSources
 import kg.forester.sg.service.audio.voiceVolumePlan
+import kg.forester.sg.service.yandex.YaAuth
+import kg.forester.sg.service.yandex.YaMusic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -521,14 +523,18 @@ object Voice {
         when (c.intent) {
             // --- music: the head unit's own player / radio / BT get FYT commands; anything else playing (Yandex
             // Music, Spotify, VK…) gets the standard media keys, which go to the app that plays now
-            VoiceIntent.NEXT, VoiceIntent.DISLIKE -> { if (fytPlaying()) Fyt.next() else mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT, ""); say("Следующий") }
+            // Yandex Music in the own player: the dislike reaches Yandex (the wave stops offering it), then the next one
+            VoiceIntent.DISLIKE -> if (LocalMusic.state.value.yandex) { YaMusic.dislike(app); say("Не нравится") } else run(VoiceCommand(VoiceIntent.NEXT))
+            VoiceIntent.NEXT -> { if (fytPlaying()) Fyt.next() else mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT, ""); say("Следующий") }
             VoiceIntent.PREV -> { if (fytPlaying()) Fyt.prev() else mediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS, ""); say("Предыдущий") }
             VoiceIntent.PAUSE -> {
                 if (Fyt.music.value.playing) Fyt.playPause() else if (fytPlaying()) Fyt.mute(true) else mediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE, "")
                 say("Пауза")
             }
             VoiceIntent.PLAY -> {
-                if (audio.ownSources && !otherAppPlaying()) {
+                // Media is on Yandex: its queue or wave goes on, whatever the unit's own player has
+                if (kg.forester.sg.data.Repo.settings.mediaSource == "yandex" && !otherAppPlaying() && YaMusic.resume(app)) say("Играю")
+                else if (audio.ownSources && !otherAppPlaying()) {
                     if (!Fyt.music.value.playing) Fyt.playPause()
                     Fyt.mute(false)
                     say("Играю")
@@ -552,7 +558,10 @@ object Voice {
                 val mode = if (c.intent == VoiceIntent.REPEAT_OFF) 0 else if (c.target == "one") 1 else 2
                 say(if (MediaSessions.repeat(app, mode)) (if (mode == 0) "Без повтора" else "Повтор") else needSessions())
             }
-            VoiceIntent.LIKE -> {
+            VoiceIntent.LIKE -> if (LocalMusic.state.value.yandex) {
+                YaMusic.current()?.let { YaMusic.setLike(app, it, true) }
+                say("Нравится")
+            } else {
                 val ctl = MediaSessions.controller(app)
                 if (ctl != null) { ctl.transportControls.setRating(android.media.Rating.newHeartRating(true)); say("Нравится") } else say(needSessions())
             }
@@ -564,7 +573,15 @@ object Voice {
                 },
             )
             VoiceIntent.PLAY_QUERY -> playFromSearch(c)
-            VoiceIntent.MEDIA_APP -> c.app?.let { openApp(it) } ?: say("Не нашёл приложение")
+            VoiceIntent.MEDIA_APP -> when {
+                // «включи яндекс музыку» when signed in here: the own player goes on with it, Media shows it
+                c.app == YANDEX_MUSIC && YaAuth.signedIn(app) -> {
+                    kg.forester.sg.data.Repo.settings.mediaSource = "yandex"
+                    YaMusic.resume(app)
+                    go(VoiceTarget.MEDIA, "Яндекс Музыка")
+                }
+                else -> c.app?.let { openApp(it) } ?: say("Не нашёл приложение")
+            }
             VoiceIntent.SOURCE_BT -> { scope.launch(start = CoroutineStart.UNDISPATCHED) { audio.bt.enter(byUser = true) }; say("Bluetooth") }
             VoiceIntent.SOURCE_USB -> { Fyt.source(8); Fyt.openMusic(); say("Музыка") }
             // --- volume
@@ -694,11 +711,30 @@ object Voice {
     }
 
     private val MUSIC_APPS = listOf("ru.yandex.music", "com.uma.musicvk", "com.spotify.music", "com.google.android.apps.youtube.music")
+    private const val YANDEX_MUSIC = "ru.yandex.music"
+
+    /**
+     * Played by the own player's Yandex Music (signed in here): asked for in Yandex Music, or with no app named while Media
+     * is on Yandex; «Моя волна» always (only Yandex has it).
+     */
+    private fun onYandex(c: VoiceCommand): Boolean = YaAuth.signedIn(app) &&
+        (c.app == YANDEX_MUSIC || (c.app == null && (kg.forester.sg.data.Repo.settings.mediaSource == "yandex" || c.query == "Моя волна")))
+
+    private fun playOnYandex(c: VoiceCommand) {
+        val q = c.query.orEmpty()
+        kg.forester.sg.data.Repo.settings.mediaSource = "yandex"
+        when {
+            q == "Моя волна" -> { YaMusic.playWave(app); say("Моя волна") }
+            q == "Мне нравится" && c.focus == MediaFocus.FAVORITES -> scope.launch(Dispatchers.Main) { say(YaMusic.playLiked(app)) }
+            else -> { say("Ищу: $q"); scope.launch(Dispatchers.Main) { say(YaMusic.playFound(app, q, c.focus)) } }
+        }
+    }
 
     /** "Включи группу Кино": the standard play-from-search intent of the music app, else its search screen. */
     private fun playFromSearch(c: VoiceCommand) {
         val q = c.query.orEmpty()
         if (q.isBlank()) return run(VoiceCommand(VoiceIntent.PLAY))
+        if (onYandex(c)) return playOnYandex(c)
         // YouTube: its search with the results, the app has no "play from search" for videos
         if (c.app == "com.google.android.youtube") {
             say("Ищу на ютубе: $q")

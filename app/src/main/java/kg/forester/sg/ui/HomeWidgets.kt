@@ -492,9 +492,10 @@ private fun Compass(size: Dp, northUp: Boolean, rig: CameraRig, onClick: () -> U
 /**
  * The player card: the cover, what plays, the progress with the time gone and the length, and shuffle, previous, the big
  * play / pause in the accent, next, repeat. The same track and the same buttons as the strip under the screens
- * ([MiniPlayerState.shared], [miniStep], [miniPress]): whatever plays, the own player, Bluetooth, the tuner or another
- * app's session. Shuffle and repeat are the own player's (Android gives no way to set them in another app's session):
- * with any other source they stay greyed. A tap on the words opens Media.
+ * ([MiniPlayerState.shared], [miniStep], [miniPress]): whatever plays, the own player (files, a station, Yandex Music),
+ * Bluetooth, the tuner or another app's session. Shuffle and repeat are the own player's music files' (Android gives no
+ * way to set them in another app's session, and Yandex's wave and lists keep their own order): with any other source
+ * they stay greyed. A tap on the words opens Media.
  */
 @Composable
 fun PlayerCard(info: String, m: Modifier) {
@@ -504,12 +505,12 @@ fun PlayerCard(info: String, m: Modifier) {
     val now = state.track
     val own by LocalMusic.state.collectAsState()
     val files = now?.source == "files"
-    // the position: the own player asked twice a second, the others as the strip has it (its share of the length)
+    // the position: the own player (files, Yandex Music) asked twice a second, the others as the strip has it (its share of the length)
     var posMs by remember { mutableLongStateOf(0L) }
     LaunchedEffect(now?.source, now?.title, now?.durMs) {
         while (true) {
             val n = now ?: break
-            posMs = if (n.source == "files") LocalMusic.position() else (state.share.floatValue * n.durMs).toLong()
+            posMs = if (n.source == "files" || n.source == "yandex") LocalMusic.position() else (state.share.floatValue * n.durMs).toLong()
             delay(500)
         }
     }

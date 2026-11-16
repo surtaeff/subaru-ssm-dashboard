@@ -31,6 +31,23 @@ class MiniPlayerTest {
         assertEquals(fm, pickNow("radio", null, fm, null, null))
     }
 
+    @Test fun yandexMusicOnTheStripAndThePlayerCard() {
+        val ya = now("yandex")
+        assertEquals(ya, pickNow("yandex", ya, null, null, null))
+        val paused = now("yandex", playing = false)
+        assertEquals(paused, pickNow("yandex", paused, null, null, null))
+        assertEquals("Yandex playing shows with Media set elsewhere", ya, pickNow("files", ya, null, now("bt", playing = false), null))
+        assertNull("a file source is not taken for Yandex", pickNow("yandex", now("files", playing = false), null, null, null))
+        // one state for the strip and the «Плеер» card, and the same buttons: Yandex is the own player's (LocalMusic) there
+        val root = File("src/main/java").takeIf { it.isDirectory } ?: File("app/src/main/java")
+        val mini = File(root, "kg/forester/sg/ui/MiniPlayer.kt").readText()
+        assertTrue(mini.contains("if (st.yandex) \"yandex\" else \"files\""))
+        assertTrue(mini.contains("val shared by lazy { MiniPlayerState() }"))
+        val card = File(root, "kg/forester/sg/ui/HomeWidgets.kt").readText()
+        assertTrue(card.contains("MiniPlayerState.shared") && card.contains("miniStep(") && card.contains("miniPress("))
+        assertTrue(card.contains("n.source == \"yandex\""))
+    }
+
     @Test fun whatReallyPlaysBeatsAPausedChoice() {
         val app = now("app")
         assertEquals(app, pickNow("files", now("files", playing = false), null, null, app))
