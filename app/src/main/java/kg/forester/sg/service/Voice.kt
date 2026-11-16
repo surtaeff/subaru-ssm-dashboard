@@ -330,8 +330,16 @@ object Voice {
     private fun listenLoop(rec: Recognizer, myGen: Int) {
         try {
             while (running && gen == myGen) {
+                // a phone call through the unit needs this microphone: don't hold it, or the other side hears nothing
+                if (CallGuard.active(app)) {
+                    status.value = "идёт звонок: микрофон отдан телефону"
+                    level.value = 0f
+                    Thread.sleep(1000)
+                    continue
+                }
                 val started = capture(rec, myGen)
                 if (!running || gen != myGen) break
+                if (CallGuard.active(app)) continue
                 // pure zeros: another app took the microphone (Android 10+ does that), or the input gives no sound at all
                 // (an emulator with no host microphone, a muted mic); either way try again in a moment
                 status.value = if (started) "микрофон молчит: его занял другой ассистент или он выключен, жду…" else "микрофон недоступен, пробую снова…"
@@ -369,7 +377,14 @@ object Voice {
             // work through while the microphone goes on, and an overrun would eat the word that opened the gate
             val gate = if (gateOn(app)) RmsGate(rate) else null
             val gateLog = GateLog(SystemClock.elapsedRealtime())
+            var callCheckMs = 0L
             while (running && gen == myGen) {
+                // a call has begun: let go of the microphone at once (the loop above waits for the call to end)
+                val nowMs = SystemClock.elapsedRealtime()
+                if (nowMs - callCheckMs >= 400) {
+                    callCheckMs = nowMs
+                    if (CallGuard.active(app)) return true
+                }
                 val n = ar.read(buf, 0, buf.size)
                 if (n < 0) return true // the record died under us
                 if (n == 0) continue
