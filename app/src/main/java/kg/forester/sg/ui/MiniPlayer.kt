@@ -140,6 +140,38 @@ class MiniPlayerState {
     }
 
     private fun internetRadio(ctx: Context) = ctx.getSharedPreferences("radio", Context.MODE_PRIVATE).getBoolean("internet", false)
+
+    companion object {
+        /**
+         * The one the app runs (MainActivity, while it is on the screen): the strip and the «Плеер» card read the same
+         * track, so they never disagree, and the other players' sessions are looked at once, not once for each.
+         */
+        val shared by lazy { MiniPlayerState() }
+    }
+}
+
+/** Previous / next for what [now] is, by the same route as Media's own buttons for that source (the strip and the card). */
+internal fun miniStep(ctx: Context, now: NowPlaying, next: Boolean) {
+    when (now.source) {
+        "bt" -> AudioPlatforms.current(ctx).bt.send(if (next) Transport.NEXT else Transport.PREV)
+        "fm" -> {
+            val radio = AudioPlatforms.current(ctx).radio
+            FmRadio.load(ctx)
+            FmRadio.neighbour(radio.state.value.freq, next)?.let { FmRadio.tune(it.freq) } ?: tunerPreset(radio, next)
+        }
+        "app" -> appControl(ctx, now.pkg) { if (next) it.skipToNext() else it.skipToPrevious() }
+        else -> if (next) LocalMusic.next(ctx) else LocalMusic.prev(ctx)
+    }
+}
+
+/** Play / pause for what [now] is; the tuner has no pause of its own: as on Media, the button brings it on. */
+internal fun miniPress(ctx: Context, scope: kotlinx.coroutines.CoroutineScope, now: NowPlaying) {
+    when (now.source) {
+        "bt" -> AudioPlatforms.current(ctx).bt.press(now.playing)
+        "fm" -> scope.launch { AudioPlatforms.current(ctx).radio.on() }
+        "app" -> if (now.pkg == "fyt") Fyt.playPause() else appControl(ctx, now.pkg) { if (now.playing) it.pause() else it.play() }
+        else -> LocalMusic.toggle(ctx)
+    }
 }
 
 /** The strip's room: buttons of the parked target, one line of text. */
@@ -158,25 +190,8 @@ fun MiniPlayerStrip(state: MiniPlayerState, onOpen: () -> Unit) {
     val now = state.track ?: return
     val h = miniPlayerHeight()
     val accent = C.theme.deep
-    fun step(next: Boolean) = when (now.source) {
-        "bt" -> AudioPlatforms.current(ctx).bt.send(if (next) Transport.NEXT else Transport.PREV)
-        "fm" -> {
-            val radio = AudioPlatforms.current(ctx).radio
-            FmRadio.load(ctx)
-            FmRadio.neighbour(radio.state.value.freq, next)?.let { FmRadio.tune(it.freq) } ?: tunerPreset(radio, next)
-        }
-        "app" -> appControl(ctx, now.pkg) { if (next) it.skipToNext() else it.skipToPrevious() }
-        else -> if (next) LocalMusic.next(ctx) else LocalMusic.prev(ctx)
-    }
-    fun press() {
-        when (now.source) {
-            "bt" -> AudioPlatforms.current(ctx).bt.press(now.playing)
-            // the tuner has no pause of its own: as on Media, the button brings it on
-            "fm" -> scope.launch { AudioPlatforms.current(ctx).radio.on() }
-            "app" -> if (now.pkg == "fyt") Fyt.playPause() else appControl(ctx, now.pkg) { if (now.playing) it.pause() else it.play() }
-            else -> LocalMusic.toggle(ctx)
-        }
-    }
+    fun step(next: Boolean) = miniStep(ctx, now, next)
+    fun press() = miniPress(ctx, scope, now)
     Row(
         Modifier.fillMaxWidth().height(h).clip(Rounded).panelFill().border(1.dp, C.Border, Rounded).drawBehind {
             // read only here: the second's tick redraws this line, nothing is composed for it

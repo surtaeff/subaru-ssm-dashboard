@@ -194,7 +194,7 @@ data class MapCfg(val style: String = "nfs_mw", val zoom: Double = 16.5, val nor
     }
 }
 
-private fun setUpOsm(ctx: Context) {
+internal fun setUpOsm(ctx: Context) {
     Configuration.getInstance().apply {
         userAgentValue = ctx.packageName // required by the OpenStreetMap tile servers
         osmdroidBasePath = ctx.filesDir.resolve("osmdroid")

@@ -529,7 +529,7 @@ fun App() {
     LaunchedEffect(opened) { opened?.let { (_, name) -> screenRestored(name)?.let { screen = it } } }
     kg.forester.sg.ui.ThemeSizes()
     // one for the app's life on the screen: only its "known" is read out here, the strip reads the rest
-    val mini = remember { kg.forester.sg.ui.MiniPlayerState() }
+    val mini = remember { kg.forester.sg.ui.MiniPlayerState.shared }
     // a look at the other players' sessions every 2 s is for the strip on the screen: none of it behind the launcher
     val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     LaunchedEffect(mini, owner) {

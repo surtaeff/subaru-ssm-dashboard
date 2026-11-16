@@ -710,6 +710,14 @@ class Settings(ctx: Context) {
         get() = p.getString("mapApp", "")!!
         set(v) { p.edit().putString("mapApp", v).apply() }
 
+    /** The «Карта с маршрутом» card's zoom (13…19) and turning (north up), the same on every screen that shows it. */
+    var mapCardZoom: Float
+        get() = p.getFloat("mapCardZoom", 16f).coerceIn(13f, 19f)
+        set(v) { p.edit().putFloat("mapCardZoom", v.coerceIn(13f, 19f)).apply() }
+    var mapCardNorth: Boolean
+        get() = p.getBoolean("mapCardNorth", false)
+        set(v) { p.edit().putBoolean("mapCardNorth", v).apply() }
+
     /** Daily backup into Download/CarPulse (see Backup). */
     var autoBackup: Boolean
         get() = p.getBoolean("autoBackup", true)

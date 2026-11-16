@@ -110,6 +110,18 @@ object Routing {
         kg.forester.sg.data.Repo.settings.navDest = ""
     }
 
+    private var followedMs = -1L
+
+    /**
+     * [onFix] once for each fix, however many map cards on the screen hand it in (the cluster and the «Карта с маршрутом»
+     * card may be shown together): a fix counted twice would leave the route after two fixes off the line instead of three.
+     */
+    fun follow(g: kg.forester.sg.data.GpsFix) {
+        if (g.lat == null || g.lon == null || g.timeMs == followedMs) return
+        followedMs = g.timeMs
+        onFix(g.lat, g.lon)
+    }
+
     /** A new GPS fix: where the car is on the route, a new route when it has left it, the end when it is there. */
     fun onFix(lat: Double, lon: Double) {
         val r = route.value ?: return

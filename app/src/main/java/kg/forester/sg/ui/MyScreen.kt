@@ -40,6 +40,9 @@ private fun myCards(): CardNames {
 /** Row heights of «Мой экран» (also used to draw the ready-made layouts); the extra cards first, their style is their own settings. */
 fun myRowWeight(t: TileCfg) = when {
     t.id == "navcluster" -> 2.4f
+    // the map and the tall selector want height, the player its cover, title, bar and buttons
+    t.id == "navmap" || t.id == "gearsel" -> 2.4f
+    t.id == "player" -> 1.6f
     t.id == "defi" || t.id in kg.forester.sg.data.GAUGE_PANELS -> 2.2f
     t.id in kg.forester.sg.data.EXTRA_CARDS -> 1.1f
     t.style.isNotEmpty() -> 1.6f

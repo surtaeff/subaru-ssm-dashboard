@@ -80,6 +80,9 @@ private val DriveEdit = BoardEdit(
 internal fun driveRowWeight(t: TileCfg) = when {
     t.id.startsWith("chart") -> 1.2f
     t.id == "defi" || t.id == "navcluster" || t.id in kg.forester.sg.data.GAUGE_PANELS -> 1.8f
+    // the map and the tall selector want height, the player its cover, title, bar and buttons
+    t.id == "navmap" || t.id == "gearsel" -> 1.8f
+    t.id == "player" -> 1.3f
     t.id in kg.forester.sg.data.EXTRA_CARDS -> 0.9f
     t.style.isNotEmpty() -> 1.3f
     t.id in setOf("avcs", "injDuty", "maf", "throttleMotor", "wgdc", "pressure") -> 0.55f
