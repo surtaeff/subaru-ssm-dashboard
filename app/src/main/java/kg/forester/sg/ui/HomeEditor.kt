@@ -331,13 +331,15 @@ private fun AddMenu(edit: BoardEdit, names: CardNames, onClose: () -> Unit) {
 }
 
 private val CARD_GROUPS = listOf(
-    "Двигатель", "Топливо", "Зажигание", "Наддув", "АКПП", "Приборы и карта", "Динамика и замеры", "Защита мотора",
+    "Двигатель", "Топливо", "Зажигание", "Наддув", "АКПП", "Приборы и карта", "Медиа", "Динамика и замеры", "Защита мотора",
     "Шины и ТО", "Доп датчики", "Выходы: кнопки и регуляторы", "Свои датчики (Датчик 1–6)", "Прочее",
 )
 
 /** The section a card is offered under in «Добавить виджет». */
 private fun cardGroup(id: String): String = when {
-    id in setOf("defi", "navcluster", "tach", "speedo", "car3d", HomeLayout.ROAD, "minimap", "gps", "altitude") -> "Приборы и карта"
+    id in setOf("defi", "navcluster", "navmap", "tach", "speedo", "car3d", HomeLayout.ROAD, "minimap", "gps", "altitude") -> "Приборы и карта"
+    id == "player" -> "Медиа"
+    id == "gearsel" -> "АКПП"
     id in setOf("gmeter", "incline", "peaks", "run") -> "Динамика и замеры"
     id in setOf("iam", "btarget", "turbo") -> "Защита мотора"
     id in setOf("tyres", "service") -> "Шины и ТО"

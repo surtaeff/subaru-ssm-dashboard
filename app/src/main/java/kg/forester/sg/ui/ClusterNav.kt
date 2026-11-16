@@ -122,7 +122,7 @@ private val ClusterMaps: List<ClusterMap> by lazy {
 }
 
 /** Same brightness recolouring as the mini-map: buildings and water darkest, roads brightest. */
-private fun mapRecolour(low: Color, high: Color): android.graphics.ColorMatrixColorFilter {
+internal fun mapRecolour(low: Color, high: Color): android.graphics.ColorMatrixColorFilter {
     val lo = 212f
     val k = 1f / (255f - lo)
     fun row(a: Float, b: Float): FloatArray {
@@ -264,7 +264,7 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
         rig.onFix(g)
         if (g.lat == null || g.lon == null) return@LaunchedEffect
         Routing.init(ctx)
-        Routing.onFix(g.lat, g.lon)
+        Routing.follow(g)
         // the destination of the last session: its route comes back once the car's position is known
         if (Routing.route.value == null && Routing.status.value.isEmpty()) {
             kg.forester.sg.service.Place.parse(Repo.settings.navDest)?.let { Routing.build(g.lat, g.lon, it) }
@@ -424,7 +424,7 @@ fun NavClusterCard(info: String, m: Modifier, style: String = "", interactive: B
 }
 
 /** The arrow of the car, pointing up the screen (the map turns under it). */
-private fun DrawScope.drawCar(c: Offset, s: Float, accent: Color) {
+internal fun DrawScope.drawCar(c: Offset, s: Float, accent: Color) {
     drawCircle(accent.copy(alpha = 0.22f), s * 1.9f, c)
     drawCircle(Color.White, s * 1.15f, c)
     val p = Path().apply {
@@ -581,10 +581,10 @@ private fun AlertChip(icon: androidx.compose.ui.graphics.vector.ImageVector, tex
 }
 
 /** A turn hint as shown: the arrow of its [kind] (see Turn), else the navigator's own arrow picture. */
-private class Shown(val title: String, val text: String, val icon: android.graphics.Bitmap?, val kind: String?)
+internal class Shown(val title: String, val text: String, val icon: android.graphics.Bitmap?, val kind: String?)
 
 /** The arrow of a manoeuvre kind, Lucide's: a corner for a turn, a diagonal for a slight one, a hook for a U-turn. */
-private fun turnIcon(kind: String?): androidx.compose.ui.graphics.vector.ImageVector? = when (kind) {
+internal fun turnIcon(kind: String?): androidx.compose.ui.graphics.vector.ImageVector? = when (kind) {
     kg.forester.sg.service.Turn.STRAIGHT -> Lucide.ArrowUp
     "slight_left" -> Lucide.ArrowUpLeft
     "slight_right" -> Lucide.ArrowUpRight
@@ -600,7 +600,7 @@ private fun turnIcon(kind: String?): androidx.compose.ui.graphics.vector.ImageVe
 }
 
 /** What to do, for a manoeuvre 2GIS gives no words for. */
-private fun turnWords(kind: String?): String = when (kind) {
+internal fun turnWords(kind: String?): String = when (kind) {
     kg.forester.sg.service.Turn.STRAIGHT -> "Прямо"
     "slight_left" -> "Левее"; "slight_right" -> "Правее"
     "left" -> "Налево"; "right" -> "Направо"
@@ -613,7 +613,7 @@ private fun turnWords(kind: String?): String = when (kind) {
 
 /** The next turn: its arrow on an accent disc, the distance big, what to do and the street under it. */
 @Composable
-private fun TurnHint(h: Shown, accent: Color, m: Modifier) {
+internal fun TurnHint(h: Shown, accent: Color, m: Modifier) {
     Row(
         m.clip(RoundedCornerShape(16.dp)).background(Brush.verticalGradient(listOf(Color(0xF00E1424), Color(0xF0080B14))))
             .border(1.dp, accent.copy(alpha = 0.45f), RoundedCornerShape(16.dp)).padding(start = 8.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),

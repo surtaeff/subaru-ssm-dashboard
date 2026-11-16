@@ -107,8 +107,24 @@ val MORE_VALUES = listOf(
 /** The ready full-card panels (ui/GaugePanels.kt) and the G-force card: off everywhere until the driver picks one. */
 val GAUGE_PANELS = listOf("gforce", "p_tacho_blue", "p_tacho_orange", "p_tacho_teal", "p_turbo", "p_tilt", "p_gradar", "p_web", "p_pid", "p_accel", "p_brake")
 
+/**
+ * The home widgets of 1.0 (see ui/HomeWidgets.kt): the map with the route, the player, the gear selector. Appended
+ * switched off on every board, like any card added later, so no saved layout changes.
+ */
+val WIDGET_CARDS = listOf("navmap", "player", "gearsel")
+
 /** Engine guard, performance and sensor cards (see ui/ExtraCards.kt), offered on the home and "Динамика" boards. */
-val EXTRA_CARDS = listOf("defi", "navcluster", "gmeter", "incline", "iam", "btarget", "peaks", "run", "turbo", "tyres", "service") + (1..6).map { "s$it" } + GAUGE_PANELS
+val EXTRA_CARDS = listOf("defi", "navcluster", "gmeter", "incline", "iam", "btarget", "peaks", "run", "turbo", "tyres", "service") + (1..6).map { "s$it" } + GAUGE_PANELS + WIDGET_CARDS
+
+/**
+ * The width a widget card starts with on a board of [columns] columns: the map and the player wide, the selector a
+ * narrow column (on the 5-column home grid 2, 2 and 1). Null for the other cards.
+ */
+fun widgetSpan(id: String, columns: Int): Int? = when (id) {
+    "navmap", "player" -> if (columns >= 12) 6 else 2
+    "gearsel" -> if (columns >= 12) 2 else 1
+    else -> null
+}
 
 
 /**
@@ -181,7 +197,7 @@ object HomeLayout {
             "inj", "wgdc", "fuel", "boost", "gps",
         ).map { TileCfg(it, true) } + listOf(
             "pedal", "avcs", "map", "atm", "alt", "atf", "per100", "range", "tach", "speedo", "car3d", "minimap",
-        ).map { TileCfg(it, false) } + TileCfg(ROAD, false, ROAD_SPAN) + EXTRA_CARDS.map { TileCfg(it, false, when (it) { "defi", in GAUGE_PANELS -> 2; "navcluster" -> 3; else -> 1 }) } +
+        ).map { TileCfg(it, false) } + TileCfg(ROAD, false, ROAD_SPAN) + EXTRA_CARDS.map { TileCfg(it, false, widgetSpan(it, COLUMNS) ?: when (it) { "defi", in GAUGE_PANELS -> 2; "navcluster" -> 3; else -> 1 }) } +
             MORE_VALUES.map { TileCfg(it, false) } +
             OUT_WIDGETS.map { TileCfg(it, false) },
         freeOnly = setOf("car3d"),
@@ -369,7 +385,7 @@ val DriveBoard = Board(
         TileCfg("throttleMotor", true, 2), TileCfg("wgdc", true, 2), TileCfg("pressure", true, 2),
         TileCfg("rpm", false, 2), TileCfg("chartRpm", false, 6), TileCfg("chartTrims", false, 6),
         TileCfg("chartMaf", false, 6),
-    ) + EXTRA_CARDS.map { TileCfg(it, false, if (it == "navcluster") 12 else if (it == "defi" || it in GAUGE_PANELS) 6 else if (it == "gmeter" || it == "peaks") 4 else 3) },
+    ) + EXTRA_CARDS.map { TileCfg(it, false, widgetSpan(it, 12) ?: if (it == "navcluster") 12 else if (it == "defi" || it in GAUGE_PANELS) 6 else if (it == "gmeter" || it == "peaks") 4 else 3) },
 )
 
 /** "АКПП": selector 3 + ATF 4 + torque converter 5 columns, the proportions of the fixed layout. */
@@ -424,7 +440,7 @@ val MyBoard: Board by lazy {
         TileCfg("oil", true, 3), TileCfg("battery", true, 3), TileCfg("per100", true, 3), TileCfg("range", true, 3),
     )
     val rest = (kg.forester.sg.ui.Metrics.builtIn.map { it.id } + kg.forester.sg.ui.Metrics.derivedIds).filter { id -> on.none { it.id == id } }.map { TileCfg(it, false, 3) } +
-        EXTRA_CARDS.map { TileCfg(it, false, when (it) { "navcluster" -> 12; "defi", in GAUGE_PANELS -> 6; else -> 4 }) } + BOX_VALUES.map { TileCfg(it, false, 3) } +
+        EXTRA_CARDS.map { TileCfg(it, false, widgetSpan(it, 12) ?: when (it) { "navcluster" -> 12; "defi", in GAUGE_PANELS -> 6; else -> 4 }) } + BOX_VALUES.map { TileCfg(it, false, 3) } +
         CAN_VALUES.map { TileCfg(it, false, 3) } + OUT_WIDGETS.map { TileCfg(it, false, 3) }
     Board("myTiles", 12, 12, stretch = true, defaults = on + rest)
 }

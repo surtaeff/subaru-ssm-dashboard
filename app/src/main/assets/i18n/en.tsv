@@ -4868,3 +4868,26 @@ JDM цифровой розовый	JDM digital pink
 Как в теме	As in the theme
 Жёлтый	Yellow
 Розовый	Pink
+// ui/HomeWidgets.kt
+Карта с маршрутом	Map with route
+Плеер	Player
+Селектор и передача	Selector and gear
+P или N: блок АКПП их не различает	P or N: the transmission unit can't tell them apart
+положение не определено	position unknown
+передача не определена: стоим, выжато сцепление или переключение	gear unknown: standing, clutch down or shifting
+передача по оборотам и скорости; положение селектора эта машина не передаёт	gear from revs and speed; this car doesn't report the selector position
+передача по оборотам и скорости	gear from revs and speed
+Приблизить	Zoom in
+Отдалить	Zoom out
+Нажмите, чтобы открыть «Медиа»	Tap to open «Media»
+в эфире	on air
+// ui/InfoTexts.kt
+Тёмная карта с машиной в середине, повёрнутая по ходу движения или севером вверх. Пока есть маршрут, на ней линия маршрута, следующий поворот вверху слева и время, расстояние и время прибытия внизу справа.	A dark map with the car in the middle, turned along the course or north up. While there is a route it shows the route line, the next turn at the top left, and time, distance and arrival time at the bottom right.
+Карта своя (OpenStreetMap), положение и курс по GPS. Маршрут тот же, что у карточки «Приборка с картой»: кнопка с лупой («Куда едем») строит его по OpenStreetMap. Поворот берётся из уведомления навигатора, пока он ведёт (нужен доступ к уведомлениям), или от 2ГИС. Без маршрута подсказок нет, только карта.	The map is the app's own (OpenStreetMap), position and course from GPS. The route is the same as on the «Cluster with map» card: the magnifier button («Where to») builds it from OpenStreetMap. The turn comes from the navigator's notification while it guides (needs notification access), or from 2GIS. Without a route there are no hints, just the map.
+Кнопки слева: приближение, «Куда едем» и компас (север вверху или по ходу движения). Нажатие на карту открывает навигатор.	Buttons on the left: zoom, «Where to» and the compass (north up or along the course). A tap on the map opens the navigator.
+Что играет: обложка, название, исполнитель, сколько прошло и сколько всего, и кнопки управления.	What is playing: the cover, title, artist, time played and total length, and the controls.
+Тот же источник, что у полоски плеера внизу экрана: свой плеер, Bluetooth, радио или другое приложение с медиасессией. Перемешивание и повтор есть только у своего плеера: в чужом приложении Android их задать не даёт.	The same source as the player strip at the bottom of the screen: the own player, Bluetooth, radio or another app with a media session. Shuffle and repeat exist only for the own player: Android gives no way to set them in another app.
+Нажатие на название открывает «Медиа».	A tap on the title opens «Media».
+Положение селектора АКПП столбиком P R N D 3 2 1, текущее подсвечено, и передача, на которой едем.	The automatic transmission selector position as a P R N D 3 2 1 column with the current one lit, and the gear you are in.
+Subaru по SSM: положение селектора и передача из блока АКПП 4EAT (байты 0x6B и 0x4A). P и N блок не различает, поэтому в P или N подсвечены обе. Другие машины по OBD-II положение селектора не передают: тогда показывается передача, посчитанная по оборотам и скорости, или «—», если её не определить.	Subaru over SSM: the selector position and the gear from the 4EAT transmission unit (bytes 0x6B and 0x4A). The unit can't tell P from N, so in P or N both are lit. Other cars over OBD-II don't report the selector position: then the card shows the gear worked out from revs and speed, or «—» if it can't be told.
+В ручном режиме SportShift вместо 3 2 1 показывается M. Если места мало, 3, 2 и 1 делят одну строку.	In the SportShift manual mode M is shown instead of 3 2 1. With little room 3, 2 and 1 share one row.

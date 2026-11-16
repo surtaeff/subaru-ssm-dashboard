@@ -72,7 +72,7 @@ val ExtraCards: Map<String, Pair<String, ImageVector>> = linkedMapOf(
     "turbo" to ("Турбина и масло" to Lucide.Activity),
     "tyres" to ("Давление в шинах" to Lucide.Disc3),
     "service" to ("Ближайшее ТО" to Lucide.Wrench),
-) + (1..6).associate { "s$it" to ("Датчик $it" to Lucide.ListChecks) } + GaugePanelCards
+) + (1..6).associate { "s$it" to ("Датчик $it" to Lucide.ListChecks) } + GaugePanelCards + WidgetCards
 
 /** The card for [id] from [ExtraCards], or false if [id] is not one of them. [style]: the card's own settings, if it has any. */
 @Composable
@@ -90,6 +90,9 @@ fun ExtraCard(id: String, info: String, m: Modifier, style: String = ""): Boolea
         "tyres" -> TyresCard(info, m)
         "service" -> ServiceCard(info, m)
         in GaugePanelCards -> GaugePanel(id, m)
+        "navmap" -> NavMapCard(info, m)
+        "player" -> PlayerCard(info, m)
+        "gearsel" -> GearSelectorCard(info, m)
         else -> {
             val k = id.removePrefix("s").toIntOrNull()
             if (!id.startsWith("s") || k == null) return false
