@@ -1,0 +1,49 @@
+VERSION ""
+
+CM_ "CarPulse: ECUMaster EMU Black, the EMU CAN Stream on its default base id 0x600 (8 frames, low byte first). Written for CarPulse from two public descriptions that agree on the frames they share: ecumaster_emublack.xml of janimm/RealDash-extras (public domain) and the EMUcan Arduino library (designer2k2/EMUcan). EGT 1-2, fuel pressure, baro, ECU temperature and ethanol come from EMUcan only. Bus speed as set in the EMU (500 kbit/s or 1 Mbit/s).";
+
+BS_:
+
+BU_: EMU
+
+BO_ 1536 EMU_0: 8 EMU
+ SG_ RPM : 0|16@1+ (1,0) [0|16000] "rpm" Vector__XXX
+ SG_ TPS : 16|8@1+ (0.5,0) [0|100] "%" Vector__XXX
+ SG_ IAT : 24|8@1- (1,0) [-40|127] "C" Vector__XXX
+ SG_ MAP : 32|16@1+ (1,0) [0|600] "kPa" Vector__XXX
+ SG_ InjectorPW : 48|16@1+ (0.016129,0) [0|50] "ms" Vector__XXX
+
+BO_ 1537 EMU_1: 8 EMU
+ SG_ Analog1 : 0|16@1+ (0.0048828125,0) [0|5] "V" Vector__XXX
+ SG_ Analog2 : 16|16@1+ (0.0048828125,0) [0|5] "V" Vector__XXX
+ SG_ Analog3 : 32|16@1+ (0.0048828125,0) [0|5] "V" Vector__XXX
+ SG_ Analog4 : 48|16@1+ (0.0048828125,0) [0|5] "V" Vector__XXX
+
+BO_ 1538 EMU_2: 8 EMU
+ SG_ VehicleSpeed : 0|16@1+ (1,0) [0|400] "km/h" Vector__XXX
+ SG_ Baro : 16|8@1+ (1,0) [50|130] "kPa" Vector__XXX
+ SG_ OilTemperature : 24|8@1+ (1,0) [0|160] "C" Vector__XXX
+ SG_ OilPressure : 32|8@1+ (0.0625,0) [0|16] "bar" Vector__XXX
+ SG_ FuelPressure : 40|8@1+ (0.0625,0) [0|16] "bar" Vector__XXX
+ SG_ CoolantTemperature : 48|16@1- (1,0) [-40|250] "C" Vector__XXX
+
+BO_ 1539 EMU_3: 8 EMU
+ SG_ IgnitionAngle : 0|8@1- (0.5,0) [-60|60] "deg" Vector__XXX
+ SG_ Dwell : 8|8@1+ (0.05,0) [0|10] "ms" Vector__XXX
+ SG_ Lambda : 16|8@1+ (0.0078125,0) [0|2] "lambda" Vector__XXX
+ SG_ LambdaCorrection : 24|8@1+ (0.5,0) [75|125] "%" Vector__XXX
+ SG_ EGT1 : 32|16@1+ (1,0) [0|1250] "C" Vector__XXX
+ SG_ EGT2 : 48|16@1+ (1,0) [0|1250] "C" Vector__XXX
+
+BO_ 1540 EMU_4: 8 EMU
+ SG_ Gear : 0|8@1+ (1,0) [0|8] "" Vector__XXX
+ SG_ EcuTemperature : 8|8@1+ (1,0) [0|120] "C" Vector__XXX
+ SG_ BatteryVoltage : 16|16@1+ (0.027,0) [0|25] "V" Vector__XXX
+ SG_ ErrorFlags : 32|16@1+ (1,0) [0|65535] "" Vector__XXX
+ SG_ Flags1 : 48|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Ethanol : 56|8@1+ (1,0) [0|100] "%" Vector__XXX
+
+BO_ 1543 EMU_7: 8 EMU
+ SG_ BoostTarget : 0|16@1+ (1,0) [0|600] "kPa" Vector__XXX
+ SG_ PWM1Duty : 16|8@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ LambdaTarget : 32|8@1+ (0.01,0) [0|2] "lambda" Vector__XXX

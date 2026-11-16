@@ -4956,3 +4956,129 @@ ID нет в списке разрешённых	ID not on the allowed list
 превышен лимит частоты	rate limit exceeded
 нет адаптера, который умеет передавать	no adapter that can transmit
 адаптер не принял кадр	the adapter did not take the frame
+// data/CanProfiles.kt ui/CanImportUi.kt ui/CanUi.kt ssm/Dbc.kt ssm/RealDashXml.kt data/CanChannels.kt (CAN profiles and import)
+свой	own
+байты	bytes
+шаблон	template
+Разметка	Layout
+Стартовый бит	Start bit
+Готовые профили	Ready profiles
+как у датчика	as the sensor's
+файл не открылся	the file did not open
+множитель не число	the factor is not a number
+Температура датчика ШДК	Wideband sensor temperature
+сдвиг за пределами значения	shift beyond the value
+своё краткое описание по фактам из rusEFI_CAN_verbose.dbc (сам файл GPL и не копировался); на ЭБУ не проверено	own short description from the facts of rusEFI_CAN_verbose.dbc (the GPL file itself is not copied); not tried on an ECU
+этот кадр отправляет сам дашборд (writeInterval)	the dash itself sends this frame (writeInterval)
+скорость шины по файлу {} кбит	bus speed by the file {} kbit
+в файле нет сообщений BO_	the file has no BO_ messages
+Плата термопар с выходом CAN: впишите её ID и байты своего канала, формула должна давать °C	A thermocouple board with CAN output: enter its ID and the bytes of your channel, the formula must give °C
+Контроллер ШДК с выходом CAN: впишите его ID и байты лямбды, формула даёт AFR (лямбда × 14,7)	A wideband controller with CAN output: enter its ID and the lambda bytes, the formula gives AFR (lambda × 14.7)
+Датчик давления с выходом CAN: впишите его ID и байты; давление по манометру, в единицах из поля «Единицы»	A pressure sensor with CAN output: enter its ID and bytes; gauge pressure, in the units of the «Units» field
+в файле нет кадров frame	the file has no frame elements
+Ничего добавлять не нужно: потоки Dash2Pro и Generic Dash приложение находит само и показывает обороты, давления, лямбду и прочее. ЕГТ и другие значения своего потока Link добавьте в «Свои значения из CAN»	Nothing to add: the app finds the Dash2Pro and Generic Dash streams by itself and shows rpm, pressures, lambda and the rest. Add an EGT and other values of your own Link stream in «Own values from CAN»
+Потоки ЭБУ и CAN-датчиков, которые знают дашборды: выберите свой, основные значения уже отмечены, роли (ЕГТ, давление масла, AFR…) расставлены. Скорость CANable поставьте как у устройства	ECU and CAN sensor streams that dashes know: pick yours, the main values are ticked already and their roles (EGT, oil pressure, AFR…) set. Set the CANable speed to the device's
+это не описание RealDash CAN (нет RealDashCAN)	not a RealDash CAN description (no RealDashCAN)
+Открытый контроллер ШДК rusEFI (mck1117/wideband) и платы на его прошивке	The open rusEFI wideband controller (mck1117/wideband) and boards running its firmware
+не разобрано строк: {}	lines not understood: {}
+Давление масла (CAN)	Oil pressure (CAN)
+Давление масла (EMU)	Oil pressure (EMU)
+Давление топлива (EMU)	Fuel pressure (EMU)
+Давление масла (Haltech)	Oil pressure (Haltech)
+Давление топлива (Haltech)	Fuel pressure (Haltech)
+Давление масла (MaxxECU)	Oil pressure (MaxxECU)
+Давление топлива (MaxxECU)	Fuel pressure (MaxxECU)
+Давление масла (rusEFI)	Oil pressure (rusEFI)
+Показаны первые {} из {}: уточните поиск	Showing the first {} of {}: narrow the search
+файл больше 8 МБ	the file is over 8 MB
+Контроллер ШДК AEM 30-0300/30-0310 по AEMnet (CAN). Терминатора внутри нет: на шине из двух устройств поставьте 120 Ом на обоих концах	AEM 30-0300/30-0310 wideband controller over AEMnet (CAN). It has no terminator inside: on a bus of two devices put 120 Ohm at both ends
+это не DBC	not a DBC
+Как в DBC: у Intel стартовый бит младший, у Motorola старший; биты считаются от младшего бита байта 0 (байт 1 = биты 8–15)	As in a DBC: Intel's start bit is the lowest, Motorola's the highest; bits count from the lowest bit of byte 0 (byte 1 = bits 8–15)
+Широковещательный поток Haltech для дашбордов, 11-битные ID, старший байт первым. Температуры в нём в кельвинах: приложение пересчитает в °C	Haltech's broadcast stream for dashes, 11-bit IDs, high byte first. Its temperatures are in kelvin: the app converts them to °C
+как в PCLink (ECU Controls, CAN Setup)	as in PCLink (ECU Controls, CAN Setup)
+Широковещательный поток rusEFI, младший байт первым. Базовый ID и скорость задаются в TunerStudio	rusEFI's broadcast stream, low byte first. The base ID and the speed are set in TunerStudio
+Стартовый бит: число 0–511	Start bit: a number 0–511
+Не проверено: {}	Not verified: {}
+Добавлено значений: {}	Values added: {}
+ЕГТ макс. (MaxxECU)	EGT max (MaxxECU)
+биты (как в DBC)	bits (as in a DBC)
+Лямбда (AEM)	Lambda (AEM)
+ЕГТ (CAN)	EGT (CAN)
+Этанол (EMU)	Ethanol (EMU)
+Напряжение (EMU)	Voltage (EMU)
+Этанол (Haltech)	Ethanol (Haltech)
+Напряжение (Haltech)	Voltage (Haltech)
+Этанол (MaxxECU)	Ethanol (MaxxECU)
+Напряжение (MaxxECU)	Voltage (MaxxECU)
+Напряжение (Megasquirt)	Voltage (Megasquirt)
+Лямбда (rusEFI WBO)	Lambda (rusEFI WBO)
+Этанол (rusEFI)	Ethanol (rusEFI)
+Напряжение (rusEFI)	Voltage (rusEFI)
+длина {} бит	length {} bits
+длина {} байт	length {} bytes
+Сообщений {}, сигналов {}	Messages {}, signals {}
+ЕГТ 1 (EMU)	EGT 1 (EMU)
+ЕГТ 1 (MaxxECU)	EGT 1 (MaxxECU)
+ЕГТ 1 (rusEFI)	EGT 1 (rusEFI)
+ЕГТ 2 (EMU)	EGT 2 (EMU)
+Инструкция AEM 30-0300 (скорость, ID, лямбда), код rusEFI AemXSeriesLambda.cpp (флаги)	AEM 30-0300 manual (speed, ID, lambda), rusEFI's AemXSeriesLambda.cpp (flags)
+Импорт DBC / RealDash XML	Import DBC / RealDash XML
+Поток «EMU CAN Stream»: включите его в EMU Client (CAN-Bus, Send EMU stream over CAN-Bus)	The «EMU CAN Stream»: turn it on in EMU Client (CAN-Bus, Send EMU stream over CAN-Bus)
+Протокол MaxxECU по умолчанию (v1.3): включите его в MTune, CAN-шина, младший байт первым. Быстрые кадры 50 Гц, медленные 10 Гц	The default MaxxECU protocol (v1.3): turn it on in MTune, CAN bus, low byte first. Fast frames 50 Hz, slow ones 10 Hz
+формула RealDash не поддерживается: {}	RealDash formula not supported: {}
+Длина, бит	Length, bits
+, уже были: {}	, already there: {}
+, биты {}|{}	, bits {}|{}
+Поиск: имя, ID, комментарий	Search: name, ID, comment
+Проверено: {}	Verified: {}
+Скорость: {} · ID: {}	Speed: {} · ID: {}
+Длина: 1–64 бит	Length: 1–64 bits
+Шаблон: CAN-ШДК	Template: CAN wideband
+Шаблон: CAN-термопара ЕГТ	Template: CAN EGT thermocouple
+Шаблон: CAN-датчик давления масла	Template: CAN oil pressure sensor
+Темп. ОЖ (EMU)	Coolant temp. (EMU)
+Темп. масла (EMU)	Oil temp. (EMU)
+Темп. ОЖ (Haltech)	Coolant temp. (Haltech)
+Темп. масла (Haltech)	Oil temp. (Haltech)
+Темп. ОЖ (MaxxECU)	Coolant temp. (MaxxECU)
+Темп. масла (MaxxECU)	Oil temp. (MaxxECU)
+Темп. ОЖ (Megasquirt)	Coolant temp. (Megasquirt)
+Темп. ОЖ (rusEFI)	Coolant temp. (rusEFI)
+Темп. масла (rusEFI)	Oil temp. (rusEFI)
+{} (# бит)  {}	{} (#-bit)  {}
+{}: не разобрано: {}	{}: not understood: {}
+{}. Скорость: {}; ID: {}	{}. Speed: {}; ID: {}
+0x180 (29 бит), второй контроллер 0x181	0x180 (29-bit), second controller 0x181
+0x190 и 0x191, второй контроллер 0x192	0x190 and 0x191, second controller 0x192
+0x200–0x209 (база по умолчанию 512)	0x200–0x209 (default base 512)
+0x600–0x607 (база по умолчанию)	0x600–0x607 (default base)
+500 кбит или 1 Мбит, как в EMU	500 kbit or 1 Mbit, as set in the EMU
+500 кбит, как в TunerStudio	500 kbit, as set in TunerStudio
+AEM X-Series (ШДК)	AEM X-Series (wideband)
+AEM: лямбда готова	AEM: lambda ready
+BO_: не разобрано: {}	BO_: not understood: {}
+Dash2Pro: 1000–1003, Generic Dash: один ID	Dash2Pro: 1000–1003, Generic Dash: one ID
+ecumaster_emublack.xml из RealDash-extras и библиотека EMUcan совпадают; ЕГТ, давление топлива и этанол только по EMUcan	ecumaster_emublack.xml of RealDash-extras and the EMUcan library agree; EGT, fuel pressure and ethanol by EMUcan only
+haltech_v3_can.xml из RealDash-extras; с протоколом Haltech не сверено	haltech_v3_can.xml of RealDash-extras; not checked against Haltech's protocol
+link_dash2pro.xml из RealDash-extras и приёмник Generic Dash (jasongaunt, MIT), см. поток Link	link_dash2pro.xml of RealDash-extras and the Generic Dash receiver (jasongaunt, MIT), see the Link stream
+maxxecu_default_can.xml из RealDash-extras, сверено со справкой MaxxECU (Default MaxxECU protocol)	maxxecu_default_can.xml of RealDash-extras, checked against MaxxECU's help (Default MaxxECU protocol)
+Megasquirt (MS3, поток реального времени)	Megasquirt (MS3, real-time stream)
+megasquirt_realtime_data_broadcasting_can.xml из RealDash-extras	megasquirt_realtime_data_broadcasting_can.xml of RealDash-extras
+Real-time Data Broadcasting MS3, старший байт первым. Температуры в нём в °F: приложение пересчитает в °C	MS3 Real-time Data Broadcasting, high byte first. Its temperatures are in °F: the app converts them to °C
+rusEFI (поток ЭБУ)	rusEFI (ECU stream)
+rusEFI Wideband (ШДК)	rusEFI Wideband
+wideband_can.h контроллера (MIT) и декодер rusEFI; скорость шины в них не указана	the controller's wideband_can.h (MIT) and rusEFI's decoder; they don't give the bus speed
+float: нужно # бит, в файле {}	float: needs # bits, the file has {}
+double: нужно # бит, в файле {}	double: needs # bits, the file has {}
+тип значения {}	value type {}
+мультиплексор не найден	multiplexor not found
+float/double: длина должна быть {} байт	float/double: the length must be {} bytes
+Сигнал выходит за {} байт кадра	The signal goes past the frame's {} bytes
+Первый байт: число 0–63	First byte: a number 0–63
+float занимает 4 байта (32 бит)	A float takes 4 bytes (32 bits)
+double занимает 64 бит: разметка «биты», длина 64	A double takes 64 bits: layout «bits», length 64
+Тип значения	Value type
+целое	integer
+float (32 бит)	float (32 bits)
+double (64 бит)	double (64 bits)
+файл не прочитан	the file could not be read
