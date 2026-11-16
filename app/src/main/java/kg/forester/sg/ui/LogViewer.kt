@@ -95,8 +95,8 @@ private fun logRows(lines: List<String>, sep: Char): List<List<String>> =
 private fun readLog(f: File, rr: Map<String, kg.forester.sg.ssm.RrParam> = emptyMap()): LogData {
     val lines = f.bufferedReader().use { r -> r.lineSequence().filter { it.isNotBlank() }.take(400_000).toList() }
     if (lines.size < 2) return LogData(DoubleArray(0), null, emptyList())
-    val sep = kg.forester.sg.data.CsvRead.separator(lines[0].removePrefix("﻿"))
-    val head = kg.forester.sg.data.CsvRead.split(lines[0].removePrefix("﻿"), sep)
+    val sep = kg.forester.sg.data.CsvRead.separator(lines[0].removePrefix("\uFEFF"))
+    val head = kg.forester.sg.data.CsvRead.split(lines[0].removePrefix("\uFEFF"), sep)
     val rows = logRows(lines, sep)
     val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
     // the app's own files: ms (from the start or the epoch) or a date in the first column, read as always

@@ -40,7 +40,7 @@ object RealDashXml {
     fun parse(text: String): CanDb {
         val xp = XmlPullParserFactory.newInstance().newPullParser()
         runCatching { xp.setFeature("http://xmlpull.org/v1/doc/features.html#relaxed", true) }
-        xp.setInput(StringReader(text.trimStart('﻿')))
+        xp.setInput(StringReader(text.trimStart('\uFEFF')))
         val frames = ArrayList<Frame>()
         var root = false
         var base = 0L

@@ -904,8 +904,9 @@ private fun LogColumnsDialog(onClose: () -> Unit) {
                 SettingHint("Время пишется всегда. Отмеченные параметры ЭБУ с экрана «Датчики» добавляются в конец. Новый выбор начинает новый файл.")
                 // one tap: the tuner's usual set and nothing else (a short file the tuner reads at a glance)
                 val keys = groups.values.flatten().map { it.key }
-                val tuner = kg.forester.sg.service.LogColumns.tunerKeys(keys, kg.forester.sg.data.Wideband.config.value.enabled,
-                    Repo.carTurbo.value, Repo.settings.gearbox != "mt")
+                val wideband by kg.forester.sg.data.Wideband.config.collectAsState()
+                val turbo by Repo.carTurbo.collectAsState()
+                val tuner = kg.forester.sg.service.LogColumns.tunerKeys(keys, wideband.enabled, turbo, Repo.settings.gearbox != "mt")
                 val tunerOn = keys.filter { it !in off } == tuner
                 Chip("Лог для настройщика", tunerOn, {
                     off = off - tuner.toSet() + (keys - tuner.toSet()); Repo.settings.logOff = off
