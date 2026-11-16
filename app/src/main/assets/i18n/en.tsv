@@ -3038,6 +3038,7 @@ Forester SH (атмо)	Forester SH (NA)
 скачиваю модель распознавания: {} МБ	downloading the recognition model: {} MB
 модель скачалась не до конца	the model didn't download fully
 микрофон молчит: его занял другой ассистент или он выключен, жду…	the microphone is silent: another assistant took it or it is off, waiting…
+идёт звонок: микрофон отдан телефону	a call is on: the microphone is left to the phone
 микрофон недоступен, пробую снова…	microphone unavailable, trying again…
 ошибка микрофона: {}	microphone error: {}
 Хорошо	OK
