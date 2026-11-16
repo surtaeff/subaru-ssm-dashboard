@@ -54,6 +54,17 @@ fun ObdbPanel() {
     var status by remember { mutableStateOf("") }
     val repo = remember(changed) { s.obdbRepo }
     val year = remember(vin) { vin?.takeIf { it.isNotEmpty() }?.let { Obdb.modelYear(it) } }
+    var autoTried by remember { mutableStateOf(false) }
+    // on enters with a known make from VIN and no picked model yet, look up the make's OBDb models once,
+    // so the user only picks from a short list instead of first tapping «Модели»
+    androidx.compose.runtime.LaunchedEffect(on, vinMake, repo) {
+        if (!on || autoTried || models != null || repo.isNotEmpty()) return@LaunchedEffect
+        val m = vinMake?.trim().orEmpty()
+        if (m.isEmpty()) return@LaunchedEffect
+        autoTried = true
+        val found = withContext(Dispatchers.IO) { Obdb.models(m) }
+        if (found.isNotEmpty()) { models = found; status = "Выберите модель" }
+    }
 
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {

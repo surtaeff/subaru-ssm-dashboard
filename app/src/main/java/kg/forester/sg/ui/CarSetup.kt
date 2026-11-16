@@ -234,6 +234,18 @@ fun CarAdapterSettings(onOpenLook: () -> Unit = {}) {
                     Switch(shared, { shared = it; s.lineShared = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Purple))
                 }
             }
+            // the pre-1999 cars: another protocol on other pins, a plain KKL does not reach them
+            if (!otherCar && (adapter == "kkl" || adapter == "auto")) {
+                Spacer(Modifier.height(10.dp))
+                T("Subaru до 1999 года (SSM1)", 15.sp)
+                SettingHint("Impreza GC/GF и Forester SF5 по 1998 год, ранние Legacy, SVX: старый протокол SSM1, приложение узнаёт его само. " +
+                    "Он идёт по контактам 12 и 13 разъёма OBD сигналом 5 В, а линия K у таких машин не подключена, поэтому обычный " +
+                    "KKL-кабель (и VAG KKL с переключателем) их не видит. Нужен USB-UART на FT232R или CH340 с уровнем 5 В: TX адаптера " +
+                    "на контакт 12, RX на контакт 13, масса на 4 и 5. VAG KKL 409.1 на FT232RL можно переделать, схема у Нориясу Мори: " +
+                    "grove-design-service.com/ssm")
+                val rom = remember(msg) { s.ssm1Rom }
+                if (rom.isNotEmpty()) T("Найден старый ЭБУ, ROM $rom", 12.sp, C.Green)
+            }
             Spacer(Modifier.height(14.dp))
             InfoLine("Связь", msg)
             DeviceIdLine()

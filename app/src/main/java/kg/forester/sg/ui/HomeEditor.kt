@@ -415,7 +415,8 @@ fun BoxScope.TileEditOverlay(edit: BoardEdit, cfg: TileCfg, title: String = "", 
         StylePicker(
             "Вид: $title", base, "Обычный", Modifier, target = "${edit.board.key}/${cfg.id}",
             preview = { st, m ->
-                Dial(62f, 100f, 20f, 1f, "", null, 80f, m, st.copy(hideValue = o.noNumber, marks = o.marks, numberScale = o.numberPct?.let { it / 100f } ?: st.numberScale))
+                Dial(62f, 100f, 20f, 1f, "", null, 80f, m, st.copy(hideValue = o.noNumber, marks = o.marks, numberScale = o.numberPct?.let { it / 100f } ?: st.numberScale,
+                    glass = o.glass))
             },
             onPick = { edit.setStyle(cfg.id, if (it.isNotEmpty()) o.copy(base = it).format() else it) },
             onClose = { picking = false },

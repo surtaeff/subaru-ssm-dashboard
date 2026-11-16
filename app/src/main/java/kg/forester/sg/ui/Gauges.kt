@@ -112,6 +112,18 @@ data class DialStyle(
     val lens: Boolean = false,
     /** One of the designs with built-in indicators (GaugeDesigns.kt); the colours above say what each is there. */
     val design: GaugeDesign? = null,
+    /**
+     * A round digital meter (LcdDial.kt): big segment digits on a black face in a bezel, the value's name and [caption]
+     * under them, no needle. [value] is the digits' light, [tickMinor] their unlit «8»s, [unit] the units' line, [rim]
+     * the bezel. Where only needle dials are drawn (the USB display) it is one in the same colours.
+     */
+    val lcd: Boolean = false,
+    /** The small line at the bottom of a digital meter. */
+    val caption: String? = null,
+    /** A dark halo under the scale's numbers, so they read over a busy picture (the art faces); null: the [glow] one. */
+    val numShadow: Color? = null,
+    /** The driver's «Эффект стекла»: a pane of glass laid over the whole dial (see [glassOver]). */
+    val glass: Boolean = false,
 )
 
 /** How a design with built-in indicators shows its number; the other dials go by [DialStyle.readout] as they always did. */
@@ -309,7 +321,8 @@ fun dialStyle(id: String): DialStyle = when {
         // only a bar that is no option at all (a picture's name) comes back the same: on with the design
         if (o.base == id) designStyle(id)
         else dialStyle(o.base).let { st ->
-            st.copy(hideValue = o.noNumber || st.hideValue, marks = o.marks, numberScale = o.numberPct?.let { it / 100f } ?: st.numberScale)
+            st.copy(hideValue = o.noNumber || st.hideValue, marks = o.marks, numberScale = o.numberPct?.let { it / 100f } ?: st.numberScale,
+                glass = o.glass || st.glass)
         }
     }
     else -> designStyle(id)
@@ -380,7 +393,7 @@ private fun themedDial(st: DialStyle): DialStyle {
     }
 }
 
-private val SegmentFont = androidx.compose.ui.text.font.FontFamily(androidx.compose.ui.text.font.Font(kg.forester.sg.R.font.dseg7_bold_italic))
+internal val SegmentFont = androidx.compose.ui.text.font.FontFamily(androidx.compose.ui.text.font.Font(kg.forester.sg.R.font.dseg7_bold_italic))
 
 /**
  * Round needle gauge (tachometer / speedometer): a 270° (or [DialStyle.sweep]) scale with numbered major
@@ -414,8 +427,11 @@ fun Dial(
     name: String? = null, warn: WarnRule? = null, gear: (() -> String?)? = null,
 ) {
     // a dial's text goes by its own size, also on a parked screen and as a small picture in a picker
+    // the glass goes over everything the dial draws, its number and needle included
+    val modifier = if (style.glass) modifier.glassOver(style) else modifier
     androidx.compose.runtime.CompositionLocalProvider(LocalTextFloor provides null) {
-        if (style.lens && style.image == null) LensDial(value, max, step, labelDiv, unit, redFrom, modifier, style, min, format, name, warn, gear)
+        if (style.lcd && style.image == null) LcdDial(value, min, max, unit, redFrom, modifier, style, format, name, warn)
+        else if (style.lens && style.image == null) LensDial(value, max, step, labelDiv, unit, redFrom, modifier, style, min, format, name, warn, gear)
         else if (style.design != null && style.image == null) DesignDial(style.design, value, max, step, labelDiv, unit, redFrom, modifier, style, min, format, warn)
         else DialBody(value, max, step, labelDiv, unit, scaleNote, redFrom, modifier, style, min, format, range, minMark)
     }
@@ -707,7 +723,8 @@ internal fun DrawScope.drawDial(
         color = (if (band != null) st.bandText else st.numbers).toArgb()
         typeface = DialFace
         if (st.italic) textSkewX = -0.2f
-        st.glow?.let { if (band == null) setShadowLayer(r * 0.05f, 0f, 0f, it.toArgb()) }
+        st.numShadow?.let { setShadowLayer(r * 0.06f, 0f, 0f, it.toArgb()) }
+            ?: st.glow?.let { if (band == null) setShadowLayer(r * 0.05f, 0f, 0f, it.toArgb()) }
     }
     val minor = step / 2f
     val decimals = step / labelDiv < 1f
@@ -953,15 +970,20 @@ private fun DrawScope.carbonWeave(c: Offset, r: Float) {
 @Composable
 fun DialStylePicker(which: String, modifier: Modifier, onClose: () -> Unit) {
     val s = kg.forester.sg.data.Repo.settings
+    // the dial's own options (the glass, its numbers) ride along with whatever design is picked
+    var o by remember { mutableStateOf(DialOptions.parse(if (which == "tach") s.tachStyle else s.speedoStyle)) }
+    fun save(n: DialOptions) { o = n; if (which == "tach") s.tachStyle = n.format() else s.speedoStyle = n.format() }
     StylePicker(
         if (which == "tach") "Дизайн тахометра" else "Дизайн спидометра",
-        if (which == "tach") s.tachStyle else s.speedoStyle, plain = null, modifier, target = which,
-        preview = { st, m ->
+        o.base, plain = null, modifier, target = which,
+        preview = { st0, m ->
+            val st = st0.copy(glass = o.glass, marks = o.marks, numberScale = o.numberPct?.let { it / 100f } ?: st0.numberScale)
             if (which == "tach") Dial(3600f, 7000f, 1000f, 1000f, "об/мин", null, 6000f, m, st)
             else Dial(kg.forester.sg.data.DistanceUnits.speed(96f), kg.forester.sg.data.DistanceUnits.top(kg.forester.sg.data.DistanceUnits.Kind.SPEED, 200f), kg.forester.sg.data.DistanceUnits.speedStep(), 1f, kg.forester.sg.data.DistanceUnits.speedUnit, null, null, m, st)
         },
-        onPick = { if (which == "tach") s.tachStyle = it else s.speedoStyle = it },
+        onPick = { save(o.copy(base = it)) },
         onClose = onClose,
+        options = o, onOptions = { save(it) },
     )
 }
 
@@ -1081,7 +1103,47 @@ private const val STYLE_CELL_DP = 128
 /** Five of them, the gaps and the sheet's padding. */
 private const val STYLE_PICKER_DP = 5 * STYLE_CELL_DP + 4 * 10 + 2 * 14
 
-/** The card's own numbers on the scale and the size of its numbers. */
+/**
+ * A pane of glass over a round dial: a soft reflection over the top third, a faint sheen across from the upper left,
+ * a thin glint along the upper edge and the rim in shade, all inside the face's circle (the glass of a digital meter
+ * sits inside its bezel). Light enough that every number reads through it.
+ */
+internal fun Modifier.glassOver(st: DialStyle): Modifier = this.drawWithCache {
+    val full = size.minDimension / 2f * (if (st.outer != null || st.rings.isNotEmpty()) 0.9f else 1f)
+    val r = if (st.lcd && st.image == null) full * 0.86f else full
+    val c = Offset(size.width / 2f, size.height / 2f)
+    val clip = androidx.compose.ui.graphics.Path().apply { addOval(androidx.compose.ui.geometry.Rect(c, r)) }
+    val top = Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.30f), Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.02f)), c.y - r, c.y + r * 0.02f)
+    val sheen = Brush.linearGradient(
+        0f to Color.Transparent, 0.40f to Color.Transparent, 0.47f to Color.White.copy(alpha = 0.13f),
+        0.56f to Color.Transparent, 1f to Color.Transparent,
+        start = Offset(c.x - r, c.y - r), end = Offset(c.x + r, c.y + r),
+    )
+    val edge = Brush.radialGradient(0f to Color.Transparent, 0.82f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.38f), center = c, radius = r)
+    val bowl = androidx.compose.ui.graphics.Path().apply {
+        // the reflection's lower edge curves down: an ellipse wider than the face, its bottom just above the centre
+        addOval(androidx.compose.ui.geometry.Rect(c.x - r * 1.15f, c.y - r * 1.55f, c.x + r * 1.15f, c.y + r * 0.02f))
+    }
+    onDrawWithContent {
+        drawContent()
+        drawContext.canvas.save()
+        drawContext.canvas.clipPath(clip)
+        drawPath(bowl, top)
+        drawRect(sheen, Offset(c.x - r, c.y - r), Size(r * 2, r * 2))
+        drawCircle(edge, r, c)
+        drawContext.canvas.restore()
+        drawArc(
+            Color.White.copy(alpha = 0.55f), 200f, 80f, false, Offset(c.x - r * 0.95f, c.y - r * 0.95f), Size(r * 1.9f, r * 1.9f),
+            style = Stroke(r * 0.022f, cap = StrokeCap.Round),
+        )
+        drawArc(
+            Color.White.copy(alpha = 0.18f), 25f, 50f, false, Offset(c.x - r * 0.93f, c.y - r * 0.93f), Size(r * 1.86f, r * 1.86f),
+            style = Stroke(r * 0.012f, cap = StrokeCap.Round),
+        )
+    }
+}
+
+/** The card's own numbers on the scale, the size of its numbers and the glass over it. */
 @Composable
 private fun DialOptionRows(o: DialOptions, onChange: (DialOptions) -> Unit) {
     var marks by remember { mutableStateOf(DialOptions.marksText(o.marks)) }
@@ -1098,5 +1160,12 @@ private fun DialOptionRows(o: DialOptions, onChange: (DialOptions) -> Unit) {
         T("Размер цифр", 13.sp, C.Sub)
         Chip("Как в дизайне", o.numberPct == null, { onChange(o.copy(numberPct = null)) })
         listOf(80, 100, 120, 140).forEach { pct -> Chip("$pct%", o.numberPct == pct, { onChange(o.copy(numberPct = pct)) }) }
+    }
+    androidx.compose.foundation.layout.Spacer(Modifier.padding(2.dp))
+    androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+        T("Эффект стекла", 13.sp, C.Sub)
+        androidx.compose.foundation.layout.Spacer(Modifier.padding(4.dp))
+        androidx.compose.material3.Switch(o.glass, { onChange(o.copy(glass = it)) },
+            colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = C.Purple))
     }
 }

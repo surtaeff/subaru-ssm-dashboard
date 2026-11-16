@@ -13,7 +13,7 @@ import java.io.File
  */
 object GaugeImages {
     private const val SIZE = 640
-    private val cache = LruCache<String, Bitmap>(12)
+    private val cache = LruCache<String, Bitmap>(16)
 
     private fun dir(ctx: Context) = File(ctx.filesDir, "gauges").apply { mkdirs() }
 
@@ -66,6 +66,11 @@ object GaugeImages {
         }
     }
 
-    fun bitmap(ctx: Context, name: String): Bitmap? =
-        cache.get(name) ?: BitmapFactory.decodeFile(File(dir(ctx), name).absolutePath)?.also { cache.put(name, it) }
+    /** The app's own art faces: "asset:gauge_art/art_oni.webp" is read from the APK, any other name from the gallery copies. */
+    const val ASSET = "asset:"
+
+    fun bitmap(ctx: Context, name: String): Bitmap? = cache.get(name) ?: (
+        if (name.startsWith(ASSET)) runCatching { ctx.assets.open(name.removePrefix(ASSET)).use { BitmapFactory.decodeStream(it) } }.getOrNull()
+        else BitmapFactory.decodeFile(File(dir(ctx), name).absolutePath)
+        )?.also { cache.put(name, it) }
 }

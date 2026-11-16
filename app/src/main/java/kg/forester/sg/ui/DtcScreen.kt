@@ -211,6 +211,41 @@ object DtcRepo {
 
     suspend fun clearObd(): Boolean = withObd { it.clearDtcs() } == true
 
+    /**
+     * The codes of a pre-1999 unit read over SSM1: each FreeSSM code block is a byte of flags for the current codes
+     * and one for the memorized ones. Null when the link is gone; empty when the unit's table has no code blocks
+     * (the 1994–98 WRX/Impreza/Forester units: their code addresses are not known yet).
+     */
+    suspend fun readSsm1(ctx: Context): List<DtcHit>? {
+        val m = Repo.ssm1.value ?: return null
+        val base = kg.forester.sg.ssm.SsmP1Defs.base(ctx)
+        val ru = load(ctx, "ssm_dtc_2digit.json").associate { it.code to it.descRu }
+        val out = LinkedHashMap<String, DtcHit>()
+        for (blk in m.rom.dc) {
+            val cur = blk.cur?.let { a -> withSsm1 { it.readByte(a) } ?: return null }
+            val mem = blk.mem?.let { a -> withSsm1 { it.readByte(a) } ?: return null }
+            for ((bit, id) in blk.bits) {
+                val mask = 1 shl (bit - 1)
+                val now = cur != null && cur and mask != 0
+                val stored = mem != null && mem and mask != 0
+                if (!now && !stored) continue
+                // a code FreeSSM sets a bit for but has no text of (DTC_49_SYS_ERR): its number from the name
+                val d = base.dtcs[id] ?: Regex("DTC_(\\d\\d)").find(id)?.let { kg.forester.sg.ssm.SsmP1Defs.Dtc(it.groupValues[1], "") } ?: continue
+                // a variant of FreeSSM's (DTC_14_Lseries: injectors 1 and 2) means something else than the plain code
+                val plain = id.count { it == '_' } == 1 || d.en.isEmpty()
+                val def = DtcDef(d.code, d.en, blk.cur ?: 0, blk.mem ?: 0, bit, if (plain) ru[d.code].orEmpty() else "")
+                val old = out[d.code]
+                out[d.code] = DtcHit(def, now || old?.current == true, stored || old?.memorized == true)
+            }
+        }
+        return out.values.toList()
+    }
+
+    private suspend fun <T> withSsm1(block: (kg.forester.sg.ssm.SsmP1Client) -> T): T? = EcuLink.mutex.withLock {
+        val c = EcuLink.ssm1 ?: return@withLock null
+        runCatching { block(c) }.getOrNull()
+    }
+
     private suspend fun <T> withObd(block: (kg.forester.sg.ssm.Obd2) -> T): T? = EcuLink.mutex.withLock {
         val o = EcuLink.obd ?: return@withLock null
         runCatching { block(o) }.getOrNull()
@@ -248,10 +283,11 @@ fun DtcScreen() {
     val ecuInit by Repo.ecuInit.collectAsState()
     val tcuInit by Repo.tcuInit.collectAsState()
     val obdMode by Repo.obdMode.collectAsState()
+    val ssm1 by Repo.ssm1.collectAsState()
     var unitTcu by remember { mutableStateOf(false) }
     // another make: no Subaru transmission unit to ask, no SSM ids to show
     val other by kg.forester.sg.data.CarKind.other.collectAsState()
-    if ((obdMode || other) && unitTcu) unitTcu = false
+    if ((obdMode || other || ssm1 != null) && unitTcu) unitTcu = false
     val init = if (unitTcu) tcuInit else ecuInit
     val dest = if (unitTcu) SsmClient.TCU else SsmClient.ECU
     fun tableOf() = init?.let { DtcRepo.defs(ctx, it) } ?: emptyList()
@@ -283,6 +319,23 @@ fun DtcScreen() {
                 n == 0 -> "ЭБУ Link: ошибок нет"
                 else -> "ЭБУ Link: ошибок $n. Сами коды Link в поток для дашбордов не кладёт: добавьте в свой поток параметр Fault Code " +
                     "и заведите его в «Своих значениях из CAN» с ролью «Код ошибки Link», или смотрите их в PCLink"
+            }
+            return
+        }
+        // a pre-1999 unit over SSM1: its own code bytes (FreeSSM), the two-digit codes
+        Repo.ssm1.value?.let { m ->
+            busy = true; status = "Чтение…"
+            scope.launch {
+                val r = withContext(Dispatchers.IO) { DtcRepo.readSsm1(ctx) }
+                hits = r
+                status = when {
+                    r == null -> "Не удалось прочитать (нет связи с ЭБУ)"
+                    m.rom.dc.isEmpty() -> "Для этого старого ЭБУ (SSM1) адреса кодов ошибок пока неизвестны, показания при этом читаются. " +
+                        "Коды можно прочитать по миганию лампы Check Engine (кнопка «Без сканера»)"
+                    r.isEmpty() -> "Ошибок нет"
+                    else -> "Найдено: ${r.size}"
+                }
+                busy = false
             }
             return
         }
@@ -320,7 +373,7 @@ fun DtcScreen() {
             }
             if (manual) InfoTexts.byKey["dtc.manual"]?.let { InfoDialog("Коды без сканера", it) { manual = false } }
             Spacer(Modifier.height(10.dp))
-            if (!obdMode && !other) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!obdMode && !other && ssm1 == null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip("Двигатель", !unitTcu, { unitTcu = false; hits = null; status = "Нажмите «Прочитать ошибки»" }, modifier = Modifier.weight(1f))
                 Chip(kg.forester.sg.data.I18n.pick("АКПП", "Gearbox"), unitTcu, {
                     if (!obdMode) { unitTcu = true; hits = null; status = "Нажмите «Прочитать ошибки»" }
@@ -328,7 +381,11 @@ fun DtcScreen() {
             }
             Spacer(Modifier.height(12.dp))
             T("Связь: " + if (link == LinkState.CONNECTED) "есть" else "нет", 14.sp, if (link == LinkState.CONNECTED) C.Green else C.Orange)
-            if (!other || init != null) {
+            val old = ssm1
+            if (old != null) {
+                T("Старый ЭБУ (SSM1): ${old.rom.name}", 13.sp, C.Sub)
+                T("ROM ID: ${old.romId}", 13.sp, C.Sub)
+            } else if (!other || init != null) {
                 T("SSM ID: ${init?.ssmId ?: "—"}", 13.sp, C.Sub)
                 T("ROM ID: ${init?.romId ?: "—"}", 13.sp, C.Sub)
             }
@@ -348,7 +405,13 @@ fun DtcScreen() {
             ActionButton("Прочитать ошибки", !busy) { readNow() }
             Spacer(Modifier.height(10.dp))
             // a Link's codes are cleared in PCLink: the Subaru clear command means nothing to it
-            ActionButton("Сбросить ошибки", !busy && !kg.forester.sg.data.CanEcu.active, danger = true) { confirmClear = true }
+            // the old units' clear is a write into their memory: not done here until it is checked on a car
+            ActionButton("Сбросить ошибки", !busy && !kg.forester.sg.data.CanEcu.active && ssm1 == null, danger = true) { confirmClear = true }
+            if (ssm1 != null) {
+                Spacer(Modifier.height(6.dp))
+                T("У старых ЭБУ (SSM1) сброс отсюда пока не делается. Обычно коды стирают, отключив минусовую клемму АКБ " +
+                    "на пару минут (сбросятся и адаптации)", 11.sp, C.Sub)
+            }
             Spacer(Modifier.height(16.dp))
             T(status, 14.sp)
             if (unitTcu) {
@@ -396,6 +459,8 @@ fun DtcScreen() {
                             if (h.def.descRu.isNotBlank() && !kg.forester.sg.data.I18n.english) T(h.def.desc, 11.sp, C.Sub)
                             val twoDigit = !h.def.code.startsWith("P") && !h.def.code.startsWith("U") && !h.def.code.startsWith("C") && !h.def.code.startsWith("B")
                             if (hintsRead) DtcRepo.hint(ctx, h.def.code, unitTcu, twoDigit)?.let { T("Что проверить: $it", 12.sp, C.Violet) }
+                            // the transmission unit's codes are Subaru's own: no standard details for them
+                            if (!unitTcu && !twoDigit) ObdexDetails(h.def.code)
                         }
                         T(if (h.current) "да" else "—", 14.sp, if (h.current) C.Red else C.Sub, modifier = Modifier.weight(0.5f))
                         T(if (h.memorized) "да" else "—", 14.sp, modifier = Modifier.weight(0.5f))

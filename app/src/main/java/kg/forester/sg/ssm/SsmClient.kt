@@ -484,7 +484,7 @@ object OpenPort13 {
  * DTR and RTS start on (RTS off for the OpenPort 1.3, as RomRaider does); the other combinations are tried
  * while the ECU stays silent, both off being what Windows programs leave them at.
  */
-class KklTransport(private val port: UsbSerialPort, private val openPort13: Boolean = false) : KLineTransport() {
+class KklTransport(val port: UsbSerialPort, val openPort13: Boolean = false) : KLineTransport() {
     private val modes = if (openPort13) listOf(true to false, true to true, false to false, false to true)
     else listOf(true to true, false to false, true to false, false to true)
     private var mode = 0

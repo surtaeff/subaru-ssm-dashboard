@@ -4784,3 +4784,81 @@ K-линия занята другим прибором: только слуша
 Остановите машину	Stop the car
 Заглушите двигатель, зажигание оставьте включённым	Switch the engine off, keep the ignition on
 Поставьте селектор в P	Put the selector in P
+// ui/DtcScreen.kt, ui/ObdexUi.kt, ui/CarSetup.kt, ssm/SsmP1Defs.kt, service/EcuService.kt, ui/GaugePresets.kt (2026-11-16)
+Для этого старого ЭБУ (SSM1) адреса кодов ошибок пока неизвестны, показания при этом читаются. Коды можно прочитать по миганию лампы Check Engine (кнопка «Без сканера»)	The trouble code addresses of this old ECU (SSM1) are not known yet; its live values are read. The codes can be read from the Check Engine lamp's flashes (the «No scanner» button)
+У старых ЭБУ (SSM1) сброс отсюда пока не делается. Обычно коды стирают, отключив минусовую клемму АКБ на пару минут (сбросятся и адаптации)	Old ECUs (SSM1) can't be cleared from here yet. The usual way is to disconnect the battery's negative terminal for a couple of minutes (the adaptations are reset too)
+Скрыть подробности	Hide details
+Причины, симптомы и примерная цена ремонта из открытой базы obdex. Базу нужно скачать один раз, около {} МБ. Тексты в ней на английском.	Causes, symptoms and a rough repair cost from the open obdex base. It is downloaded once, about {} MB. Its texts are in English.
+Скачать базу	Download the base
+Не удалось скачать (нет интернета?). Попробуйте ещё раз	Could not download (no internet?). Try again
+В базе obdex этого кода нет	This code is not in the obdex base
+Частые причины	Common causes
+Что заметно	What you notice
+Что проверяет блок	What the unit checks
+Связанные коды: {}	Related codes: {}
+Данные: obdex, github.com/foerbsnavi/obdex, CC0. Цены ориентировочные, в евро	Data: obdex, github.com/foerbsnavi/obdex, CC0. Prices are rough, in euros
+горит Check Engine	Check Engine lamp on
+возможен аварийный режим	limp mode possible
+влияет на выхлоп	affects emissions
+гаснет после нескольких поездок без ошибки	goes out after a few trips without the fault
+Ремонт: {}	Repair: {}
+можно своими руками	can be done yourself
+{}–{} ч	{}–{} h
+примерно {}–{} €	about {}–{} €
+иногда	sometimes
+редко	rarely
+простой	easy
+средний	medium
+сложный	hard
+только в сервисе	workshop only
+Скачиваю базу obdex…	Downloading the obdex base…
+Скачиваю базу obdex: {} из {} МБ	Downloading the obdex base: {} of {} MB
+Скачиваю базу obdex: {} МБ	Downloading the obdex base: {} MB
+Subaru до 1999 года (SSM1)	Subaru up to 1999 (SSM1)
+Impreza GC/GF и Forester SF5 по 1998 год, ранние Legacy, SVX: старый протокол SSM1, приложение узнаёт его само. Он идёт по контактам 12 и 13 разъёма OBD сигналом 5 В, а линия K у таких машин не подключена, поэтому обычный KKL-кабель (и VAG KKL с переключателем) их не видит. Нужен USB-UART на FT232R или CH340 с уровнем 5 В: TX адаптера на контакт 12, RX на контакт 13, масса на 4 и 5. VAG KKL 409.1 на FT232RL можно переделать, схема у Нориясу Мори: grove-design-service.com/ssm	Impreza GC/GF and Forester SF5 up to 1998, early Legacy, SVX: the old SSM1 protocol, which the app finds by itself. It runs on pins 12 and 13 of the OBD socket at 5 V, and the K-line of these cars is not connected, so a plain KKL cable (and a VAG KKL with a switch) can't see them. You need a 5 V USB-UART on an FT232R or CH340: the adapter's TX to pin 12, RX to pin 13, ground to 4 and 5. A VAG KKL 409.1 on an FT232RL can be rewired, the diagram is by Noriyasu Mori: grove-design-service.com/ssm
+Найден старый ЭБУ, ROM {}	Old ECU found, ROM {}
+Старый ЭБУ (SSM1) не отвечает. Зажигание включено?	The old ECU (SSM1) does not answer. Is the ignition on?
+АКПП: у старых ЭБУ (SSM1) не читается	Gearbox: not read on old ECUs (SSM1)
+Связь со старым ЭБУ (SSM1) потеряна	Connection to the old ECU (SSM1) lost
+. Адреса взяты у похожего ЭБУ этого семейства, проверьте показания	. The addresses are those of a similar ECU of this family, check the readings
+Напряжение АКБ	Battery voltage
+Датчик расхода воздуха (напряжение)	Airflow sensor (voltage)
+Нагрузка (данные ЭБУ)	Load (ECU data)
+Датчик дросселя (напряжение)	Throttle sensor (voltage)
+Длительность впрыска	Injection pulse width
+Клапан холостого хода (ISC)	Idle control valve (ISC)
+Лямбда-зонд (напряжение)	O2 sensor (voltage)
+Лямбда-зонд, максимум	O2 sensor, maximum
+Лямбда-зонд, минимум	O2 sensor, minimum
+Лямбда-зонд правый (напряжение)	O2 sensor right (voltage)
+Лямбда-зонд правый, максимум	O2 sensor right, maximum
+Лямбда-зонд правый, минимум	O2 sensor right, minimum
+Лямбда-зонд левый (напряжение)	O2 sensor left (voltage)
+Лямбда-зонд левый, максимум	O2 sensor left, maximum
+Лямбда-зонд левый, минимум	O2 sensor left, minimum
+Коррекция смеси по лямбде	O2 mixture correction
+Коррекция смеси, правый ряд	Mixture correction, right bank
+Коррекция смеси, левый ряд	Mixture correction, left bank
+Коррекция по детонации	Knock correction
+Клапан управления наддувом	Boost control valve
+Производительность бензонасоса	Fuel pump duty
+Клапан продувки адсорбера	Canister purge valve
+Подстройка CO	CO adjustment
+Отключение генератора	Alternator cut
+Луна над Фудзи	Moon over Fuji
+Восходящее солнце	Rising sun
+Ночной Токио	Tokyo night
+Дрифт у Фудзи	Drift at Fuji
+Манэки-нэко	Maneki-neko
+Большая волна	Great wave
+Ретро-закат	Retro sunset
+Неко	Neko
+Тории у Фудзи	Torii at Fuji
+Они	Oni
+JDM цифровой синий	JDM digital blue
+JDM цифровой белый	JDM digital white
+JDM цифровой янтарный	JDM digital amber
+JDM цифровой красный	JDM digital red
+JDM цифровой зелёный	JDM digital green
+JDM цифровой розовый	JDM digital pink
+Эффект стекла	Glass effect

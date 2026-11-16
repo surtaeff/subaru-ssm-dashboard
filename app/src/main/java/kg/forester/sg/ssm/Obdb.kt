@@ -201,14 +201,22 @@ object Obdb {
         }
     }
 
+    /** Process-wide cache of a make → its OBDb repo list, so the GitHub search is asked once per app run; empty results are not cached. */
+    private val modelsCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+
     /** The models OBDb has for [make] (repository names, "Toyota-RAV4"), from GitHub's search; empty when offline. */
     fun models(make: String): List<String> {
+        val key = make.trim().lowercase()
+        if (key.isEmpty()) return emptyList()
+        modelsCache[key]?.let { return it }
         val prefixes = makePrefixes(make).map { it.lowercase() + "-" }
         val q = makePrefixes(make).first().substringBefore('-')
         val text = get("${API}search/repositories?q=org:OBDb+${java.net.URLEncoder.encode(q, "UTF-8")}+in:name&per_page=100") ?: return emptyList()
         val items = JSONObject(text).optJSONArray("items") ?: return emptyList()
-        return (0 until items.length()).map { items.getJSONObject(it).optString("name") }
+        val list = (0 until items.length()).map { items.getJSONObject(it).optString("name") }
             .filter { n -> prefixes.any { n.lowercase().startsWith(it) } }.sorted()
+        if (list.isNotEmpty()) modelsCache[key] = list
+        return list
     }
 
     /**

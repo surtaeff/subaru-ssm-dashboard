@@ -626,6 +626,11 @@ class Settings(ctx: Context) {
         get() = p.getString("lastRomId", "")!!
         set(v) = p.edit().putString("lastRomId", v).apply()
 
+    /** The ROM id of a pre-1999 unit that answered SSM1 on a USB cable: the next connection reads it straight away. */
+    var ssm1Rom: String
+        get() = p.getString("ssm1Rom", "")!!
+        set(v) = p.edit().putString("ssm1Rom", v).apply()
+
     /** The car on the sports ECU (CanEcu) is a turbo: boost was seen once; a Link says nothing about its engine. */
     var linkTurbo: Boolean
         get() = p.getBoolean("linkTurbo", false)
@@ -965,6 +970,8 @@ object Repo {
     val featureVersion = MutableStateFlow(0)
     /** The ECU answers only standard OBD-II (no SSM): basic parameters, no transmission data. */
     val obdMode = MutableStateFlow(false)
+    /** A pre-1999 engine unit read over SSM1 (the old Select Monitor protocol), or null. */
+    val ssm1 = MutableStateFlow<kg.forester.sg.ssm.SsmP1Defs.Match?>(null)
     /** What the automatic adapter search found, e.g. "USB 1A86:7523 → KKL". */
     val adapterFound = MutableStateFlow("")
 

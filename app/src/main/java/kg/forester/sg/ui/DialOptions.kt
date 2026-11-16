@@ -14,17 +14,21 @@ data class DialOptions(
     val marks: List<Float> = emptyList(),
     /** The size of the dial's numbers in percent; null = as in the design. */
     val numberPct: Int? = null,
+    /** A pane of glass over the dial: a reflection at the top, a sheen across, the edge in shade. */
+    val glass: Boolean = false,
 ) {
     fun format(): String = buildString {
         append(base)
         if (marks.isNotEmpty()) append(MARKS).append(marks.joinToString(",") { markNumber(it) })
         numberPct?.let { append(SCALE).append(it) }
+        if (glass) append(GLASS)
         if (noNumber) append(NO_NUMBER)
     }
 
     companion object {
         private const val MARKS = "|m"
         private const val SCALE = "|z"
+        private const val GLASS = "|g"
         private const val MAX_MARKS = 16
         const val MIN_PCT = 70
         const val MAX_PCT = 150
@@ -39,6 +43,7 @@ data class DialOptions(
                 val tail = rest.substring(cut)
                 when {
                     tail == NO_NUMBER -> o = o.copy(noNumber = true)
+                    tail == GLASS -> o = o.copy(glass = true)
                     tail.startsWith(SCALE) && tail.length > 2 && tail.drop(2).all { it.isDigit() } ->
                         o = o.copy(numberPct = tail.drop(2).toIntOrNull()?.coerceIn(MIN_PCT, MAX_PCT))
                     tail.startsWith(MARKS) && tail.length > 2 && tail.drop(2).all { it.isDigit() || it == ',' || it == '.' || it == '-' } ->

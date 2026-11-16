@@ -558,4 +558,57 @@ val PresetDialStyles: List<DialStyle> = listOf(
         tickMajor = Color.White, tickMinor = Color(0x6B8FA8FF), numbers = Color(0xFFBFCBEA),
         value = Color.White, unit = Color(0xFF8AA0E0), needle = Color.Transparent, lens = true,
     ),
+
+    // --- Japanese art faces (assets/gauge_art): the picture under a ring-shaped shade that is darkest under the number in
+    // the middle and under the scale's numbers, white numbers with a dark halo, the arc and needle in the picture's colours
+    artDial("art_moon_fuji", "Луна над Фудзи", "moon_fuji", Color(0xFFFF6FB5), Color(0xFFB79CFF), Color(0xFFFF6FB5), Color(0xFFFFC2E0)),
+    artDial("art_rising_wave", "Восходящее солнце", "rising_wave", Color(0xFFFF4040), Color(0xFFFFE9D6), Color(0xFFFF4040), Color(0xFFFFC9C9),
+        light = true, red = Color(0xFFFFB020)),
+    artDial("art_tokyo_night", "Ночной Токио", "tokyo_night", Color(0xFF22D3EE), Color(0xFFB967FF), Color(0xFF22D3EE), Color(0xFFB8F3FF)),
+    artDial("art_fuji_drift", "Дрифт у Фудзи", "fuji_drift", Color(0xFFFF8FB8), Color(0xFFFF3B3B), Color(0xFFFF3B3B), Color(0xFFFFC2D6)),
+    artDial("art_lucky_cat", "Манэки-нэко", "lucky_cat", Color(0xFFFFD166), Color(0xFFFF4D4D), Color(0xFFFFD166), Color(0xFFFFE3A3),
+        red = Color(0xFFFF2D55)),
+    artDial("art_great_wave", "Большая волна", "great_wave", Color(0xFF4F7FD9), Color(0xFFE63946), Color(0xFFE63946), Color(0xFFCFE0FF),
+        light = true),
+    artDial("art_retro_sunset", "Ретро-закат", "retro_sunset", Color(0xFFFFB347), Color(0xFFFF2E97), Color(0xFFFFD166), Color(0xFFFFD6A3)),
+    artDial("art_neko_girl", "Неко", "neko_girl", Color(0xFFFF4FD8), Color(0xFFB967FF), Color(0xFFFF4FD8), Color(0xFFFFC2F2)),
+    artDial("art_fuji_torii", "Тории у Фудзи", "fuji_torii", Color(0xFFFF8FB8), Color(0xFFE63946), Color(0xFFE63946), Color(0xFFFFD1E0),
+        light = true),
+    artDial("art_oni", "Они", "oni", Color(0xFFFF3B3B), Color(0xFFFF8A3D), Color(0xFFFF3B3B), Color(0xFFFFB4A8), red = Color(0xFFFFB020)),
+
+    // --- Round digital meters after the JDM clocks: big segment digits on black glass, see LcdDial.kt.
+    // value: the digits, tickMinor: their unlit «8»s, unit: the units' line, rim: the bezel; the rest is the needle
+    // dial they turn into where a digital meter isn't drawn (the USB display)
+    lcdDial("jdm_lcd_blue", "JDM цифровой синий", Color(0xFF3FA2FF), Color(0xFF7CC0FF)),
+    lcdDial("jdm_lcd_white", "JDM цифровой белый", Color(0xFFE8F1FF), Color(0xFFC9D6EA)),
+    lcdDial("jdm_lcd_amber", "JDM цифровой янтарный", Color(0xFFFFB13B), Color(0xFFFFCB7A)),
+    lcdDial("jdm_lcd_red", "JDM цифровой красный", Color(0xFFFF3B3B), Color(0xFFFF8A8A), red = Color(0xFFFFD60A)),
+    lcdDial("jdm_lcd_green", "JDM цифровой зелёный", Color(0xFF39FF88), Color(0xFF8DFFC0)),
+    lcdDial("jdm_lcd_pink", "JDM цифровой розовый", Color(0xFFFF4FD8), Color(0xFFFF9BE8)),
+)
+
+/**
+ * An art face: the picture shows through a ring-shaped shade (centre → edge: dark under the middle number, lighter
+ * between, dark again under the scale's numbers at about 0.6 of the radius, lighter at the rim); [light] pictures
+ * (white waves, a pale sky) get a deeper one. [arc0]..[arc1] the lit arc, [needle], [unit] the units' colour.
+ */
+private fun artDial(
+    id: String, name: String, file: String, arc0: Color, arc1: Color, needle: Color, unit: Color,
+    light: Boolean = false, red: Color = Color(0xFFFF3B3B),
+) = DialStyle(id, name,
+    face = if (light) listOf(Color(0xD8000000), Color(0xC4000000), Color(0x96000000), Color(0xA8000000), Color(0x7A000000), Color(0x8C000000))
+        else listOf(Color(0xC2000000), Color(0xAA000000), Color(0x74000000), Color(0x8A000000), Color(0x58000000), Color(0x70000000)),
+    rim = arc0, track = Color(0x55FFFFFF), arc = listOf(arc0, arc1, arc0), red = red,
+    tickMajor = Color.White, tickMinor = Color(0xCCFFFFFF), numbers = Color.White,
+    value = Color.White, unit = unit, needle = needle, hub = Color(0xFF0B0B10),
+    image = kg.forester.sg.data.GaugeImages.ASSET + "gauge_art/art_$file.webp", numShadow = Color(0xF0000000),
+)
+
+/** A round digital meter in [lit] digits; also a plain needle dial of the same light where a digital one isn't drawn. */
+private fun lcdDial(id: String, name: String, lit: Color, unit: Color, red: Color = Color(0xFFFF3B3B)) = DialStyle(id, name,
+    face = listOf(Color(0xFF0B0E14), Color(0xFF06080C), Color(0xFF020305)), rim = Color(0xFF2B2E35), track = Color(0xFF14171E),
+    arc = listOf(lit.copy(alpha = 0.7f), lit), red = red,
+    tickMajor = lit, tickMinor = lit.copy(alpha = 0.09f), numbers = lit,
+    value = lit, unit = unit, needle = lit, glow = lit, hub = Color(0xFF15181F),
+    lcd = true, caption = "メーター",
 )

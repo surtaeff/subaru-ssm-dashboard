@@ -91,6 +91,8 @@ object EcuLink {
     @Volatile var client: SsmClient? = null
     /** Set instead of [client] while the car is read over standard OBD-II. */
     @Volatile var obd: Obd2? = null
+    /** Set instead of [client] while a pre-1999 unit is read over SSM1. */
+    @Volatile var ssm1: kg.forester.sg.ssm.SsmP1Client? = null
 
     suspend fun <T> use(block: (SsmClient) -> T): T? = mutex.withLock {
         val c = client ?: return@withLock null
@@ -110,6 +112,8 @@ class EcuService : Service() {
     private val battery by lazy { BatteryMonitor(this) }
     private var mafDropLogged = false
     private var tcuAddrs: IntArray? = null
+    /** The remembered SSM1 car stayed silent: the next connection is an ordinary SSM2 one (its probe finds the old unit again). */
+    private var ssm1Skip = false
     private var tcuNextTryMs = 0L
     private var tcuMisses = 0
     private var tcuAnswered = false
@@ -385,7 +389,14 @@ class EcuService : Service() {
                             delay(3000)
                         } else {
                             Repo.adapterFound.value = "USB $id → KKL"
-                            session(klineOnly = true, obd = { kklObd(port) }) { _ -> KklTransport(port).also { it.open() } }
+                            // a pre-1999 car found on this cable before: straight to SSM1; if it stays silent (another
+                            // car, or the ignition off for long), one ordinary SSM2 session, whose probe finds it again
+                            if (s.ssm1Rom.isNotEmpty() && !ssm1Skip) {
+                                if (!ssm1Session(port)) ssm1Skip = true
+                            } else {
+                                ssm1Skip = false
+                                session(klineOnly = true, obd = { kklObd(port) }) { _ -> KklTransport(port).also { it.open() } }
+                            }
                         }
                     }
                 }
@@ -826,6 +837,8 @@ class EcuService : Service() {
         var noEchoRounds = 0
         // the K-line already held low once for that silent ECU: the next silent round reopens the cable
         var lineHeldLow = false
+        // the pre-1999 SSM1 fallback already tried this session (1953 baud GET_ID): not pushed again on the same cable
+        var ssmP1Tried = false
         // the polling stopped because the ECU went mute on a live line (KLineTransport.ecuMute): hold it low at once
         var muteHold = false
         var transport: SsmTransport? = null
@@ -915,6 +928,30 @@ class EcuService : Service() {
                     if (link != null && obdSession(link)) silentRounds = 0
                     continue
                 }
+                // Nothing from SSM2 (4800 baud) for two full rounds on a plain USB serial cable: ask SSM1 (1953 baud)
+                // once. The pre-1999 units (GC8/GF8 and SF5 up to 1998, early Legacy, SVX, L-series/XT) speak only that,
+                // on the OBD socket's pins 12 and 13 with separate lines, so the cable for them hears no echo: no echo
+                // condition here. Up to about 1.5 s and silent on screen; the 3 s pause of the round is skipped instead,
+                // so a usual car with the ignition off waits no longer than before. An OpenPort 1.3 sits on the K-line
+                // only and can't reach those pins.
+                val p1Kkl = transport as? kg.forester.sg.ssm.KklTransport
+                if (roundDone && p1Kkl != null && !p1Kkl.openPort13 && silentRounds >= 2) {
+                    // a car already known to be SSM1: back to its own session (the ignition was off a while)
+                    if (Repo.settings.ssm1Rom.isNotEmpty()) { SsmTrace.log("SSM2 silent, back to SSM1"); return }
+                    if (!ssmP1Tried) {
+                        ssmP1Tried = true
+                        transport.close()
+                        transport = null
+                        EcuLink.client = null
+                        val rom = kg.forester.sg.ssm.SsmP1Probe.run(p1Kkl.port)
+                        if (rom.isNotEmpty()) {
+                            Repo.settings.ssm1Rom = rom
+                            Repo.linkMessage.value = "Найден старый ЭБУ (SSM1), ROM $rom: подключаюсь…"
+                            return
+                        }
+                        continue
+                    }
+                }
                 delay(if (roundDone) 3000 else 300)
                 continue
             }
@@ -922,6 +959,8 @@ class EcuService : Service() {
             ecuSpoke = true
             lineHeldLow = false
             Repo.obdMode.value = false
+            // an SSM2 car on this cable now: the old one remembered goes, or every connection would ask SSM1 first
+            if (Repo.settings.ssm1Rom.isNotEmpty()) Repo.settings.ssm1Rom = ""
             // with the sensors the driver says this ECU has although its list leaves them out (old JECS)
             val capsSeen = Repo.capsVersion.value
             val init = kg.forester.sg.data.EcuCaps.apply(answer)
@@ -1559,6 +1598,106 @@ class EcuService : Service() {
             Repo.rrAvailable.value = emptyList(); Repo.rrPolled.value = emptyList(); Repo.rrValues.value = emptyMap()
             logger?.close(); logger = null
             runCatching { link.close() }
+        }
+    }
+
+    /**
+     * A pre-1999 engine unit over SSM1 (the old Select Monitor protocol: 1953 baud, one address streamed at a time) on
+     * a USB serial cable wired to the OBD socket's pins 12 and 13. Its values fill the common snapshot where the unit
+     * matches (rpm, speed, coolant, battery, timing, injection, mixture correction, wastegate), so the home screen, the
+     * log and the trips work as on SSM2; every block of the unit is also a parameter on «Датчики».
+     *
+     * Returns false when nothing answered SSM1 (the caller makes the next connection an SSM2 one), true after a session.
+     */
+    private suspend fun ssm1Session(port: UsbSerialPort): Boolean {
+        val client = kg.forester.sg.ssm.SsmP1Client(port)
+        val base = kg.forester.sg.ssm.SsmP1Defs.base(this)
+        try {
+            client.open()
+            var id: String? = null
+            for (attempt in 1..5) {
+                if (!scope.isActive) return true
+                id = EcuLink.mutex.withLock { runCatching { client.getId() }.onFailure { SsmTrace.log("SSM1: $it") }.getOrNull() }
+                    ?.joinToString("") { "%02X".format(it.toInt() and 0xFF) }
+                if (id != null) break
+                Repo.link.value = LinkState.NO_ECU
+                Repo.linkMessage.value = "Старый ЭБУ (SSM1) не отвечает. Зажигание включено?"
+                delay(2000)
+            }
+            if (id == null) { SsmTrace.log("SSM1: no answer, an SSM2 connection next"); return false }
+            Repo.settings.ssm1Rom = id
+            val match = base.find(id)
+            SsmTrace.log("SSM1 ROM $id: " + (match?.let { "${it.rom.name} (${it.rom.source})" + if (it.exact) "" else ", closest of the family" } ?: "unknown family"))
+            if (match == null) {
+                Repo.link.value = LinkState.NO_ECU
+                Repo.linkMessage.value = "Старый ЭБУ (SSM1), ROM $id: такого ЭБУ пока нет в базе приложения. " +
+                    "Отправьте журнал (Настройки, Машина и адаптер), его добавят"
+                // keep the line until the unit goes quiet (the ignition off), then the usual reconnect
+                while (scope.isActive) {
+                    delay(5000)
+                    if (EcuLink.mutex.withLock { runCatching { client.getId() }.getOrNull() } == null) return true
+                }
+                return true
+            }
+            val blocks = base.blocks(match.rom)
+            val params = blocks.map { (mb, addr) -> kg.forester.sg.ssm.SsmP1Defs.param(mb, addr) }
+            EcuLink.ssm1 = client
+            Repo.ssm1.value = match
+            Repo.obdMode.value = false
+            Repo.ecuInit.value = null; Repo.ecuInitRaw.value = null
+            Repo.tcuStatus.value = "АКПП: у старых ЭБУ (SSM1) не читается"
+            Repo.checkEngine.value = null
+            Repo.rrAvailable.value = params
+            Repo.pollAddresses.value = blocks.size
+            Repo.link.value = LinkState.CONNECTED
+            Repo.linkMessage.value = "Старый ЭБУ (SSM1) · ${match.rom.name} · ROM $id" +
+                (if (match.exact) "" else ". Адреса взяты у похожего ЭБУ этого семейства, проверьте показания") +
+                ". Опрос медленный, пара обновлений в секунду"
+            SsmTrace.polling = true
+            codeWatch.newConnection(System.currentTimeMillis())
+            val fast = blocks.filter { kg.forester.sg.ssm.SsmP1Defs.baseKey(it.first.key) in kg.forester.sg.ssm.SsmP1Defs.FAST }
+            val core = setOf("MB_TW", "MB_VB", "MB_ADVS", "MB_TIM", "MB_ALPHA", "MB_WGC")
+            val values = HashMap<String, Double>()
+            var turn = 0
+            var misses = 0
+            while (scope.isActive && !Repo.settings.demo && SensorBoxLink.ecuLease?.permitted != false) {
+                val now = System.currentTimeMillis()
+                val ticked = Repo.settings.watchIds + Repo.internalWatch.value
+                // the snapshot's slower values and what is ticked on «Датчики»: two of them a round, in turn
+                val slow = blocks.filter { (mb, _) ->
+                    fast.none { f -> f.first.key == mb.key } && (kg.forester.sg.ssm.SsmP1Defs.baseKey(mb.key) in core ||
+                        kg.forester.sg.ssm.SsmP1Defs.PREFIX + mb.key in ticked)
+                }
+                val round = fast + if (slow.isEmpty()) emptyList() else List(minOf(2, slow.size)) { slow[(turn + it) % slow.size] }
+                turn += 2
+                var got = 0
+                for ((mb, addr) in round) {
+                    if (!scope.isActive) break
+                    val raw = EcuLink.mutex.withLock { runCatching { client.readByte(addr) }.getOrNull() } ?: continue
+                    got++
+                    mb.value(raw)?.let { values[mb.key] = it }
+                }
+                if (got == 0) {
+                    tracker.tick(now)
+                    if (++misses >= 3) break
+                    continue
+                }
+                misses = 0
+                Repo.rrPolled.value = params.filter { it.id in ticked }
+                Repo.rrValues.value = values.mapKeys { kg.forester.sg.ssm.SsmP1Defs.PREFIX + it.key }
+                onSnapshot(kg.forester.sg.ssm.SsmP1Defs.snapshot(values, now), now)
+            }
+            Repo.link.value = LinkState.NO_ECU
+            Repo.linkMessage.value = "Связь со старым ЭБУ (SSM1) потеряна"
+            return true
+        } finally {
+            SsmTrace.polling = false
+            EcuLink.ssm1 = null
+            Repo.ssm1.value = null
+            Repo.rrAvailable.value = emptyList(); Repo.rrPolled.value = emptyList(); Repo.rrValues.value = emptyMap()
+            logger?.close(); logger = null
+            runCatching { client.stop() }
+            runCatching { client.close() }
         }
     }
 
