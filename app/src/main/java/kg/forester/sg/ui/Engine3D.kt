@@ -428,7 +428,7 @@ internal fun Engine3DTab(bottom: @Composable () -> Unit = {}) {
                             shown.forEach { (m, v) ->
                                 Column(Modifier.padding(end = 18.dp)) {
                                     T(m.short, 11.sp, C.Sub)
-                                    T(valueText(m, v), 18.sp, if (m.warn(v)) C.Orange else C.Text, FontWeight.Bold)
+                                    T(valueText(m, v), 18.sp, if (m.warn(v)) C.Warn else C.Text, FontWeight.Bold)
                                 }
                             }
                         }
@@ -511,7 +511,7 @@ private fun Callout(
     val state = when {
         note != null && (note.second == C.Red || note.second == C.Orange) -> note.second
         v == null -> if (note != null) note.second else C.Gray
-        main.warn(v) -> C.Orange
+        main.warn(v) -> C.Warn
         else -> C.Green
     }
     Row(

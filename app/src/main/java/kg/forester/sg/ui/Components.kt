@@ -163,6 +163,8 @@ object C {
     val Blue: Color get() = palette.blue
     val Green: Color get() = palette.green
     val Orange: Color get() = palette.orange
+    /** Over a warning line: the driver's colour (Настройки, «Цвет предупреждений»), else the theme's orange. */
+    val Warn: Color get() = WarnColor.color ?: palette.orange
     val Red: Color get() = palette.red
     /** Not for text: 3.82:1 on a panel. */
     val Gray: Color get() = palette.gray
@@ -235,7 +237,7 @@ fun Panel(
             .clip(Rounded)
             .panelFill()
             .panelMarks()
-            .border(if (warn) BorderStroke(3.dp, C.Orange) else BorderStroke(1.dp, C.Border), Rounded)
+            .border(if (warn) BorderStroke(3.dp, C.Warn) else BorderStroke(1.dp, C.Border), Rounded)
             .padding(padding),
         content = content,
     )

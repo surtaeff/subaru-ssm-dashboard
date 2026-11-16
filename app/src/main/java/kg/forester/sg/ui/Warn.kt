@@ -42,3 +42,24 @@ object Warn {
 
 /** What a missing reading shows: a dash, never a 0 that reads as a real one. */
 fun orDash(v: Int?): String = v?.toString() ?: "—"
+
+/**
+ * The colour everything over its warning line is drawn in: the ring round a dial, the triangle by a card's name, the
+ * number of a plain card, the bottom bar's icon. Picked in Настройки, Функции; 0 = the theme's own orange.
+ */
+object WarnColor {
+    val choices: List<Pair<Long, String>> = listOf(
+        0L to "Как в теме", 0xFFFF3B3BL to "Красный", 0xFFFFD60AL to "Жёлтый", 0xFFFF4FD8L to "Розовый",
+        0xFF22D3EEL to "Голубой", 0xFFFFFFFFL to "Белый",
+    )
+    private val state = androidx.compose.runtime.mutableStateOf(of(kg.forester.sg.data.Repo.settings.warnColor))
+    val color: androidx.compose.ui.graphics.Color? get() = state.value
+    val current: Long get() = kg.forester.sg.data.Repo.settings.warnColor
+
+    fun set(v: Long) {
+        kg.forester.sg.data.Repo.settings.warnColor = v
+        state.value = of(v)
+    }
+
+    private fun of(v: Long) = if (v == 0L) null else androidx.compose.ui.graphics.Color(v)
+}

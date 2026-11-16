@@ -15,8 +15,8 @@ android {
         applicationId = "kg.forester.sg"
         minSdk = 23
         targetSdk = 34
-        versionCode = 47
-        versionName = "1.0-beta7"
+        versionCode = 48
+        versionName = "1.0-beta8"
     }
 
     // head units and phones are 32 or 64-bit ARM; the other copies of the native libraries only made the APK bigger

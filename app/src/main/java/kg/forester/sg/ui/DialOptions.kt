@@ -16,12 +16,15 @@ data class DialOptions(
     val numberPct: Int? = null,
     /** A pane of glass over the dial: a reflection at the top, a sheen across, the edge in shade. */
     val glass: Boolean = false,
+    /** A ring of light pulsing round the dial while the value is over its warning line or in the red zone. */
+    val alert: Boolean = false,
 ) {
     fun format(): String = buildString {
         append(base)
         if (marks.isNotEmpty()) append(MARKS).append(marks.joinToString(",") { markNumber(it) })
         numberPct?.let { append(SCALE).append(it) }
         if (glass) append(GLASS)
+        if (alert) append(ALERT)
         if (noNumber) append(NO_NUMBER)
     }
 
@@ -29,6 +32,7 @@ data class DialOptions(
         private const val MARKS = "|m"
         private const val SCALE = "|z"
         private const val GLASS = "|g"
+        private const val ALERT = "|a"
         private const val MAX_MARKS = 16
         const val MIN_PCT = 70
         const val MAX_PCT = 150
@@ -44,6 +48,7 @@ data class DialOptions(
                 when {
                     tail == NO_NUMBER -> o = o.copy(noNumber = true)
                     tail == GLASS -> o = o.copy(glass = true)
+                    tail == ALERT -> o = o.copy(alert = true)
                     tail.startsWith(SCALE) && tail.length > 2 && tail.drop(2).all { it.isDigit() } ->
                         o = o.copy(numberPct = tail.drop(2).toIntOrNull()?.coerceIn(MIN_PCT, MAX_PCT))
                     tail.startsWith(MARKS) && tail.length > 2 && tail.drop(2).all { it.isDigit() || it == ',' || it == '.' || it == '-' } ->

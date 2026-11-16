@@ -721,7 +721,7 @@ private fun StatTile(
             Icon(icon, null, tint = C.Sub, modifier = Modifier.size(15.dp))
             Spacer(Modifier.width(6.dp))
             T(label, 12.sp, C.Sub, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
-            if (warn) { Spacer(Modifier.width(6.dp)); Icon(Lucide.TriangleAlert, "Выше нормы", tint = C.Orange, modifier = Modifier.size(16.dp)) }
+            if (warn) { Spacer(Modifier.width(6.dp)); Icon(Lucide.TriangleAlert, "Выше нормы", tint = C.Warn, modifier = Modifier.size(16.dp)) }
         }
         Spacer(Modifier.height(4.dp))
         T(value, if (small) 15.sp else 22.sp, color, FontWeight.Bold, maxLines = 2)

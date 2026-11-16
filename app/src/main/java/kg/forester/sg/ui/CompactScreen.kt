@@ -206,13 +206,13 @@ private fun MetricCard(m: Metric, modifier: Modifier) {
     Panel(modifier, padding = 10.dp, warn = warn) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             FitText(m.title, car.secondary, Modifier.weight(1f), C.Sub)
-            if (warn) Icon(Lucide.TriangleAlert, "Выше нормы", tint = C.Orange, modifier = Modifier.size(car.secondary.asDp() * 1.2f))
+            if (warn) Icon(Lucide.TriangleAlert, "Выше нормы", tint = C.Warn, modifier = Modifier.size(car.secondary.asDp() * 1.2f))
         }
-        FitValue(value, unit, car.value.value, Modifier.fillMaxWidth().weight(1f), if (warn) C.Orange else C.Text, widest = m.widest, everyMs = 0L, widestUnit = m.widestUnit)
+        FitValue(value, unit, car.value.value, Modifier.fillMaxWidth().weight(1f), if (warn) C.Warn else C.Text, widest = m.widest, everyMs = 0L, widestUnit = m.widestUnit)
         if (bar) {
             Spacer(Modifier.height(4.dp))
             val share = remember(m) { derivedStateOf { m.frac() ?: 0f } }
-            ProgressBar(share, if (warn) Brush.horizontalGradient(listOf(C.Orange, C.Red)) else C.Accent, Modifier.fillMaxWidth(), 5.dp)
+            ProgressBar(share, if (warn) Brush.horizontalGradient(listOf(C.Warn, C.Red)) else C.Accent, Modifier.fillMaxWidth(), 5.dp)
         }
     }
 }

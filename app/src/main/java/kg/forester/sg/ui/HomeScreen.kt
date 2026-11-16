@@ -371,7 +371,7 @@ private fun BarCard(
                     FitValue(
                         // as tall as the row: the width beside it is plenty
                         text, if (noUnit) "" else unit, 60f,
-                        Modifier.weight(1.2f).fillMaxHeight(), if (warn) C.Orange else C.Ink, widest = widest, everyMs = 0L,
+                        Modifier.weight(1.2f).fillMaxHeight(), if (warn) C.Warn else C.Ink, widest = widest, everyMs = 0L,
                     )
                     Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f).padding(bottom = 4.dp), horizontalAlignment = Alignment.End) {
@@ -394,7 +394,7 @@ private fun BarCard(
             Row(Modifier.weight(1f).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 FitValue(
                     text, if (noUnit) "" else unit, valueSp + 8f * tall, Modifier.weight(1f).fillMaxHeight(),
-                    if (warn) C.Orange else C.Ink, widest = widest, everyMs = 0L,
+                    if (warn) C.Warn else C.Ink, widest = widest, everyMs = 0L,
                 )
                 if (range != null) {
                     // the trip's highest over its lowest (as in BtSSM), in the colours of their marks on the bar; as big

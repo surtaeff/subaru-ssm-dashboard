@@ -818,6 +818,7 @@ private fun FeatureSettings() {
                 if (!kg.forester.sg.data.CarKind.other.collectAsState().value) TcuRateSetting()
                 F("minmax", "Мин/макс за поездку на виджетах", "Справа от значения на карточках и метками на полосах и шкалах тахометра/спидометра")
                 if (s.feature("minmax")) Box(Modifier.fillMaxWidth().clip(Rounded).background(C.CardHi).padding(10.dp)) { MinMaxLegend() }
+                WarnColorSetting()
                 F("update", "Проверять обновления", "Раз в день смотреть, нет ли новой версии на GitHub, и сообщить")
                 SwitchRow("Давление в шинах (TPMS)", "Слушать Bluetooth-датчики давления. Разрешение и порог — в «Мониторинг» → «Шины»", tpms) {
                     tpms = it; s.tpms = it
@@ -993,3 +994,32 @@ private fun CarouselSettings() {
     }
     if (list.size == 1) T("Отметьте ещё хотя бы один экран", 11.sp, C.Orange)
 }
+
+/** «Цвет предупреждений»: what everything over its warning line is drawn in (see [WarnColor]). */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun WarnColorSetting() {
+    var picked by remember { mutableStateOf(WarnColor.current) }
+    Column {
+        T("Цвет предупреждений", 15.sp)
+        SettingHint("Кольцо вокруг прибора, значок и цифры, когда значение выходит за порог")
+        Spacer(Modifier.height(6.dp))
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            WarnColor.choices.forEach { (v, name) ->
+                Row(
+                    Modifier.clip(Rounded).background(if (picked == v) C.Purple.copy(alpha = 0.3f) else C.CardHi)
+                        .clickable { picked = v; WarnColor.set(v) }.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.size(14.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(if (v == 0L) C.Orange else androidx.compose.ui.graphics.Color(v)))
+                    Spacer(Modifier.width(6.dp))
+                    T(name, 13.sp, if (picked == v) C.Text else C.Sub)
+                }
+            }
+        }
+    }
+}
+

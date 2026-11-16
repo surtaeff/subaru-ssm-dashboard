@@ -30,6 +30,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -124,6 +126,8 @@ data class DialStyle(
     val numShadow: Color? = null,
     /** The driver's «Эффект стекла»: a pane of glass laid over the whole dial (see [glassOver]). */
     val glass: Boolean = false,
+    /** The driver's «Мигать при превышении»: a ring of light pulsing round the dial over the warning line (see [warnRing]). */
+    val alert: Boolean = false,
 )
 
 /** How a design with built-in indicators shows its number; the other dials go by [DialStyle.readout] as they always did. */
@@ -322,7 +326,7 @@ fun dialStyle(id: String): DialStyle = when {
         if (o.base == id) designStyle(id)
         else dialStyle(o.base).let { st ->
             st.copy(hideValue = o.noNumber || st.hideValue, marks = o.marks, numberScale = o.numberPct?.let { it / 100f } ?: st.numberScale,
-                glass = o.glass || st.glass)
+                glass = o.glass || st.glass, alert = o.alert || st.alert)
         }
     }
     else -> designStyle(id)
@@ -428,7 +432,9 @@ fun Dial(
 ) {
     // a dial's text goes by its own size, also on a parked screen and as a small picture in a picker
     // the glass goes over everything the dial draws, its number and needle included
-    val modifier = if (style.glass) modifier.glassOver(style) else modifier
+    val modifier = (if (style.glass) modifier.glassOver(style) else modifier)
+        // over the warning line: a ring round the dial itself (a card passes its rule), alive with «Мигать при превышении»
+        .then(if (style.alert || warn != null) Modifier.warnRing(value, style, warn, redFrom, style.alert) else Modifier)
     androidx.compose.runtime.CompositionLocalProvider(LocalTextFloor provides null) {
         if (style.lcd && style.image == null) LcdDial(value, min, max, unit, redFrom, modifier, style, format, name, warn)
         else if (style.lens && style.image == null) LensDial(value, max, step, labelDiv, unit, redFrom, modifier, style, min, format, name, warn, gear)
@@ -1143,6 +1149,71 @@ internal fun Modifier.glassOver(st: DialStyle): Modifier = this.drawWithCache {
     }
 }
 
+/**
+ * The warning on a round dial: a ring of the warning colour (Настройки, «Цвет предупреждений») round the dial itself
+ * while the reading is over its warning line or in the red zone, not a frame round the card. With [animate]
+ * («Мигать при превышении») it comes alive: the ring breathes, a comet of light runs round it and a soft wave goes out
+ * from the dial, so the eye goes to it. Nothing runs while the value is fine; the animation is read while drawing,
+ * so it redraws the ring alone and recomposes nothing.
+ */
+@Composable
+internal fun Modifier.warnRing(
+    value: androidx.compose.runtime.State<Float?>, st: DialStyle, warn: WarnRule?, redFrom: Float?, animate: Boolean,
+): Modifier {
+    val hot by remember(value, warn, redFrom) {
+        androidx.compose.runtime.derivedStateOf {
+            val v = value.value
+            v != null && (warn?.hits(v) == true || (redFrom != null && v >= redFrom))
+        }
+    }
+    if (!hot) return this
+    val col = C.Warn
+    if (!animate) return this.drawWithCache {
+        val r = size.minDimension / 2f * (if (st.outer != null || st.rings.isNotEmpty()) 0.9f else 1f)
+        val c = Offset(size.width / 2f, size.height / 2f)
+        val halo = warnHalo(col, c, r)
+        onDrawWithContent {
+            drawContent()
+            drawCircle(halo, r * 1.08f, c, alpha = 0.7f)
+            drawCircle(col.copy(alpha = 0.9f), r * 0.985f, c, style = Stroke(r * 0.035f))
+        }
+    }
+    val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "warn")
+    val ease = androidx.compose.animation.core.FastOutSlowInEasing
+    val breath = t.animateFloat(0f, 1f, androidx.compose.animation.core.infiniteRepeatable(
+        androidx.compose.animation.core.tween(700, easing = ease), androidx.compose.animation.core.RepeatMode.Reverse), label = "breath")
+    val spin = t.animateFloat(0f, 360f, androidx.compose.animation.core.infiniteRepeatable(
+        androidx.compose.animation.core.tween(1400, easing = androidx.compose.animation.core.LinearEasing)), label = "spin")
+    val wave = t.animateFloat(0f, 1f, androidx.compose.animation.core.infiniteRepeatable(
+        androidx.compose.animation.core.tween(1400, easing = androidx.compose.animation.core.LinearOutSlowInEasing)), label = "wave")
+    return this.drawWithCache {
+        val r = size.minDimension / 2f * (if (st.outer != null || st.rings.isNotEmpty()) 0.9f else 1f)
+        val c = Offset(size.width / 2f, size.height / 2f)
+        val halo = warnHalo(col, c, r)
+        // a comet: dark for most of the circle, the warning colour rising to a white head
+        val comet = Brush.sweepGradient(
+            0f to Color.Transparent, 0.55f to Color.Transparent, 0.88f to col.copy(alpha = 0.9f),
+            0.985f to Color.White, 1f to Color.Transparent, center = c,
+        )
+        onDrawWithContent {
+            drawContent()
+            val p = breath.value
+            val w = wave.value
+            drawCircle(halo, r * 1.08f, c, alpha = 0.35f + 0.65f * p)
+            drawCircle(col.copy(alpha = (1f - w) * 0.55f), r * (0.99f + 0.11f * w), c, style = Stroke(r * (0.03f * (1f - w)) + 1f))
+            drawCircle(col.copy(alpha = 0.45f + 0.5f * p), r * 0.985f, c, style = Stroke(r * 0.035f))
+            rotate(spin.value, c) {
+                drawCircle(comet, r * 0.985f, c, style = Stroke(r * 0.05f))
+            }
+        }
+    }
+}
+
+private fun warnHalo(col: Color, c: Offset, r: Float) = Brush.radialGradient(
+    0f to Color.Transparent, 0.84f to Color.Transparent, 0.93f to col.copy(alpha = 0.5f), 1f to Color.Transparent,
+    center = c, radius = r * 1.08f,
+)
+
 /** The card's own numbers on the scale, the size of its numbers and the glass over it. */
 @Composable
 private fun DialOptionRows(o: DialOptions, onChange: (DialOptions) -> Unit) {
@@ -1166,6 +1237,11 @@ private fun DialOptionRows(o: DialOptions, onChange: (DialOptions) -> Unit) {
         T("Эффект стекла", 13.sp, C.Sub)
         androidx.compose.foundation.layout.Spacer(Modifier.padding(4.dp))
         androidx.compose.material3.Switch(o.glass, { onChange(o.copy(glass = it)) },
+            colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = C.Purple))
+        androidx.compose.foundation.layout.Spacer(Modifier.padding(horizontal = 12.dp))
+        T("Мигать при превышении", 13.sp, C.Sub)
+        androidx.compose.foundation.layout.Spacer(Modifier.padding(4.dp))
+        androidx.compose.material3.Switch(o.alert, { onChange(o.copy(alert = it)) },
             colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = C.Purple))
     }
 }

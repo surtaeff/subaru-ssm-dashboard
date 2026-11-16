@@ -178,7 +178,7 @@ private fun BottomSlotItem(s: BottomSlot, m: Indicator, ctx: androidx.compose.ru
         } else m.read(c)?.let { ((it - m.min) / (m.max - m.min)).coerceIn(0f, 1f) } ?: 0f
     }
     val brush = when {
-        warn -> Brush.horizontalGradient(listOf(C.Orange, C.Red))
+        warn -> Brush.horizontalGradient(listOf(C.Warn, C.Red))
         m.id == "range" -> C.Accent
         m.id == "battery" -> Brush.horizontalGradient(listOf(C.Green, C.Green))
         else -> Brush.horizontalGradient(listOf(C.Blue, C.Violet))
@@ -194,7 +194,7 @@ private fun BottomItem(
     val car = LocalCar.current
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         // over the line: a triangle in place of the icon, a sign that is not only a colour
-        Icon(if (warn) Lucide.TriangleAlert else icon, if (warn) "Выше нормы" else null, tint = if (warn) C.Orange else C.Sub, modifier = Modifier.size(26.dp))
+        Icon(if (warn) Lucide.TriangleAlert else icon, if (warn) "Выше нормы" else null, tint = if (warn) C.Warn else C.Sub, modifier = Modifier.size(26.dp))
         Spacer(Modifier.width(10.dp))
         // with a bar the text keeps a steady width, so the bar doesn't hop sideways when the value gets a digit longer
         val bar by remember(frac, brush != null) {
@@ -202,7 +202,7 @@ private fun BottomItem(
         }
         Column(Modifier.weight(1f, fill = false).then(if (bar) Modifier.widthIn(min = car.label.asDp() * 3.6f) else Modifier)) {
             FitText(label, car.secondary, color = C.Sub)
-            FitText(value.value, car.label, color = if (warn) C.Orange else C.Text, weight = FontWeight.SemiBold, min = car.secondary)
+            FitText(value.value, car.label, color = if (warn) C.Warn else C.Text, weight = FontWeight.SemiBold, min = car.secondary)
         }
         if (frac != null && brush != null && bar) {
             Spacer(Modifier.width(10.dp))

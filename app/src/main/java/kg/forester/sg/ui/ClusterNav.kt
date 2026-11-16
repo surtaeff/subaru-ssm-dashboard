@@ -462,7 +462,7 @@ private fun NavGauge(
     val red = ind?.warnAbove?.let { ((it - ind.min) / (ind.max - ind.min)).coerceIn(0f, 1f) }
     // from the reading itself, it does not wait for the ring
     val warn by remember(value, ind?.warnAbove, ind?.warnBelow) { derivedStateOf { ind?.warn(value.value) == true } }
-    val lit = if (warn) C.Orange else accent
+    val lit = if (warn) C.Warn else accent
     val text by rememberDigits { ind?.text(value.value) ?: "—" }
     BoxWithConstraints(m, contentAlignment = Alignment.Center) {
         val r = maxWidth
@@ -507,7 +507,7 @@ private fun NavGauge(
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            T(text, (r.value * 0.26f).coerceIn(14f, 96f).sp, if (warn) C.Orange else Color.White, FontWeight.SemiBold, maxLines = 1)
+            T(text, (r.value * 0.26f).coerceIn(14f, 96f).sp, if (warn) C.Warn else Color.White, FontWeight.SemiBold, maxLines = 1)
             T(ind?.unit?.ifEmpty { ind.short } ?: "", (r.value * 0.075f).coerceIn(9f, 22f).sp, Color(0xFFB4BCCB), maxLines = 1)
             if (ind != null && ind.unit.isNotEmpty()) T(ind.short, (r.value * 0.055f).coerceIn(8f, 16f).sp, Color(0xFF8E95AB), maxLines = 1)
         }

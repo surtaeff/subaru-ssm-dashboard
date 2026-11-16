@@ -626,6 +626,11 @@ class Settings(ctx: Context) {
         get() = p.getString("lastRomId", "")!!
         set(v) = p.edit().putString("lastRomId", v).apply()
 
+    /** «Цвет предупреждений» as ARGB; 0 = the theme's orange (ui.WarnColor). */
+    var warnColor: Long
+        get() = p.getLong("warnColor", 0L)
+        set(v) = p.edit().putLong("warnColor", v).apply()
+
     /** The ROM id of a pre-1999 unit that answered SSM1 on a USB cable: the next connection reads it straight away. */
     var ssm1Rom: String
         get() = p.getString("ssm1Rom", "")!!

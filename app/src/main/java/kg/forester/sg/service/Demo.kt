@@ -14,6 +14,8 @@ import kotlin.math.sin
  * Nothing is written to trips.
  */
 object Demo {
+    /** Debug builds only (adb … --ei demohot 20): degrees added to the demo coolant, to see the warnings with no car. */
+    @Volatile var hotC = 0
     private const val CYCLE = 140.0
     private val gearRatio = floatArrayOf(2.785f, 1.545f, 1.000f, 0.694f) // 4EAT
     private const val FINAL = 4.111f
@@ -63,7 +65,7 @@ object Demo {
         val transfer = (25 + load * 45 + if (v < 15 && accel > 3) 20 else 0).coerceAtMost(100.0)
         val ecu = EcuSnapshot(
             timeMs = nowMs,
-            coolantC = 88 + (wobble * 2).toInt(),
+            coolantC = 88 + (wobble * 2).toInt() + hotC,
             rpm = if (idling) (715 + jitter * 25 + leak * 40 + wobble * 12).toInt() else rpm.toInt(),
             speedKmh = v.toInt(),
             timingDeg = if (idling) (13 + wobble * 0.5).toFloat() else (12 + 18 * (1 - load) + wobble).toFloat(),

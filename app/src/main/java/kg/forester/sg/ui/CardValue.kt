@@ -56,13 +56,14 @@ fun NeedleCard(m: CardValue, style: DialStyle, modifier: Modifier) {
     val id = m.info.substringAfter('.')
     val gear = if (style.lens && id == "speed") rememberLensGear() else null
     val warn by remember(m.warnRule, value) { androidx.compose.runtime.derivedStateOf { m.warnRule.hits(value.value) } }
+    // a design with built-in indicators lays itself out on the whole card; the other dials are a square
+    val whole = style.design != null && style.image == null
     androidx.compose.foundation.layout.Column(
-        modifier.then(if (warn) Modifier.border(3.dp, C.Orange, Rounded) else Modifier).padding(4.dp),
+        // a round dial shows the warning as a ring round itself (Dial, warnRing); only a whole-card design keeps the frame
+        modifier.then(if (warn && whole) Modifier.border(3.dp, C.Warn, Rounded) else Modifier).padding(4.dp),
     ) {
         CardTitle(m.icon, m.title, m.info, warn = warn)
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            // a design with built-in indicators lays itself out on the whole card; the other dials are a square
-            val whole = style.design != null && style.image == null
             Box(Modifier.padding(2.dp).then(if (whole) Modifier.fillMaxSize() else Modifier.aspectRatio(1f, matchHeightConstraintsFirst = maxHeight < maxWidth))) {
                 val range = tripRangeState(id, value)
                 Dial(value, hi, step, div, m.unit, if (div > 1f) "x1000" else null, m.redFrom, Modifier.fillMaxSize(), style, min = lo,

@@ -118,6 +118,7 @@ enum class Screen(val title: String, val icon: ImageVector) {
 /** Debug builds only, to see the check-engine icon with no car: adb … --ei pretendcodes 2 (0 takes them away); … --es openscreen Sensors. */
 private fun android.app.Activity.pretendCodes(i: android.content.Intent) {
     if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) i.getStringExtra("openscreen")?.let { Repo.openScreen.value = System.nanoTime() to it }
+    if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 && i.hasExtra("demohot")) kg.forester.sg.service.Demo.hotC = i.getIntExtra("demohot", 0)
     if (!i.hasExtra("pretendcodes") || applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return
     Repo.checkEngine.value = kg.forester.sg.service.CheckEngine(engine = i.getIntExtra("pretendcodes", 0))
 }

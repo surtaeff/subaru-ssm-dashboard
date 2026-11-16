@@ -165,7 +165,7 @@ fun MiniGauge(icon: androidx.compose.ui.graphics.vector.ImageVector, title: Stri
             CardTitle(icon, title, info, shownTitle, warn)
             FitValue(
                 value?.let { format.format(it) } ?: "—", unit, if (big) car.value.value * 1.4f else car.value.value,
-                Modifier.weight(1f).fillMaxWidth(), if (warn) C.Orange else C.Text, widest = listOf(format.format(min), format.format(max)).maxBy { it.length },
+                Modifier.weight(1f).fillMaxWidth(), if (warn) C.Warn else C.Text, widest = listOf(format.format(min), format.format(max)).maxBy { it.length },
             )
             // the note only where the number keeps its size beside it
             if (sub != null && showSub) FitText(sub, car.secondary, Modifier.fillMaxWidth(), C.Sub)
@@ -196,7 +196,7 @@ fun CardTitle(
         Spacer(Modifier.width(6.dp))
         FitText(title, LocalCar.current.label, Modifier.weight(1f), C.Sub)
         if (warn) Icon(
-            com.composables.icons.lucide.Lucide.TriangleAlert, "Выше нормы", tint = C.Orange, modifier = Modifier.size(minOf(height * 0.8f, 24.dp)),
+            com.composables.icons.lucide.Lucide.TriangleAlert, "Выше нормы", tint = C.Warn, modifier = Modifier.size(minOf(height * 0.8f, 24.dp)),
         )
         InfoButton(title, info)
     }
