@@ -81,7 +81,8 @@ import java.util.Locale
  */
 /** The steps of setting the box up: the left column lists them, the right panel shows the open one. */
 internal enum class BoxStep(val n: Int, val title: String) {
-    BOARD(1, "Плата"), FLASH(2, "Прошивка"), SENSORS(3, "Датчики"), OUTPUTS(4, "Выходы"), DISPLAYS(5, "Дисплеи"), CHECK(6, "Проверка"),
+    BOARD(1, "Плата"), FLASH(2, "Прошивка"), SENSORS(3, "Датчики"), OUTPUTS(4, "Выходы"), DISPLAYS(5, "Дисплеи"), CAN(6, "CAN-шина"),
+    CHECK(7, "Проверка"),
 }
 
 /** A removal the driver can take back for a few seconds («… убран · Вернуть»). */
@@ -136,6 +137,7 @@ fun SensorBoxSettings() {
                                     else DisplayNew(board) { go(BoxStep.DISPLAYS, "disp:$it") }
                                 else -> DisplayDetails(board, sel.removePrefix("disp:").toInt()) { go(BoxStep.DISPLAYS) }
                             }
+                            BoxStep.CAN -> BoxCanPage(board)
                             BoxStep.CHECK -> BoxCheck { s, x -> go(s, x) }
                         }
                         Spacer(Modifier.height(60.dp)) // room for the undo bar
@@ -266,6 +268,11 @@ private fun BoxSteps(step: BoxStep, selected: String?, go: (BoxStep, String?) ->
             else -> disps.joinToString { it.kind.title.substringBefore(" с ").substringBefore(" 0,96") }
         }, done = disps.isNotEmpty(), warn = disps.isNotEmpty() && real != null && real.fw < 5, open = step == BoxStep.DISPLAYS) { go(BoxStep.DISPLAYS, null) }
         if (step == BoxStep.DISPLAYS) Column(Modifier.padding(start = 14.dp)) { DisplaysSection(selected) { go(BoxStep.DISPLAYS, it) } }
+        val canCfg by kg.forester.sg.data.BoxCan.cfg.collectAsState()
+        val canStatus by kg.forester.sg.data.BoxCan.status.collectAsState()
+        val canOld = canCfg.on && real != null && board == BoxBoard.ESP32S3 && !kg.forester.sg.data.BoxCan.supported(real)
+        StepRow(BoxStep.CAN, boxCanSummary(board, canCfg, canStatus, real), done = canCfg.on && canStatus != null,
+            warn = canOld || (canCfg.on && canStatus?.state == 'b'), open = step == BoxStep.CAN) { go(BoxStep.CAN, null) }
         val questions = faults + (if (real == null && info?.via != "демо") 1 else 0)
         StepRow(BoxStep.CHECK, if (mine.isEmpty() && outs.isEmpty()) "проверить подключённое вживую" else if (questions == 0) "всё в порядке" else "Есть вопросы: $questions",
             done = mine.isNotEmpty() && questions == 0, warn = questions > 0 && mine.isNotEmpty(), open = step == BoxStep.CHECK) { go(BoxStep.CHECK, null) }
@@ -1044,7 +1051,7 @@ internal fun WiringSteps(board: BoxBoard, input: String, p: BoxPreset, others: L
 }
 
 @Composable
-private fun WireStep(n: Int, color: Color, text: String) {
+internal fun WireStep(n: Int, color: Color, text: String) {
     Row(Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(22.dp).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
             T("$n", 12.sp, if (color == Color(0xFFFACC15)) Color.Black else Color.White, FontWeight.Bold)
@@ -1091,6 +1098,10 @@ private fun pinFor(board: BoxBoard, input: String, to: String) = when (to) {
     // a display's own pins come as "D4|D5": a TM1637's CLK and DIO, a colour screen's CS and DC
     "CLK", "LCS" -> input.substringBefore('|')
     "DIO", "DC" -> input.substringAfter('|')
+    // the CAN transceiver's as "TX|RX|S"
+    "CANTX" -> input.split('|').getOrElse(0) { "" }
+    "CANRX" -> input.split('|').getOrElse(1) { "" }
+    "CANS" -> input.split('|').getOrElse(2) { "" }
     else -> to
 }
 
@@ -1311,6 +1322,15 @@ fun rememberBoardTop(id: String?): BoardTopRead {
 }
 
 private val SIGNALS = setOf("SIG", "SCK", "SO", "CS")
+
+/** Wires that come from outside the box, not from a board pin: the car's +12 V, the bus's CAN-H and CAN-L. */
+private val EXTERNAL = setOf("12V", "CANH", "CANL")
+
+private fun externalText(to: String) = when (to) {
+    "CANH" -> "CAN-H шины"
+    "CANL" -> "CAN-L шины"
+    else -> "+12 В через предохранитель"
+}
 private val TAKEN = Color(0xFF64748B)
 
 /** [pitch]: one pin step in pixels on a real top view (0 on the drawn board). */
@@ -1414,7 +1434,7 @@ fun module3d(p: BoxPreset): String? = when {
 }
 
 /** The name printed on the module for a wire to [to]. */
-private fun moduleTerminal(p: BoxPreset, to: String) = if (p.id.startsWith("disp_"))
+private fun moduleTerminal(p: BoxPreset, to: String) = if (p.id.startsWith("can_")) canTerminal(to) else if (p.id.startsWith("disp_"))
     kg.forester.sg.data.DispKind.entries.firstOrNull { "disp_${it.module}" == p.id }?.let { kg.forester.sg.data.Displays.terminal(it, to) } ?: to
 else when (p.id) {
     "out_RELAY" -> when (to) { "5V" -> "VCC"; "SIG" -> "IN"; else -> to }
@@ -1447,7 +1467,8 @@ private fun DrawScope.drawWiring(tm: TextMeasurer, board: BoxBoard, input: Strin
     }
     class W(val label: String, val pin: Pin?, val color: Color, val external: Boolean, val to: String)
     val wires = p.wires.map { wi ->
-        W(terminalLabel(wi.to, p), if (wi.to == "12V") null else pinNamed(pinFor(board, input, wi.to)), Color(wi.color), wi.to == "12V", wi.to)
+        val ext = wi.to in EXTERNAL
+        W(terminalLabel(wi.to, p), if (ext) null else pinNamed(pinFor(board, input, wi.to)), Color(wi.color), ext, wi.to)
     }
 
     val used = wires.mapNotNull { it.pin }.associateWith { pin -> wires.first { it.pin == pin }.color } +
@@ -1580,23 +1601,26 @@ private fun DrawScope.drawWiring(tm: TextMeasurer, board: BoxBoard, input: Strin
         end.forEachIndexed { i, wi -> turnX[wi] = sl - dp(14f) - (topWires.size + i) * dp(11f) }
     }
 
+    val externals = wires.filter { it.external }
     for (wi in wires) {
         val pin = wi.pin
+        // several wires from outside (the bus's CAN-H and CAN-L): each its own drop and its own line of text
+        val k = externals.indexOf(wi)
         if (wi.external && termX[wi] != null) {
             // the car's +12 V comes down from above straight onto the module's terminal
             val ty = termY[wi]!!
             val ex = termX[wi]!!
-            val x = ex - dp(16f)
-            path(listOf(Offset(x, dp(4f)), Offset(x, ty), Offset(ex, ty)), c = wi.color)
-            text(tm, "+12 В через предохранитель", Offset((x - dp(170f)).coerceAtLeast(br + dp(4f)), dp(4f)), 10.5f, wi.color)
+            val x = ex - dp(16f) - k * dp(10f)
+            path(listOf(Offset(x, dp(4f) + k * dp(14f)), Offset(x, ty), Offset(ex, ty)), c = wi.color)
+            text(tm, externalText(wi.to), Offset((x - dp(170f)).coerceAtLeast(br + dp(4f)), dp(4f) + k * dp(14f)), 10.5f, wi.color)
             badges += Triple(wires.indexOf(wi) + 1, Offset(x, (dp(4f) + ty) / 2), wi.color)
             continue
         }
         if (wi.external) {
             val ty = termY[wi] ?: continue
-            val x = sl - dp(6f)
-            path(listOf(Offset(x, dp(4f)), Offset(x, ty), Offset(sl, ty)), c = wi.color)
-            text(tm, "+12 В через предохранитель", Offset((x - dp(170f)).coerceAtLeast(br + dp(4f)), dp(4f)), 10.5f, wi.color)
+            val x = sl - dp(6f) - k * dp(10f)
+            path(listOf(Offset(x, dp(4f) + k * dp(14f)), Offset(x, ty), Offset(sl, ty)), c = wi.color)
+            text(tm, externalText(wi.to), Offset((x - dp(170f)).coerceAtLeast(br + dp(4f)), dp(4f) + k * dp(14f)), 10.5f, wi.color)
             badges += Triple(wires.indexOf(wi) + 1, Offset(x, (dp(4f) + ty) / 2), wi.color)
             continue
         }
@@ -1649,7 +1673,7 @@ private fun DrawScope.drawWiring(tm: TextMeasurer, board: BoxBoard, input: Strin
     }
 }
 
-private fun terminalLabel(to: String, p: BoxPreset) = if (p.role == "fuelLevel") when (to) {
+private fun terminalLabel(to: String, p: BoxPreset) = if (p.id.startsWith("can_")) canTerminal(to) else if (p.role == "fuelLevel") when (to) {
     "SIG" -> "провод бака, 22 кОм"; else -> "масса, 10 кОм"
 } else if (p.id == "pot") when (to) {
     "5V" -> "крайний вывод"; "GND" -> "другой крайний"; else -> "средний (движок)"
@@ -1778,7 +1802,11 @@ private fun boardUses(board: BoxBoard, slots: List<BoxSlot>, outs: List<kg.fores
         BoardUse("Дисплей ${d.kind.title.substringBefore(" с ").substringBefore(" 0,96")}", sig.firstOrNull()?.first ?: "", null,
             Color(SENSOR_COLORS[i++ % SENSOR_COLORS.size]), sig, true, false, true, false)
     }
-    return a + b + c
+    val can = kg.forester.sg.data.BoxCan.cfg.value.takeIf { it.on && board == BoxBoard.ESP32S3 }?.let { cfg ->
+        val sig = listOf(cfg.tx to "CAN TX", cfg.rx to "CAN RX", cfg.s to "CAN S").filter { it.first.isNotEmpty() }
+        listOf(BoardUse("CAN-трансивер", cfg.tx, null, Color(SENSOR_COLORS[i++ % SENSOR_COLORS.size]), sig, true, false, true, false))
+    } ?: emptyList()
+    return a + b + c + can
 }
 
 private fun sideOf(board: BoxBoard, pin: String) = when (pin) { in board.topRow -> -1; in board.bottomRow -> 1; else -> 0 }

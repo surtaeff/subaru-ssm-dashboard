@@ -293,6 +293,13 @@ class EcuService : Service() {
             // the SensorBox (an Arduino next to the cable) and devices still being asked whether they are it
             val drivers = SensorBoxLink.forEcu(all)
             val driver = pickDriver(kind, drivers)
+            // no CANable on USB: a SensorBox with CAN (an ESP32-S3, firmware 6+) takes its place
+            if (driver == null && kind == "canable" && kg.forester.sg.data.BoxCanBus.available()) {
+                Repo.adapterFound.value = "SensorBox → CAN (${kg.forester.sg.data.BoxCan.speedTitle(kg.forester.sg.data.BoxCan.cfg.value.kbit)})"
+                boxCanSession()
+                delay(500)
+                continue
+            }
             if (driver == null) {
                 if (!triedHostFix && System.currentTimeMillis() - noCableSince > 8000) {
                     triedHostFix = true
@@ -1451,8 +1458,22 @@ class EcuService : Service() {
         canSession(bus, kbit) { Repo.settings.canKbit == kbit }
     }
 
-    /** The frames of [bus] (a CANable or the Link demo) through the Link's decoding, while [on]. */
-    private suspend fun canSession(bus: kg.forester.sg.ssm.CanSource, kbit: Int, on: () -> Boolean) {
+    /**
+     * The SensorBox's own CAN (an ESP32-S3 with a transceiver) in place of a CANable: the same session, the frames
+     * come through [SensorBoxLink]'s connection to the box. Its speed and mode are the box's settings («Датчики и экраны», CAN-шина).
+     */
+    private suspend fun boxCanSession() {
+        val kbit = kg.forester.sg.data.BoxCan.cfg.value.kbit
+        SsmTrace.log("SensorBox CAN: session at $kbit kbit/s")
+        kg.forester.sg.data.BoxCanBus.Source().use { bus ->
+            canSession(bus, kbit, "SensorBox") {
+                Repo.settings.adapter == "canable" && kg.forester.sg.data.BoxCanBus.available() && kg.forester.sg.data.BoxCan.cfg.value.kbit == kbit
+            }
+        }
+    }
+
+    /** The frames of [bus] (a CANable, the SensorBox or the Link demo) through the Link's decoding, while [on]. */
+    private suspend fun canSession(bus: kg.forester.sg.ssm.CanSource, kbit: Int, label: String = "CANable", on: () -> Boolean) {
         val link = kg.forester.sg.ssm.LinkDash
         link.reset()
         kg.forester.sg.ssm.CanMonitor.clear()
@@ -1470,7 +1491,7 @@ class EcuService : Service() {
         Repo.ecuInit.value = null; Repo.ecuInitRaw.value = null
         Repo.tcuStatus.value = "АКПП: нет (спортивный ЭБУ по CAN)"
         Repo.link.value = LinkState.CONNECTING
-        Repo.linkMessage.value = "CANable: шина $kbit кбит открыта, жду кадры"
+        Repo.linkMessage.value = "$label: шина $kbit кбит открыта, жду кадры"
         var lastFrame = System.currentTimeMillis()
         var lastSample = 0L
         var linkLogged = false
@@ -1493,7 +1514,7 @@ class EcuService : Service() {
                 }
                 if (now - lastFrame > 3000) {
                     Repo.link.value = LinkState.NO_ECU
-                    Repo.linkMessage.value = "CANable на связи, но шина молчит. Зажигание включено? Скорость $kbit кбит та же, что в настройках CAN у ЭБУ?" +
+                    Repo.linkMessage.value = "$label на связи, но шина молчит. Зажигание включено? Скорость $kbit кбит та же, что в настройках CAN у ЭБУ?" +
                         if (bus.errors > 0) " Адаптер отвечает ошибкой (${bus.errors})" else ""
                     tracker.tick(now)
                     continue
@@ -1502,8 +1523,8 @@ class EcuService : Service() {
                 if (id != null && !linkLogged) { linkLogged = true; SsmTrace.log("Link ${link.format?.title} on CAN id %03X (%d)".format(id, id)) }
                 link.limits(now).takeIf { it != limitsLogged }?.let { limitsLogged = it; if (it.isNotEmpty()) SsmTrace.log("Link limits: ${it.joinToString()}") }
                 Repo.link.value = LinkState.CONNECTED
-                Repo.linkMessage.value = if (id != null) "Link (${link.format?.title}, ID %d) · CANable %d кбит".format(id, kbit)
-                    else "CANable: на шине ${kg.forester.sg.ssm.CanMonitor.idsSeen(now)} ID, поток Link (Dash2Pro или Generic Dash) не найден. Что идёт по CAN: Настройки, Машина и адаптер"
+                Repo.linkMessage.value = if (id != null) "Link (${link.format?.title}, ID %d) · $label %d кбит".format(id, kbit)
+                    else "$label: на шине ${kg.forester.sg.ssm.CanMonitor.idsSeen(now)} ID, поток Link (Dash2Pro или Generic Dash) не найден. Что идёт по CAN: Настройки, Машина и адаптер"
                 Repo.rrAvailable.value = kg.forester.sg.data.CanEcu.params()
                 Repo.rrPolled.value = Repo.rrAvailable.value
                 Repo.rrValues.value = kg.forester.sg.data.CanEcu.values(now)

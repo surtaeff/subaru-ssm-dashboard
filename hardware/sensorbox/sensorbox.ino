@@ -51,14 +51,31 @@
  *   Q <x> <y> <w> <h> <c>    colour screen: a box in RGB565 (hex)
  *   T <x> <y> <s> <fg> <bg> <text>   colour screen: text by pixel, size 1..8, colours RGB565 (hex)
  *   box → host: Y R          the app was silent for 5 s (the displays said НЕТ СВЯЗИ): draw everything again
+ *
+ * CAN (firmware 6+, ESP32-S3 only: its TWAI controller and a TJA1051T/3 or SN65HVD230 transceiver). The I line says
+ * can=twai. Classic CAN, receive only: the box never sends a frame of its own; in normal mode it only acknowledges.
+ *   G O <kbit> <L|N> <tx> <rx> <s|->   open the bus: 33, 50, 62, 83, 100, 125, 250, 500, 800 or 1000 kbit/s; L listen
+ *                            only (the car's bus: no ACK, no error frames, and the transceiver's S pin held high, its
+ *                            transmitter off), N normal (the driver's own sensor bus, which needs someone to ACK);
+ *                            TX, RX and S on free output pins (S: - when not wired)
+ *   G F [X] [<id> <mask> [<id2> <mask2>]]   acceptance filter in the controller, hex; mask bits 1 must match. Nothing:
+ *                            every frame. X: one filter for extended (29-bit) ids, else one or two for 11-bit ids
+ *   G C                      close the bus, free its pins
+ *   replies: K G O, K G F, K G C, E G O <pin|kbit|drv>
+ *   box → host: frames as slcan (Lawicel) text, one a line: t<id:3><len><data>, T<id:8><len><data>, r/R remote
+ *   frames; D lines carry can=<state>,<frames>,<dropped on USB>,<missed by the controller>,<rx errors>,<tx errors>
+ *   (state: l listening, n normal, b bus off, r recovering, s stopped)
  */
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <SPI.h>
 #include <Wire.h>
+#if defined(ARDUINO_ARCH_ESP32)
+#include "driver/twai.h"  // CAN: the chip's own controller (firmware 6+)
+#endif
 
 // The firmware's own version, sent as "fw=" in the I line: the app offers an update when the box runs an older one.
-#define FW_VERSION 5
+#define FW_VERSION 6
 #define STR_(x) #x
 #define STR(x) STR_(x)
 
@@ -246,6 +263,19 @@ uint8_t adsAddr = 0;  // an ADS1115 on I2C (ESP32-S3 only)
   #define ISR_ATTR
 #endif
 
+#if defined(ESP_BOX)
+// ---- CAN (TWAI) -------------------------------------------------------------------------------------------------
+int8_t canTx = -1, canRx = -1, canS = -1;  // the transceiver's TXD, RXD and S (silent) pins while the bus is open
+bool canOn = false, canListen = true;
+uint16_t canKbit = 0;
+uint8_t canNf = 0;                          // acceptance filters: 0 every frame, 1 or 2 (11-bit ids only)
+bool canExtF = false;                       // the one filter is for extended ids
+uint32_t canId[2], canMask[2];
+uint32_t canFrames = 0, canDrop = 0;
+uint32_t canCheckAt = 0;
+#define CAN_RESERVE 384                     // room left in the USB buffer for a whole D line
+#endif
+
 // ---- EEPROM: a magic byte, the box id (the app keeps the profiles per box), the rate -------------------------
 const uint8_t EE_MAGIC = 0x5B;
 uint16_t boxId;
@@ -379,6 +409,9 @@ bool pinAllowed(int p) {
   if (p == tmClk || p == tmDio) return false;
   if (p == colCs || p == colDc) return false;
   for (uint8_t i = 1; i < 4; i++) if (p == tcCs[i]) return false;
+#if defined(ESP_BOX)
+  if (p == canTx || p == canRx || p == canS) return false;
+#endif
   for (uint8_t i = 0; i < NOUT_PINS; i++) if (OUT_PINS[i] == p) return true;
   return false;
 }
@@ -897,6 +930,197 @@ void handleOut(char *s) {
   }
 }
 
+#if defined(ESP_BOX)
+// ---- CAN: the TWAI controller behind a TJA1051T/3 (or SN65HVD230). Receive only; frames go to the app as slcan lines.
+
+/** The bit timing for [kbit]: 20 time quanta of the 80 MHz clock, sampled at 80 %; false for a speed not offered. */
+bool canTiming(uint16_t kbit, twai_timing_config_t &t) {
+  twai_timing_config_t base = TWAI_TIMING_CONFIG_100KBITS();
+  t = base;
+  uint32_t brp = 0;
+  switch (kbit) {
+    case 33: brp = 120; break;  // 33.333 (GMLAN, through a single-wire transceiver of its own)
+    case 50: { twai_timing_config_t c = TWAI_TIMING_CONFIG_50KBITS(); t = c; return true; }
+    case 62: brp = 64; break;   // 62.5 (old VW comfort)
+    case 83: brp = 48; break;   // 83.333 (Mercedes CAN-B)
+    case 100: return true;
+    case 125: { twai_timing_config_t c = TWAI_TIMING_CONFIG_125KBITS(); t = c; return true; }
+    case 250: { twai_timing_config_t c = TWAI_TIMING_CONFIG_250KBITS(); t = c; return true; }
+    case 500: { twai_timing_config_t c = TWAI_TIMING_CONFIG_500KBITS(); t = c; return true; }
+    case 800: { twai_timing_config_t c = TWAI_TIMING_CONFIG_800KBITS(); t = c; return true; }
+    case 1000: { twai_timing_config_t c = TWAI_TIMING_CONFIG_1MBITS(); t = c; return true; }
+    default: return false;
+  }
+  t.quanta_resolution_hz = 0;  // brp counts instead
+  t.brp = brp;
+  return true;
+}
+
+/**
+ * The acceptance filter in the controller (SJA1000 layout). Single filter: an 11-bit id sits at bits 31..21, a 29-bit
+ * one at 31..3. Dual filter (11-bit ids): the first at 31..21, the second at 15..5. A mask bit 1 there means "any".
+ */
+twai_filter_config_t canFilter() {
+  twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+  if (canNf == 1 && canExtF) {
+    f.acceptance_code = canId[0] << 3;
+    f.acceptance_mask = ~(canMask[0] << 3);
+  } else if (canNf == 1) {
+    f.acceptance_code = canId[0] << 21;
+    f.acceptance_mask = ~(canMask[0] << 21);
+  } else if (canNf == 2) {
+    f.single_filter = false;
+    f.acceptance_code = (canId[0] << 21) | (canId[1] << 5);
+    f.acceptance_mask = ~((canMask[0] << 21) | (canMask[1] << 5));
+  }
+  return f;
+}
+
+/** The filter once more, exactly: the controller's also lets through the other id length with matching top bits. */
+bool canPass(const twai_message_t &m) {
+  if (!canNf) return true;
+  if ((bool)m.extd != canExtF) return false;
+  for (uint8_t i = 0; i < canNf; i++) if ((m.identifier & canMask[i]) == (canId[i] & canMask[i])) return true;
+  return false;
+}
+
+/** The driver stopped; the pins stay the bus's. */
+void canStop() {
+  if (!canOn) return;
+  twai_stop();
+  twai_driver_uninstall();
+  canOn = false;
+}
+
+/** The bus closed and its pins free: TX back to an input (the transceiver's own pull-up keeps it recessive), S to the
+ *  pull-up that holds the transceiver silent. */
+void canRelease() {
+  canStop();
+  if (canTx >= 0) pinMode(canTx, INPUT);
+  if (canRx >= 0) pinMode(canRx, INPUT);
+  if (canS >= 0) pinMode(canS, INPUT);
+  canTx = canRx = canS = -1;
+  canKbit = 0;
+}
+
+/** Starts the driver with the settings held; false when it would not. */
+bool canStart() {
+  twai_timing_config_t t;
+  if (!canTiming(canKbit, t)) return false;
+  // listen only: the transceiver's transmitter off in hardware as well, so not even a fault can drive the car's bus
+  if (canS >= 0) { pinMode(canS, OUTPUT); digitalWrite(canS, canListen ? HIGH : LOW); }
+  twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)canTx, (gpio_num_t)canRx, canListen ? TWAI_MODE_LISTEN_ONLY : TWAI_MODE_NORMAL);
+  g.rx_queue_len = 1024;  // a quarter of a second of a busy 500 kbit bus while the loop reads the sensors or draws
+  g.tx_queue_len = 1;
+  twai_filter_config_t f = canFilter();
+  if (twai_driver_install(&g, &t, &f) != ESP_OK) return false;
+  if (twai_start() != ESP_OK) { twai_driver_uninstall(); return false; }
+  canOn = true;
+  canCheckAt = millis();
+  return true;
+}
+
+int pinArg(const char *c) {
+  if (!c || c[0] == '-') return -1;
+  const char *n = c + ((c[0] == 'D' || c[0] == 'd') ? 1 : 0);
+  return (*n >= '0' && *n <= '9') ? atoi(n) : -2;
+}
+
+void handleCan(char *s) {
+  char *t = strtok(s + 1, " ");
+  if (!t) return;
+  if (t[0] == 'C') { canRelease(); Serial.println(F("K G C")); return; }
+  if (t[0] == 'F') {
+    canNf = 0; canExtF = false;
+    char *a = strtok(NULL, " ");
+    if (a && (a[0] == 'X' || a[0] == 'x')) { canExtF = true; a = strtok(NULL, " "); }
+    for (uint8_t i = 0; i < 2 && a; i++) {
+      char *m = strtok(NULL, " ");
+      if (!m) break;
+      uint32_t lim = canExtF ? 0x1FFFFFFFUL : 0x7FFUL;
+      canId[i] = strtoul(a, NULL, 16) & lim;
+      canMask[i] = strtoul(m, NULL, 16) & lim;
+      canNf = i + 1;
+      if (canExtF) break;  // one filter for 29-bit ids
+      a = strtok(NULL, " ");
+    }
+    if (canOn) { canStop(); canStart(); }  // the controller takes a filter only while stopped
+    Serial.println(F("K G F"));
+    return;
+  }
+  if (t[0] == 'O') {
+    char *k = strtok(NULL, " "), *md = strtok(NULL, " "), *a = strtok(NULL, " "), *b = strtok(NULL, " "), *c = strtok(NULL, " ");
+    canRelease();
+    int tx = pinArg(a), rx = pinArg(b), sp = pinArg(c);
+    bool busy = false;
+    for (uint8_t i = 0; i < NCH; i++) if (outs[i].pin >= 0 && (outs[i].pin == tx || outs[i].pin == rx || (sp >= 0 && outs[i].pin == sp))) busy = true;
+    if (busy || !pinAllowed(tx) || !pinAllowed(rx) || tx == rx || sp == -2 || (sp >= 0 && (!pinAllowed(sp) || sp == tx || sp == rx))) {
+      Serial.println(F("E G O pin")); return;
+    }
+    twai_timing_config_t tm;
+    uint16_t kb = k ? atoi(k) : 0;
+    if (!canTiming(kb, tm)) { Serial.println(F("E G O kbit")); return; }
+    canKbit = kb;
+    canListen = !(md && (md[0] == 'N' || md[0] == 'n'));
+    canTx = tx; canRx = rx; canS = sp;
+    if (!canStart()) { canRelease(); Serial.println(F("E G O drv")); return; }
+    Serial.println(F("K G O"));
+    return;
+  }
+  Serial.println(F("E G ?"));
+}
+
+const char HEXD[] = "0123456789ABCDEF";
+
+/** Every frame waiting in the driver's queue to the app, one slcan line each; a line that would not fit whole in the
+ *  USB buffer (the app reads too slowly, or nobody does) is dropped and counted, never cut. */
+void canPump() {
+  if (!canOn) return;
+  twai_message_t m;
+  char b[32];
+  while (twai_receive(&m, 0) == ESP_OK) {
+    if (!canPass(m)) continue;
+    canFrames++;
+    if (!streaming) continue;
+    uint8_t n = 0, dlc = m.data_length_code > 8 ? 8 : m.data_length_code;
+    b[n++] = m.rtr ? (m.extd ? 'R' : 'r') : (m.extd ? 'T' : 't');
+    for (int8_t sh = m.extd ? 28 : 8; sh >= 0; sh -= 4) b[n++] = HEXD[(m.identifier >> sh) & 0xF];
+    b[n++] = '0' + dlc;
+    if (!m.rtr) for (uint8_t i = 0; i < dlc; i++) { b[n++] = HEXD[m.data[i] >> 4]; b[n++] = HEXD[m.data[i] & 0xF]; }
+    b[n++] = '\n';
+    if (Serial.availableForWrite() < n + CAN_RESERVE) { canDrop++; continue; }
+    Serial.write((const uint8_t *)b, n);
+  }
+}
+
+/** Twice a second: a bus-off controller (normal mode, a wiring fault) recovers and starts again by itself. */
+void canTick(uint32_t now) {
+  if (!canOn || now - canCheckAt < 500) return;
+  canCheckAt = now;
+  twai_status_info_t st;
+  if (twai_get_status_info(&st) != ESP_OK) return;
+  if (st.state == TWAI_STATE_BUS_OFF) twai_initiate_recovery();
+  else if (st.state == TWAI_STATE_STOPPED) twai_start();
+}
+
+/** " can=l,<frames>,<dropped>,<missed>,<rx errors>,<tx errors>" in the D line, while the bus is open. */
+void printCan() {
+  if (!canOn) return;
+  twai_status_info_t st;
+  if (twai_get_status_info(&st) != ESP_OK) return;
+  char c = st.state == TWAI_STATE_RUNNING ? (canListen ? 'l' : 'n') : st.state == TWAI_STATE_BUS_OFF ? 'b' :
+           st.state == TWAI_STATE_RECOVERING ? 'r' : 's';
+  Serial.print(F(" can=")); Serial.print(c);
+  Serial.print(','); Serial.print(canFrames);
+  Serial.print(','); Serial.print(canDrop);
+  Serial.print(','); Serial.print(st.rx_missed_count + st.rx_overrun_count);
+  Serial.print(','); Serial.print(st.rx_error_counter);
+  Serial.print(','); Serial.print(st.tx_error_counter);
+}
+#else
+void canPump() {}
+#endif
+
 void printInfo() {
   Serial.print(F("I SENSORBOX 2 board=" BOARD " id="));
   if (boxId < 0x1000) Serial.print('0');
@@ -908,6 +1132,9 @@ void printInfo() {
   Serial.print(rateHz);
   Serial.print(F(" disp="));
   Serial.print(oledAddr && lcdAddr ? F("oled+lcd") : oledAddr ? F("oled") : lcdAddr ? F("lcd") : F("none"));
+#if defined(ESP_BOX)
+  Serial.print(F(" can=twai"));  // a CAN controller on the chip (firmware 6+): the G commands
+#endif
   Serial.print(F(" ch="));
   bool first = true;
   for (uint8_t i = 0; i < nCh(); i++) {
@@ -953,6 +1180,11 @@ void handle(char *s) {
     case 'L': case 'M': case 'Y': case 'N': case 'Z': case 'Q': case 'T':
       handleDisplay(s);
       break;
+#if defined(ESP_BOX)
+    case 'G':
+      handleCan(s);
+      break;
+#endif
     default:
       Serial.println(F("E ?"));
   }
@@ -977,6 +1209,9 @@ void readCommands() {
 
 void setup() {
   for (uint8_t i = 0; i < NCH; i++) outs[i].pin = -1;  // every output an input until the app sets it up
+#if defined(ESP_BOX)
+  Serial.setTxBufferSize(8192);  // CAN frames between the D lines: up to ~90 KB/s from a busy 500 kbit bus
+#endif
   Serial.begin(115200);
 #if defined(ESP_BOX)
   Serial.setTxTimeoutMs(0);  // nobody reading the USB: lines are dropped, the loop (and the outputs' guards) never waits
@@ -1021,23 +1256,33 @@ uint32_t nextFrame = 0;
 
 void loop() {
   readCommands();
+  canPump();
   uint32_t now = millis();
   outputsTick(now);
   displaysTick(now);
+#if defined(ESP_BOX)
+  canTick(now);
+#endif
   if (!streaming || (int32_t)(now - nextFrame) < 0) return;
   nextFrame = now + 1000 / rateHz;
 
+  // read first, then print the line in one go: CAN lines may go out between two reads, never inside a D line
+  long vcc = readVccMv();
+  float val[8];
+  for (uint8_t i = 0; i < nCh() && i < 8; i++) {
+    val[i] = chSkip(i) ? 0 : chRead(i, vcc);
+    canPump();  // an ADS1115 input takes a few ms: the CAN queue is emptied between inputs
+  }
   Serial.print(F("D t="));
   Serial.print(now);
   Serial.print(F(" vcc="));
-  long vcc = readVccMv();
   Serial.print(vcc);
-  for (uint8_t i = 0; i < nCh(); i++) {
+  for (uint8_t i = 0; i < nCh() && i < 8; i++) {
     if (chSkip(i)) continue;
     Serial.print(' ');
     Serial.print(chName(i));
     Serial.print('=');
-    Serial.print(chRead(i, vcc), 1);
+    Serial.print(val[i], 1);
   }
 
 #if USE_MAX31855
@@ -1082,5 +1327,8 @@ void loop() {
   Serial.print(F(" F0="));
   Serial.print(fHz, 1);
   printOutputs();
+#if defined(ESP_BOX)
+  printCan();
+#endif
   Serial.println();
 }
