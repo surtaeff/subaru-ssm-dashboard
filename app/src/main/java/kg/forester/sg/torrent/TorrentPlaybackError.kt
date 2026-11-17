@@ -15,9 +15,8 @@ object TorrentPlaybackError {
         if (e == null) return DEFAULT
         if (hasCause<OutOfMemoryError>(e)) return OOM
         if (e is PlaybackException) return byCode(e.errorCode, e)
-        // a non-ExoPlayer throwable (coroutine cancel, our own throw from addMagnet) — pass through as-is if it has words
-        val own = e.message?.takeIf { it.isNotBlank() }
-        return if (own != null) "Торрент: $own" else DEFAULT
+        // a non-ExoPlayer throwable (coroutine cancel, our own throw from addMagnet) — show the generic line, exception text stays in logs only
+        return DEFAULT
     }
 
     private fun byCode(code: Int, e: PlaybackException): String = when {
@@ -31,11 +30,8 @@ object TorrentPlaybackError {
         code in 3001..3004 -> "Торрент: это видео не играется на этом устройстве (кодек)"
         // Decoder: 4001-4005 — hardware refused the stream. Same user action: lower quality.
         code in 4001..4005 -> "Торрент: не хватает декодера для этого качества. Попробуйте качеством пониже."
-        // Everything else — pass through if ExoPlayer gave us words, else the generic line.
-        else -> {
-            val own = e.message?.takeIf { it.isNotBlank() && it != "Source error" }
-            if (own != null) "Торрент: $own" else DEFAULT
-        }
+        // Everything else — generic line. ExoPlayer's own messages are English framework strings, not for drivers.
+        else -> DEFAULT
     }
 
     /** ExoPlayer's `HttpDataSource.InvalidResponseCodeException` is in the cause chain when the server gave 4xx/5xx. */

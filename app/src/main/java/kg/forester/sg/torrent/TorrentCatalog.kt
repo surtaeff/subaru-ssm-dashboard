@@ -79,7 +79,7 @@ object TorrentCatalog {
 
     /** Human-readable error for the «Торрент» section: picks up offline / 403 / no-releases. */
     fun message(e: Throwable?): String = when (e) {
-        is VideoSourceException -> "Торрент: ${e.message ?: "не удалось загрузить"}"
+        is VideoSourceException -> if (e.blocked) "Торрент: раздачи недоступны в вашей стране" else "Торрент: не удалось загрузить"
         is java.net.UnknownHostException -> "Нет интернета"
         is java.net.SocketTimeoutException, is java.net.ConnectException -> "jacred не отвечает. Попробуйте позже"
         null -> "Ничего не нашлось"

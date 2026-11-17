@@ -277,10 +277,11 @@ class TorrentTest {
         assertEquals(TorrentPlaybackError.DEFAULT, TorrentPlaybackError.message(null))
     }
 
-    @Test fun playbackError_nonExoThrowable_isPassedThrough() {
-        val msg = TorrentPlaybackError.message(RuntimeException("jacred вернул пусто"))
-        assertTrue(msg.startsWith("Торрент:"))
-        assertTrue(msg.contains("jacred"))
+    @Test fun playbackError_nonExoThrowable_fallsBackToDefault() {
+        // Project policy (FailureTest.noRawExceptionTextInWhatIsShown): raw exception messages — English or
+        // framework-worded — never reach a screen. A non-ExoPlayer throwable gets the generic torrent line.
+        val msg = TorrentPlaybackError.message(RuntimeException("jacred returned nothing"))
+        assertEquals(TorrentPlaybackError.DEFAULT, msg)
     }
 
     // ---- OnlinePoster: title-match reuse so torrent cards get covers without a second HTTP round-trip.
