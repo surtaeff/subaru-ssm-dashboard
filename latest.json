@@ -1,9 +1,9 @@
 {
- "tag": "v1.0-beta8",
- "name": "1.0-beta8",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta8/subaru-ssm-dashboard.apk",
- "size": 126336438,
- "notes": "Подсветка превышений по кругу прибора и мигание с анимацией, свой цвет предупреждений, список машин для OBD-II. Плюс всё из 1.0-beta7: Subaru до 1999 года по SSM1, циферблаты с японскими картинками, цифровые JDM-приборы, эффект стекла, подробности по ошибкам.",
+ "tag": "v1.0-beta9",
+ "name": "1.0-beta9",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta9/subaru-ssm-dashboard.apk",
+ "size": 139799112,
+ "notes": "Экран Видео, Яндекс Музыка в своём плеере, виджеты на главной, свой CAN-адаптер, голосовой ассистент не глушит собеседника при звонке и ровная связь с ЭБУ Subaru BP после долгих поездок. Плюс всё из 1.0-beta8: подсветка превышений по кругу прибора и мигание с анимацией, свой цвет предупреждений, список машин для OBD-II.",
  "logUrl": "https://script.google.com/macros/s/AKfycbyItYtasioVogj8klr_jO6DD3v2052wrEYNdCeyKa0b5J9jsX2sAIYam7JFS9xnCrmYkA/exec",
- "sha256": "b7006488cffb6d88fc48dc10f2affb6cea4c2277c93aa0a32f6ffbbbf0eb37e3"
+ "sha256": "f7dc54a5989fab89268bfa64b9aecd9e8afcb7ac9868e98a81646cf178a4f0ec"
 }
