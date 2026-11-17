@@ -128,13 +128,33 @@ class EcuService : Service() {
      * Consecutive USB write timeouts across pollLoop iterations: Evgen's Forester 2007 (9DMUWJ8K, sprd ums512,
      * beta3 log of 2026-11-16) had 476 `SerialTimeoutException: Error writing 6 bytes after 1022msec` in a row
      * after an ACC off/on, the FTDI endpoint wedged on this head unit's OTG controller. Each iteration closes
-     * and reopens the port but the USB connection itself needs a reset to unstick: after [WRITE_TIMEOUT_STREAK]
-     * timeouts in a row the finally block calls `UsbDeviceConnection.resetDevice()` by reflection (it is
-     * `@UnsupportedAppUsage` so not in the SDK) before closing, so the next iteration opens a fresh handle on
-     * the already-attached device. A handful of other users on sprd/alps head units saw the same symptom
-     * (Ego @Slorgen 2026-11-17 in TG topic 4: «аналогичная история»). Reset to 0 after each successful run.
+     * and reopens the port but the USB connection itself needs a reset to unstick.
+     *
+     * Two-step escalation after [WRITE_TIMEOUT_STREAK] timeouts in a row:
+     *   1. soft FTDI SIO reset via vendor control transfer (`FTDI_SIO_RESET`): purges RX/TX FIFOs on the chip
+     *      and clears the SIO state machine. The USB device address does not change, Android does not see a
+     *      new ATTACH broadcast, the user is not re-prompted for permission. Works for FTDI vid=0403.
+     *   2. after [WRITE_TIMEOUT_HARD_RESET] consecutive timeouts the soft reset has not helped: fall back to
+     *      `UsbDeviceConnection.resetDevice()` by reflection (it is `@UnsupportedAppUsage` so not in the SDK),
+     *      which issues a USB bus reset. This is what Evgen actually needed, but on some kernels it causes
+     *      re-enumeration with a new device address, so the user gets a new permission dialog each time (Alexey
+     *      @aleh_madjjiik 2026-11-17 saw this on Xiaomi 21081111RG). Keep it as the last resort.
+     *
+     * Reset to 0 after each successful run.
      */
     private var writeTimeoutStreak = 0
+    /**
+     * ROMs where a non-timeout USB IOException happened during polling in this app-process run. Stream mode is
+     * skipped for them until the next service restart: on some Android hosts (Alexey @aleh_madjjiik 2026-11-17,
+     * Xiaomi 21081111RG Android 14) the 110-byte stream-init TX trips a kernel-level `USB get_status request failed`
+     * that detaches the device, and every reconnect retries the stream and loses it again. Plain-poll bursts are
+     * much smaller and have not been seen to trigger the same failure. Session-scoped only, no persistence.
+     */
+    private val usbGuiltyRoms = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    )
+    /** ROM the pollLoop just connected to: lets the outer error handler mark the right ROM when an IOException comes up. */
+    @Volatile private var activeRomId: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -295,6 +315,8 @@ class EcuService : Service() {
             SsmTrace.enabled = s.traceEnabled
             SsmTrace.polling = false
             tracker.tick(System.currentTimeMillis())
+            // Clear before each iteration so an IOException before ECU init is not blamed on the previous ROM.
+            activeRomId = null
             val kind = s.adapter
             when (kind) {
                 "elm_bt" -> { bluetoothSession(s.btAddress, s.btName); delay(3000); continue }
@@ -461,7 +483,17 @@ class EcuService : Service() {
                         Repo.linkMessage.value = "Магнитола не отправляет запросы в кабель. Возможно, магнитола " +
                             "перезагрузилась с зажиганием. Попробуйте другой порт USB или перевоткните кабель"
                     }
-                } else writeTimeoutStreak = 0
+                } else {
+                    writeTimeoutStreak = 0
+                    // A non-timeout USB IOException (hoho's «USB get_status request failed» is the typical one) often
+                    // comes right before the kernel detaches the device. Mark this ROM so the next reconnect polls
+                    // without stream mode: its 110-byte init TX is the burst most likely to trip the same failure.
+                    if (e is java.io.IOException) {
+                        activeRomId?.let { rom ->
+                            if (usbGuiltyRoms.add(rom)) SsmTrace.log("USB error on ROM $rom, stream mode off for this run")
+                        }
+                    }
+                }
             } finally {
                 runCatching { EcuLink.client?.close() }
                 EcuLink.client = null
@@ -469,17 +501,31 @@ class EcuService : Service() {
                 runCatching { if (op2 != null) op2.close() else port.close() }
                 if (resetUsbBeforeClose) {
                     val streak = writeTimeoutStreak
-                    // UsbDeviceConnection.resetDevice() exists in AOSP but is @UnsupportedAppUsage, so not in the
-                    // SDK: call by reflection. The next iteration opens a fresh handle on the attached device,
-                    // and a wedged FTDI endpoint comes back without a re-plug.
-                    runCatching {
-                        val c: Any? = conn
-                        val m = c?.javaClass?.getMethod("resetDevice")
-                        m?.invoke(c)
-                    }.onSuccess {
-                        SsmTrace.log("USB write timeouts × $streak: resetDevice returned $it")
-                        writeTimeoutStreak = 0
-                    }.onFailure { SsmTrace.log("USB resetDevice: $it") }
+                    val isFtdi = driver.device.vendorId == 0x0403
+                    val hardReset = !isFtdi || streak >= WRITE_TIMEOUT_HARD_RESET
+                    if (!hardReset) {
+                        // FTDI vendor control transfer: SIO reset with PURGE_RX, PURGE_TX, then full RESET_SIO.
+                        // Does not change the device address, so Android does not re-prompt for permission.
+                        runCatching {
+                            conn.controlTransfer(FTDI_VENDOR_OUT, FTDI_SIO_RESET, FTDI_RESET_PURGE_RX, 0, null, 0, 1000)
+                            conn.controlTransfer(FTDI_VENDOR_OUT, FTDI_SIO_RESET, FTDI_RESET_PURGE_TX, 0, null, 0, 1000)
+                            conn.controlTransfer(FTDI_VENDOR_OUT, FTDI_SIO_RESET, FTDI_RESET_SIO, 0, null, 0, 1000)
+                        }.onSuccess {
+                            SsmTrace.log("USB write timeouts × $streak: FTDI soft SIO reset")
+                            writeTimeoutStreak = 0
+                        }.onFailure { SsmTrace.log("USB FTDI soft SIO reset: $it") }
+                    } else {
+                        // UsbDeviceConnection.resetDevice() exists in AOSP but is @UnsupportedAppUsage, so not in the
+                        // SDK: call by reflection. Full USB bus reset — last resort, may re-enumerate the device.
+                        runCatching {
+                            val c: Any? = conn
+                            val m = c?.javaClass?.getMethod("resetDevice")
+                            m?.invoke(c)
+                        }.onSuccess {
+                            SsmTrace.log("USB write timeouts × $streak: resetDevice returned $it")
+                            writeTimeoutStreak = 0
+                        }.onFailure { SsmTrace.log("USB resetDevice: $it") }
+                    }
                 }
                 runCatching { conn.close() }
                 SensorBoxLink.releaseEcu()
@@ -1055,6 +1101,7 @@ class EcuService : Service() {
             Repo.checkEngine.value = null
             codeWatch.newConnection(System.currentTimeMillis())
             SsmTrace.log("ECU init: SSM ${init.ssmId} ROM ${init.romId} caps ${init.capabilities.toHex(" ")}")
+            activeRomId = init.romId
             guard.romIam = EngineGuard.RomIam()
             val addrs = choosePollAddresses(client, init)
             if (addrs == null) {
@@ -1084,10 +1131,15 @@ class EcuService : Service() {
             tcuNextTryMs = 0
             SsmTrace.polling = true
             // «fast poll» (K-line): the ECU sends the values by itself, three times as often; off for this connection
-            // when it doesn't, and for this ROM when its restarts have fallen silent (see StreamRestarts)
-            val streamOff = streamRestarts.off(init.romId)
+            // when it doesn't, and for this ROM when its restarts have fallen silent (see StreamRestarts) or the host
+            // kernel errored out on the big stream-init TX earlier in this run (see [usbGuiltyRoms])
+            val usbGuilty = init.romId in usbGuiltyRoms
+            val streamOff = streamRestarts.off(init.romId) || usbGuilty
             var fast = Repo.settings.fastPoll && transport is kg.forester.sg.ssm.KLineTransport && !streamOff
-            if (streamOff && Repo.settings.fastPoll) SsmTrace.log("fast poll: off for ROM ${init.romId}, its stream restarts fell silent, plain requests")
+            if (streamOff && Repo.settings.fastPoll) SsmTrace.log(
+                if (usbGuilty) "fast poll: off for ROM ${init.romId}, host kernel errored out on stream earlier in this run, plain requests"
+                else "fast poll: off for ROM ${init.romId}, its stream restarts fell silent, plain requests"
+            )
             val fastFrames = Channel<ByteArray>(Channel.CONFLATED)
             var fastAddrs: IntArray = addrs
             var fastFrameSeen = false
@@ -2587,6 +2639,18 @@ class EcuService : Service() {
          * FTDI from an ignition flicker.
          */
         private const val WRITE_TIMEOUT_STREAK = 3
+        /** Escalate to a full USB bus reset only after this many consecutive timeouts: soft FTDI SIO reset has clearly not helped. */
+        private const val WRITE_TIMEOUT_HARD_RESET = 10
+        /** FTDI vendor request, host-to-device, device recipient: `0x40` per USB spec, used for every FTDI control command. */
+        private const val FTDI_VENDOR_OUT = 0x40
+        /** `SIO_RESET_REQUEST`: subcommand goes in wValue. */
+        private const val FTDI_SIO_RESET = 0x00
+        /** Reset SIO state machine (data flow, flow control, line parameters) without a USB bus reset. */
+        private const val FTDI_RESET_SIO = 0
+        /** Purge the on-chip RX FIFO. */
+        private const val FTDI_RESET_PURGE_RX = 1
+        /** Purge the on-chip TX FIFO. */
+        private const val FTDI_RESET_PURGE_TX = 2
         /** Transmission requests unanswered in a row: its values go, it is asked again later (see [tcuMiss]). */
         internal const val TCU_MISSES_MAX = 3
         internal const val TCU_RETRY_MS = 30_000L
