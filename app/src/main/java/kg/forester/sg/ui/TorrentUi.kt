@@ -52,10 +52,31 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import kg.forester.sg.data.Repo
 import kg.forester.sg.torrent.TorrentCatalog
+import kg.forester.sg.torrent.TorrentPlaybackError
 import kg.forester.sg.torrent.TorrentRelease
+import kg.forester.sg.video.VideoText
 import kg.forester.sg.video.rememberCarMoving
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+/** A poster the KgSearch / AltSearch screens already have in memory for an online hit. The Torrent section reuses these
+ *  by normalized-title match so a release card can show a cover without a second HTTP round-trip. */
+data class OnlinePoster(val normTitle: String, val year: Int, val url: String?) {
+    companion object {
+        /** Match on normalized title and, if both sides know a year, also on year. Zero year = unknown = ignore. */
+        fun pick(release: TorrentRelease, pool: List<OnlinePoster>): String? {
+            if (pool.isEmpty()) return null
+            val tNorm = VideoText.normalize(release.originalName ?: release.name)
+            if (tNorm.isBlank()) return null
+            val y = release.year
+            // exact title + year first; title-only second; fall back to a title-contains match last.
+            pool.firstOrNull { it.normTitle == tNorm && (y == 0 || it.year == 0 || it.year == y) && !it.url.isNullOrBlank() }
+                ?.let { return it.url }
+            pool.firstOrNull { it.normTitle == tNorm && !it.url.isNullOrBlank() }?.let { return it.url }
+            return pool.firstOrNull { !it.url.isNullOrBlank() && (tNorm.contains(it.normTitle) || it.normTitle.contains(tNorm)) }?.url
+        }
+    }
+}
 
 /**
  * «Торрент» section in «Видео». Shown in both Kyrgyz and non-Kyrgyz regions, as its own section under the online
@@ -65,7 +86,7 @@ import kotlinx.coroutines.withContext
  * When off, the section is a thin chip offering to turn it on from Настройки; nothing else runs, no engine spawns.
  */
 @Composable
-fun TorrentSection(query: String) {
+fun TorrentSection(query: String, onlinePosters: List<OnlinePoster> = emptyList()) {
     val ctx = LocalContext.current
     val enabled = remember { mutableStateOf(Repo.settings.torrentEnabled) }
     var showSettings by remember { mutableStateOf(false) }
@@ -83,7 +104,7 @@ fun TorrentSection(query: String) {
             !enabled.value -> T("Поиск по открытым трекерам выключен. Включите в настройках, если хотите видеть здесь раздачи.", 14.sp, C.Sub)
             moving -> T(TorrentDriving.BODY, 14.sp, C.Sub)
             query.isBlank() -> T("Введите название в поиске выше — покажу живые раздачи.", 14.sp, C.Sub)
-            else -> TorrentResults(query) { r -> if (!TorrentDriving.gatePick(moving)) play = r }
+            else -> TorrentResults(query, onlinePosters) { r -> if (!TorrentDriving.gatePick(moving)) play = r }
         }
     }
 
@@ -107,7 +128,7 @@ internal object TorrentDriving {
 }
 
 @Composable
-private fun TorrentResults(query: String, onPick: (TorrentRelease) -> Unit) {
+private fun TorrentResults(query: String, onlinePosters: List<OnlinePoster>, onPick: (TorrentRelease) -> Unit) {
     val ctx = LocalContext.current
     var retry by remember { mutableIntStateOf(0) }
     val found by produceState<Result<List<TorrentRelease>>?>(null, query, retry) {
@@ -123,7 +144,7 @@ private fun TorrentResults(query: String, onPick: (TorrentRelease) -> Unit) {
                 list.isEmpty() -> T("Раздач не нашлось", 15.sp, C.Sub)
                 else -> LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     items(list.take(40), key = { TorrentCatalog.infohash(it.magnet) }) { r ->
-                        ReleaseCard(r) { onPick(r) }
+                        ReleaseCard(r, OnlinePoster.pick(r, onlinePosters)) { onPick(r) }
                     }
                 }
             }
@@ -132,16 +153,38 @@ private fun TorrentResults(query: String, onPick: (TorrentRelease) -> Unit) {
 }
 
 @Composable
-private fun ReleaseCard(r: TorrentRelease, onClick: () -> Unit) {
+private fun ReleaseCard(r: TorrentRelease, posterUrl: String?, onClick: () -> Unit) {
     Column(
         Modifier.width(260.dp).clip(RoundedCornerShape(12.dp)).background(C.CardHi)
-            .tapClickable(onClick = onClick).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .tapClickable(onClick = onClick),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        val head = listOfNotNull(r.name.takeIf { it.isNotBlank() }, r.year.takeIf { it > 0 }?.toString()).joinToString(" · ")
-        T(head.ifBlank { r.title }, 15.sp, weight = FontWeight.SemiBold, maxLines = 2)
-        T(r.label, 13.sp, C.Sub, maxLines = 1)
-        if (r.tracker.isNotBlank()) T(r.tracker, 12.sp, C.Sub, maxLines = 1)
+        // Cover: if KgSearch/AltSearch already fetched a poster for this title, reuse it (zero new HTTP). Else a neutral
+        // tile with the quality badge — no network call, no «нет превью» embarrassment.
+        Box(
+            Modifier.fillMaxWidth().height(146.dp).background(C.Card),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (!posterUrl.isNullOrBlank()) {
+                RemoteImage(posterUrl, Modifier.fillMaxSize())
+            } else {
+                T("Торрент", 20.sp, C.Sub, weight = FontWeight.SemiBold)
+            }
+            if (r.quality > 0) {
+                Box(
+                    Modifier.align(Alignment.BottomEnd).padding(6.dp).clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xAA000000)).padding(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    T("${r.quality}p", 12.sp, Color.White, weight = FontWeight.SemiBold)
+                }
+            }
+        }
+        Column(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            val head = listOfNotNull(r.name.takeIf { it.isNotBlank() }, r.year.takeIf { it > 0 }?.toString()).joinToString(" · ")
+            T(head.ifBlank { r.title }, 15.sp, weight = FontWeight.SemiBold, maxLines = 2)
+            T(r.label, 13.sp, C.Sub, maxLines = 1)
+            if (r.tracker.isNotBlank()) T(r.tracker, 12.sp, C.Sub, maxLines = 1)
+        }
     }
 }
 
@@ -162,9 +205,11 @@ private fun TorrentPlayerDialog(r: TorrentRelease, onClose: () -> Unit) {
     val moving = rememberCarMoving()
 
     val player = remember {
+        // Head units sit at a 48–192 MB Java heap even with largeHeap=true; a 4K stream at 50 Mb/s × 120 s maxBuffer plans
+        // ~750 MB of buffer alone and blows OOM before the first picture. Cut the buffer window to ~45 s max — car trips
+        // don't need more, and the local TorrServer answers Range instantly on a seek.
         val load = DefaultLoadControl.Builder()
-            // torrent chunks arrive in bursts: keep a generous window so a briefly empty read does not stop playback
-            .setBufferDurationsMs(30_000, 120_000, 2_500, 5_000)
+            .setBufferDurationsMs(15_000, 45_000, 1_500, 3_000)
             .build()
         ExoPlayer.Builder(ctx)
             .setLoadControl(load)
@@ -184,7 +229,7 @@ private fun TorrentPlayerDialog(r: TorrentRelease, onClose: () -> Unit) {
             }
             override fun onPlayerError(e: PlaybackException) {
                 loading = false
-                error = "Поток прервался: ${e.message ?: "сид ушёл, попробуйте другую раздачу"}"
+                error = TorrentPlaybackError.message(e)
             }
         }
         player.addListener(l)
