@@ -122,6 +122,8 @@ class EcuService : Service() {
     private var tcuNoFwd = false
     private var logger: CsvLogger? = null
     private var triedHostFix = false
+    /** elapsedRealtime of the last successful USB claim: used to hint «перевоткните кабель» after the cable was just working. */
+    @Volatile private var lastHadCableMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -318,7 +320,7 @@ class EcuService : Service() {
                 Repo.link.value = LinkState.NO_CABLE
                 Repo.adapterFound.value = ""
                 val other = drivers.firstOrNull()
-                Repo.linkMessage.value = when {
+                val base = when {
                     kind == "auto" -> "Адаптер не найден: подключите USB-кабель или Wi-Fi/Bluetooth-адаптер " +
                         "(Bluetooth сначала сопрягите в настройках Android)"
                     other != null && kind == "op2" -> "Найден KKL-кабель, а в настройках выбран OpenPort 2.0"
@@ -331,10 +333,20 @@ class EcuService : Service() {
                     kind == "elm_usb" -> "USB-адаптер ELM327 не найден"
                     else -> "Кабель KKL не найден (если он подключён — «Отправить журнал»: в журнале коды всех USB-устройств)"
                 }
+                // the cable worked a moment ago and now the system doesn't see it: it is often the head unit's OTG that
+                // stayed in device mode after the ignition cycle (Evgen, Ego 2026-11-17 in TG). The pollLoop keeps looking
+                // every 2 s on its own; the hint is for the person at the screen
+                val sinceCable = android.os.SystemClock.elapsedRealtime() - lastHadCableMs
+                val recent = lastHadCableMs > 0L && sinceCable in 0..300_000L
+                Repo.linkMessage.value = if (recent)
+                    "$base. Был подключён и пропал: магнитола могла перезагрузиться с зажиганием. Перевоткните кабель или попробуйте другой USB-порт"
+                else base
                 delay(2000)
                 continue
             }
             noCableSince = System.currentTimeMillis()
+            // next no-cable gap gets its own OTG host-mode shove: a user who cycles the ignition hourly needs it each time
+            triedHostFix = false
             if (!usb.hasPermission(driver.device)) {
                 Repo.link.value = LinkState.NO_PERMISSION
                 Repo.linkMessage.value = "Нет разрешения на USB: нажмите «OK» в окне Android (лучше с галочкой «по умолчанию»). " +
@@ -361,6 +373,7 @@ class EcuService : Service() {
             var streams: UsbStreams? = null
             try {
                 port.open(conn)
+                lastHadCableMs = android.os.SystemClock.elapsedRealtime()
                 val id = "%04X:%04X".format(driver.device.vendorId, driver.device.productId)
                 when {
                     isCanable(driver) -> {
