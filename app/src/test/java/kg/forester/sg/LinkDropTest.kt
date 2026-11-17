@@ -114,6 +114,31 @@ class LinkDropTest {
         assertFalse(r.off("3C04504316"))
     }
 
+    @Test fun offRomsAreKeptAcrossCableReopensAndAppRestarts() {
+        // Серёга's Legacy BP 1.0-beta8 log: the stream fell silent twice, the plain-requests decision then had to
+        // hold through 12 cable reopens in 65 min instead of each new session firing the 25-address stream again
+        val store = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
+        val key = "store"
+        val first = StreamRestarts(load = { store[key] ?: emptySet() }, save = { store[key] = it })
+        assertEquals(1, first.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        assertNull(store[key])
+        assertEquals(2, first.silent(rom, run = 0, frameSeen = true, ignored = 2))
+        assertEquals(setOf(rom), store[key])
+        // the service came back (a new EcuService instance): this ROM stays off straight away
+        val second = StreamRestarts(load = { store[key] ?: emptySet() }, save = { store[key] = it })
+        assertTrue(second.off(rom))
+        assertFalse(second.off("3C04504316"))
+        // a second ROM falling silent is added to the stored set, not written over it
+        assertEquals(1, second.silent("3C04504316", run = 0, frameSeen = true, ignored = 2))
+        assertEquals(setOf(rom), store[key])
+        assertEquals(2, second.silent("3C04504316", run = 0, frameSeen = true, ignored = 2))
+        assertEquals(setOf(rom, "3C04504316"), store[key])
+        // the owner cleared the set (Fast Poll switch off and on): a fresh StreamRestarts starts blank
+        store[key] = emptySet()
+        val fresh = StreamRestarts(load = { store[key] ?: emptySet() }, save = { store[key] = it })
+        assertFalse(fresh.off(rom))
+    }
+
     @Test fun aRestartTheEcuIgnoresIsToldFromADeadLine() {
         val line = Line()
         val c = SsmClient(line)
