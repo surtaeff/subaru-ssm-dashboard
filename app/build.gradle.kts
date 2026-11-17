@@ -88,6 +88,9 @@ android {
         compose = true
         buildConfig = true
     }
+    // JVM unit tests call Android stubs indirectly through libraries (media3 PlaybackException constructs itself using
+    // SystemClock.elapsedRealtime). Default-value the Android layer so those tests work without Robolectric.
+    testOptions { unitTests.isReturnDefaultValues = true }
 }
 
 // The APK is named after the app: carpulse-0.9-beta21.apk (release and debug alike), carpulse-0.9-beta21-arm64-v8a.apk
