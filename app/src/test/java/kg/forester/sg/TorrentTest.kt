@@ -4,6 +4,7 @@ import kg.forester.sg.torrent.JacredClient
 import kg.forester.sg.torrent.TorrClient
 import kg.forester.sg.torrent.TorrEngine
 import kg.forester.sg.torrent.TorrentCatalog
+import kg.forester.sg.torrent.TorrentPlaybackError
 import kg.forester.sg.torrent.TorrentRelease
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -239,4 +240,89 @@ class TorrentTest {
         assertEquals(5f, mov, 0.01f)
         assertEquals(2f, stp, 0.01f)
     }
+
+    // ---- TorrentPlaybackError: driver-facing mapping. Depends on media3 PlaybackException codes being the public ints.
+
+    @Test fun playbackError_oomWrappedInSourceError_showsMemoryHint() {
+        val oom = OutOfMemoryError("Failed to allocate 65552 bytes")
+        // ExoPlayer wraps it the way Caused by: N1.m: Unexpected OutOfMemoryError
+        val wrapped = RuntimeException("Source error", oom)
+        val pe = androidx.media3.common.PlaybackException(
+            "Source error", wrapped, androidx.media3.common.PlaybackException.ERROR_CODE_FAILED_RUNTIME_CHECK,
+        )
+        val msg = TorrentPlaybackError.message(pe)
+        assertEquals(TorrentPlaybackError.OOM, msg)
+        assertTrue(msg.contains("памяти"))
+        assertTrue(msg.contains("качеством пониже"))
+    }
+
+    @Test fun playbackError_ioNetworkCode_showsNoAnswerHint() {
+        val pe = androidx.media3.common.PlaybackException(
+            "Source error", null, androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+        )
+        val msg = TorrentPlaybackError.message(pe)
+        assertTrue("got: $msg", msg.contains("нет ответа"))
+    }
+
+    @Test fun playbackError_decoderFail_showsCodecHint() {
+        val pe = androidx.media3.common.PlaybackException(
+            "Source error", null, androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+        )
+        val msg = TorrentPlaybackError.message(pe)
+        assertTrue("got: $msg", msg.contains("декодер"))
+        assertTrue(msg.contains("качеством пониже"))
+    }
+
+    @Test fun playbackError_nullStaysOnDefault() {
+        assertEquals(TorrentPlaybackError.DEFAULT, TorrentPlaybackError.message(null))
+    }
+
+    @Test fun playbackError_nonExoThrowable_isPassedThrough() {
+        val msg = TorrentPlaybackError.message(RuntimeException("jacred вернул пусто"))
+        assertTrue(msg.startsWith("Торрент:"))
+        assertTrue(msg.contains("jacred"))
+    }
+
+    // ---- OnlinePoster: title-match reuse so torrent cards get covers without a second HTTP round-trip.
+
+    @Test fun onlinePoster_exactTitleAndYearMatchWins() {
+        val pool = listOf(
+            kg.forester.sg.ui.OnlinePoster("the matrix", 1999, "https://ts.kg/poster.jpg"),
+            kg.forester.sg.ui.OnlinePoster("the matrix", 2003, "https://wrong-year.jpg"),
+        )
+        val release = releaseOf(name = "Матрица", original = "The Matrix", year = 1999)
+        assertEquals("https://ts.kg/poster.jpg", kg.forester.sg.ui.OnlinePoster.pick(release, pool))
+    }
+
+    @Test fun onlinePoster_fallsBackToTitleOnlyWhenYearMissing() {
+        val pool = listOf(kg.forester.sg.ui.OnlinePoster("inception", 2010, "https://inception.jpg"))
+        val release = releaseOf(name = "Начало", original = "Inception", year = 0)
+        assertEquals("https://inception.jpg", kg.forester.sg.ui.OnlinePoster.pick(release, pool))
+    }
+
+    @Test fun onlinePoster_blankPoolReturnsNull() {
+        val release = releaseOf(name = "Anything", original = null, year = 2024)
+        assertNull(kg.forester.sg.ui.OnlinePoster.pick(release, emptyList()))
+    }
+
+    @Test fun onlinePoster_noMatchReturnsNull() {
+        val pool = listOf(kg.forester.sg.ui.OnlinePoster("solaris", 1972, "https://solaris.jpg"))
+        val release = releaseOf(name = "Что-то другое", original = null, year = 2024)
+        assertNull(kg.forester.sg.ui.OnlinePoster.pick(release, pool))
+    }
+
+    @Test fun onlinePoster_blankUrlNeverPicked() {
+        val pool = listOf(
+            kg.forester.sg.ui.OnlinePoster("the matrix", 1999, ""),
+            kg.forester.sg.ui.OnlinePoster("the matrix", 1999, "https://good.jpg"),
+        )
+        val release = releaseOf(name = "The Matrix", original = null, year = 1999)
+        assertEquals("https://good.jpg", kg.forester.sg.ui.OnlinePoster.pick(release, pool))
+    }
+
+    private fun releaseOf(name: String, original: String?, year: Int): TorrentRelease = TorrentRelease(
+        magnet = "magnet:?xt=urn:btih:X", name = name, originalName = original, title = name,
+        year = year, quality = 1080, voices = emptyList(), sizeBytes = 0, sizeName = "",
+        seeders = 1, peers = 0, tracker = "", isSeries = false,
+    )
 }

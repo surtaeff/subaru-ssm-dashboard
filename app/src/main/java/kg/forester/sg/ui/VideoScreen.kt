@@ -231,6 +231,15 @@ private fun KgSearch(query: String, open: (String) -> Unit) {
     }
     val f = found
     if (f == null) { Loading(); return }
+    // Collect every online hit's (normalized title, year, poster) so the Торрент section can reuse a cover without a
+    // second HTTP round-trip (bug fix: torrent cards previously showed as text-only «нет превью»).
+    val onlinePosters = remember(f) {
+        VideoSource.entries.flatMap { src ->
+            f[src]?.value.orEmpty().map { c ->
+                OnlinePoster(VideoText.normalize(c.original ?: c.title), c.year, c.poster)
+            }
+        }
+    }
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         VideoSource.entries.forEach { src ->
             val r = f[src]
@@ -246,7 +255,7 @@ private fun KgSearch(query: String, open: (String) -> Unit) {
                 }
             }
         }
-        item("torrent") { TorrentSection(query) }
+        item("torrent") { TorrentSection(query, onlinePosters) }
     }
 }
 
@@ -533,6 +542,12 @@ private fun AltSearch(query: String, ytKey: String, play: (AltVideo) -> Unit) {
         value = null
         if (ytKey.isNotBlank()) value = withContext(Dispatchers.IO) { runCatching { YouTube.search(query, ytKey) } }
     }
+    // Same poster-reuse as the Kyrgyzstan path: AltVideo's thumb goes into the pool so Торрент can match on normalized title.
+    val onlinePosters = remember(rt, yt) {
+        (rt?.getOrNull().orEmpty() + yt?.getOrNull().orEmpty()).map { v ->
+            OnlinePoster(VideoText.normalize(v.title), 0, v.thumb)
+        }
+    }
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         listOf("Rutube" to rt, "YouTube" to yt).forEach { (name, res) ->
             if (name == "YouTube" && ytKey.isBlank()) return@forEach
@@ -549,7 +564,7 @@ private fun AltSearch(query: String, ytKey: String, play: (AltVideo) -> Unit) {
                 }
             }
         }
-        item("torrent") { TorrentSection(query) }
+        item("torrent") { TorrentSection(query, onlinePosters) }
     }
 }
 

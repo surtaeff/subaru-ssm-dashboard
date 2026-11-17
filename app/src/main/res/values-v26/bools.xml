@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- From Android 8 bitmaps are native memory: the Java heap stays under 25 MB on the AVD. -->
-    <bool name="large_heap">false</bool>
+    <!-- From Android 8 bitmaps are native memory, which used to keep the Java heap under 25 MB on the AVD. But the
+         torrent player raises the ceiling: ExoPlayer at 4K bitrates plans buffers (minBuffer/maxBuffer × bitrate) that
+         blow through the default 48 MB heap before the first picture and surface as «Поток прервался: Source error»
+         (an OOM wrapped in ExoPlayer's generic source error). largeHeap=true is a global change — every screen's
+         ceiling moves — but SSM + CAN + GPS + audio already share the same process, so it's the ceiling that gates
+         them too. -->
+    <bool name="large_heap">true</bool>
 </resources>
