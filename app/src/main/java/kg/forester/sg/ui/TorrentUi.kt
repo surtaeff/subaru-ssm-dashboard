@@ -53,6 +53,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import kg.forester.sg.data.Repo
 import kg.forester.sg.torrent.TorrentCatalog
 import kg.forester.sg.torrent.TorrentRelease
+import kg.forester.sg.video.rememberCarMoving
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 

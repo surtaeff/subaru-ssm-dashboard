@@ -41,7 +41,7 @@ object TorrentCatalog {
         val q = query.trim()
         if (q.length < 2) return@withContext emptyList()
         synchronized(cache) { cache[q]?.let { (rs, at) -> if (SystemClock.elapsedRealtime() - at < SEARCH_TTL_MS) return@withContext rs } }
-        val hosts = Repo.get(c).jacredHosts()
+        val hosts = Repo.settings.jacredHosts()
         val client = JacredClient(hosts)
         val releases = runCatching { client.search(q, exact = false) }.getOrDefault(emptyList())
             .distinctBy { infohash(it.magnet) }

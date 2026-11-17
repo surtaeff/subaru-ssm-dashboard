@@ -75,7 +75,9 @@ class TorrEngine(context: Context, val port: Int = TorrClient.DEFAULT_PORT) {
                 "--ip", "127.0.0.1",
             )
             pb.redirectErrorStream(true)
-            pb.redirectOutput(File(dataDir, "ts.out"))
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                pb.redirectOutput(File(dataDir, "ts.out"))
+            }
             pb.directory(dataDir)
             process = pb.start()
             Log.i(TAG, "TorrServer started from ${binary.absolutePath} on port $port")
