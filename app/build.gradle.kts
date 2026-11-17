@@ -19,8 +19,16 @@ android {
         versionName = "1.0-beta8"
     }
 
-    // head units and phones are 32 or 64-bit ARM; the other copies of the native libraries only made the APK bigger
-    packaging { jniLibs { excludes += listOf("lib/x86/**", "lib/x86_64/**", "lib/armeabi/**", "lib/mips/**", "lib/mips64/**") } }
+    // head units and phones are 32 or 64-bit ARM; the other copies of the native libraries only made the APK bigger.
+    // libtorrserver.so (a 32-bit arm executable) must stay uncompressed and keep its debug symbols, or Android's installer
+    // strips it and TorrEngine's ProcessBuilder gets a broken binary. extractNativeLibs="true" in the manifest goes with it.
+    packaging {
+        jniLibs {
+            excludes += listOf("lib/x86/**", "lib/x86_64/**", "lib/armeabi/**", "lib/mips/**", "lib/mips64/**")
+            useLegacyPackaging = true
+            keepDebugSymbols += "**/libtorrserver.so"
+        }
+    }
 
     // A release also gets one APK per ABI, for Updater.pickApk. The universal APK stays the main file under its old name:
     // installs older than that function only look for it. Debug builds make the universal one alone.
