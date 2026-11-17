@@ -208,4 +208,35 @@ class TorrentTest {
         m.isAccessible = true
         assertNull(m.invoke(JacredClient(), null as org.json.JSONObject?))
     }
+
+    // ---- TorrentDriving (TorrentUi internal object): pure, testable from JVM.
+
+    @Test fun torrentDriving_gatePickFollowsMoving() {
+        val cls = Class.forName("kg.forester.sg.ui.TorrentDriving")
+        val instance = cls.getDeclaredField("INSTANCE").get(null)
+        val gate = cls.getDeclaredMethod("gatePick", Boolean::class.javaPrimitiveType)
+        // car is moving → pick is swallowed; car is still → pick goes through
+        assertTrue(gate.invoke(instance, true) as Boolean)
+        assertFalse(gate.invoke(instance, false) as Boolean)
+    }
+
+    @Test fun torrentDriving_wordingMatchesOwnersPreLockDropVocabulary() {
+        val cls = Class.forName("kg.forester.sg.ui.TorrentDriving")
+        val title = cls.getDeclaredField("TITLE").get(null) as String
+        val body = cls.getDeclaredField("BODY").get(null) as String
+        assertTrue("TITLE must talk about «на стоянке»", title.contains("на стоянке"))
+        assertTrue("BODY must say «Машина едет»", body.contains("Машина едет"))
+        assertTrue("BODY must tell the driver to stop", body.contains("Остановитесь"))
+    }
+
+    // Sanity on the project's shared driving-lock helper this file reuses: the hysteresis is kept at the documented
+    // 5 km/h-start / 2 km/h-stop, so if someone changes it under us the test fails and the torrent lock gets re-reviewed.
+    @Test fun sharedHysteresis_stillAt5and2() {
+        val cls = Class.forName("kg.forester.sg.video.VideoDriving")
+        val vd = cls.getDeclaredField("INSTANCE").get(null)
+        val mov = cls.getDeclaredField("MOVING_KMH").getFloat(vd)
+        val stp = cls.getDeclaredField("STOPPED_KMH").getFloat(vd)
+        assertEquals(5f, mov, 0.01f)
+        assertEquals(2f, stp, 0.01f)
+    }
 }

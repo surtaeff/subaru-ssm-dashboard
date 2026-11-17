@@ -69,6 +69,7 @@ fun TorrentSection(query: String) {
     val enabled = remember { mutableStateOf(Repo.settings.torrentEnabled) }
     var showSettings by remember { mutableStateOf(false) }
     var play by remember { mutableStateOf<TorrentRelease?>(null) }
+    val moving = rememberCarMoving()
 
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -77,12 +78,11 @@ fun TorrentSection(query: String) {
             Chip("Настройки", false, { showSettings = true })
         }
         Spacer(Modifier.height(8.dp))
-        if (!enabled.value) {
-            T("Поиск по открытым трекерам выключен. Включите в настройках, если хотите видеть здесь раздачи.", 14.sp, C.Sub)
-        } else if (query.isBlank()) {
-            T("Введите название в поиске выше — покажу живые раздачи.", 14.sp, C.Sub)
-        } else {
-            TorrentResults(query) { play = it }
+        when {
+            !enabled.value -> T("Поиск по открытым трекерам выключен. Включите в настройках, если хотите видеть здесь раздачи.", 14.sp, C.Sub)
+            moving -> T(TorrentDriving.BODY, 14.sp, C.Sub)
+            query.isBlank() -> T("Введите название в поиске выше — покажу живые раздачи.", 14.sp, C.Sub)
+            else -> TorrentResults(query) { r -> if (!TorrentDriving.gatePick(moving)) play = r }
         }
     }
 
@@ -91,6 +91,18 @@ fun TorrentSection(query: String) {
         onClose = { showSettings = false },
     )
     play?.let { TorrentPlayerDialog(it) { play = null } }
+}
+
+/** Torrent-player driving lock: the online Видео players drop theirs (commit 7c41302), torrent keeps it on. Seeking a
+ *  torrent stream is a real cost (chunks have to arrive, cache may not cover the jump) and a stall while a half-filled
+ *  buffer catches up is worse behind the wheel than for the online players. Kept as a pure object for a JVM test. */
+internal object TorrentDriving {
+    /** Reuses the owner's established wording from before the online lock was dropped: «на стоянке / остановитесь». */
+    const val TITLE = "Торрент: выбор раздачи только на стоянке"
+    const val BODY = "Машина едет: выбрать и открыть новую раздачу нельзя. То, что уже играет, продолжит играть. Остановитесь, и можно будет открыть следующую."
+
+    /** Pick is gated while moving. Returns true when the UI should swallow the click. */
+    fun gatePick(moving: Boolean): Boolean = moving
 }
 
 @Composable
@@ -133,7 +145,11 @@ private fun ReleaseCard(r: TorrentRelease, onClick: () -> Unit) {
 }
 
 /** Minimal full-screen player for torrent streams. ExoPlayer with a bigger LoadControl so small stalls over the local
- *  HTTP are absorbed. Range / seek already works because TorrServer answers 206 on /stream. */
+ *  HTTP are absorbed. Range / seek already works because TorrServer answers 206 on /stream.
+ *
+ *  Driving lock: while the car is moving, playback of what is already streaming continues (per coordinator intent — a
+ *  stall over Range seeking mid-movement is riskier than letting the current stream play out). But the driver can't
+ *  open the file-pick / seek-to-any-position controls: the overlay is shown instead. */
 @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 @Composable
 private fun TorrentPlayerDialog(r: TorrentRelease, onClose: () -> Unit) {
@@ -142,6 +158,7 @@ private fun TorrentPlayerDialog(r: TorrentRelease, onClose: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var pos by remember { mutableLongStateOf(0L) }
     var dur by remember { mutableLongStateOf(0L) }
+    val moving = rememberCarMoving()
 
     val player = remember {
         val load = DefaultLoadControl.Builder()
@@ -204,14 +221,26 @@ private fun TorrentPlayerDialog(r: TorrentRelease, onClose: () -> Unit) {
                 Chip("Закрыть", false, onClose)
             }
         }
-        // minimal controls: tap the surface to toggle play/pause, swipe-free close via back
-        Box(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(16.dp),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Chip(if (player.isPlaying) "Пауза" else "▶", false, { player.playWhenReady = !player.playWhenReady })
-                Chip("Закрыть", false, onClose)
+        // minimal controls — hidden while the car moves: picking a seek position or opening a new release is the gated
+        // action; what is already playing goes on (per the lock's intent).
+        if (!moving) {
+            Box(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(16.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Chip(if (player.isPlaying) "Пауза" else "▶", false, { player.playWhenReady = !player.playWhenReady })
+                    Chip("Закрыть", false, onClose)
+                }
+            }
+        }
+        // The driving-lock overlay: a thin strip at the top so it does not cover the picture — the stream keeps playing.
+        if (moving) {
+            Row(
+                Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color(0xCC000000)).padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                T(TorrentDriving.TITLE, 14.sp, Color.White, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             }
         }
     }
