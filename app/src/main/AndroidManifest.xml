@@ -87,6 +87,7 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.ForesterSG"
         android:requestLegacyExternalStorage="true"
+        android:extractNativeLibs="true"
         android:largeHeap="@bool/large_heap">
 
         <activity

@@ -428,6 +428,35 @@ class Settings(ctx: Context) {
         get() = p.getLong("updCheck", 0L)
         set(v) = p.edit().putLong("updCheck", v).apply()
 
+    // -------- Torrent (TorrServer + jacred). The master switch stays off until the owner turns it on on their own unit.
+
+    /** Master switch for the «Торрент» section in Видео. Off by default — see carpulse-local-only-overhaul memory. */
+    var torrentEnabled: Boolean
+        get() = p.getBoolean("torrentEnabled", false)
+        set(v) = p.edit().putBoolean("torrentEnabled", v).apply()
+
+    /** On-disk cache size for TorrServer, in MiB. Rungs: 64, 128, 192, 256, 384. */
+    var torrentCacheMb: Int
+        get() = p.getInt("torrentCacheMb", 128)
+        set(v) = p.edit().putInt("torrentCacheMb", v).apply()
+
+    /** jacred hosts, comma-separated; empty = the compiled-in defaults. */
+    var torrentJacredHosts: String
+        get() = p.getString("torrentJacredHosts", "")!!
+        set(v) = p.edit().putString("torrentJacredHosts", v.trim()).apply()
+
+    fun torrentSettings(): kg.forester.sg.torrent.TorrEngine.Settings {
+        val mb = torrentCacheMb.coerceIn(64, 512)
+        return kg.forester.sg.torrent.TorrEngine.Settings.DEFAULT.copy(cacheBytes = mb.toLong() * 1024 * 1024)
+    }
+
+    fun jacredHosts(): List<String> {
+        val raw = torrentJacredHosts
+        if (raw.isBlank()) return kg.forester.sg.torrent.JacredClient.DEFAULT_HOSTS
+        return raw.split(',', ';', ' ', '\n').map { it.trim() }.filter { it.startsWith("http") }
+            .ifEmpty { kg.forester.sg.torrent.JacredClient.DEFAULT_HOSTS }
+    }
+
     /** Spoken warnings (IAM, overheating, maintenance…); without a Russian voice on the unit it is a beep. */
     /** «Мотор» in «Мониторинг»: the 3D engine with callouts, or the classic three panels. */
     var engine3d: Boolean

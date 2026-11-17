@@ -246,6 +246,7 @@ private fun KgSearch(query: String, open: (String) -> Unit) {
                 }
             }
         }
+        item("torrent") { TorrentSection(query) }
     }
 }
 
@@ -544,6 +545,7 @@ private fun AltSearch(query: String, ytKey: String, play: (AltVideo) -> Unit) {
                 }
             }
         }
+        item("torrent") { TorrentSection(query) }
     }
 }
 
