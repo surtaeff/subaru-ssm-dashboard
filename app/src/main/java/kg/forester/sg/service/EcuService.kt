@@ -124,6 +124,17 @@ class EcuService : Service() {
     private var triedHostFix = false
     /** elapsedRealtime of the last successful USB claim: used to hint «перевоткните кабель» after the cable was just working. */
     @Volatile private var lastHadCableMs = 0L
+    /**
+     * Consecutive USB write timeouts across pollLoop iterations: Evgen's Forester 2007 (9DMUWJ8K, sprd ums512,
+     * beta3 log of 2026-11-16) had 476 `SerialTimeoutException: Error writing 6 bytes after 1022msec` in a row
+     * after an ACC off/on, the FTDI endpoint wedged on this head unit's OTG controller. Each iteration closes
+     * and reopens the port but the USB connection itself needs a reset to unstick: after [WRITE_TIMEOUT_STREAK]
+     * timeouts in a row the finally block calls `UsbDeviceConnection.resetDevice()` by reflection (it is
+     * `@UnsupportedAppUsage` so not in the SDK) before closing, so the next iteration opens a fresh handle on
+     * the already-attached device. A handful of other users on sprd/alps head units saw the same symptom
+     * (Ego @Slorgen 2026-11-17 in TG topic 4: «аналогичная история»). Reset to 0 after each successful run.
+     */
+    private var writeTimeoutStreak = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -371,6 +382,7 @@ class EcuService : Service() {
                 .format(driver.device.vendorId, driver.device.productId))
             var op2: OpenPort2? = null
             var streams: UsbStreams? = null
+            var resetUsbBeforeClose = false
             try {
                 port.open(conn)
                 lastHadCableMs = android.os.SystemClock.elapsedRealtime()
@@ -439,16 +451,41 @@ class EcuService : Service() {
                     Repo.link.value = LinkState.ERROR
                     Repo.linkMessage.value = kg.forester.sg.data.Failure.link(e, "Ошибка связи")
                 }
+                // Some head units' OTG controller wedges after ACC off/on: writeRaw times out on the same port
+                // for minutes (see [writeTimeoutStreak]). Count only the hoho usb-serial SerialTimeoutException,
+                // not Bluetooth/Wi-Fi socket drops.
+                if (e is com.hoho.android.usbserial.driver.SerialTimeoutException) {
+                    writeTimeoutStreak++
+                    if (writeTimeoutStreak >= WRITE_TIMEOUT_STREAK) {
+                        resetUsbBeforeClose = true
+                        Repo.linkMessage.value = "Магнитола не отправляет запросы в кабель. Возможно, магнитола " +
+                            "перезагрузилась с зажиганием. Попробуйте другой порт USB или перевоткните кабель"
+                    }
+                } else writeTimeoutStreak = 0
             } finally {
                 runCatching { EcuLink.client?.close() }
                 EcuLink.client = null
                 runCatching { streams?.close() }
                 runCatching { if (op2 != null) op2.close() else port.close() }
+                if (resetUsbBeforeClose) {
+                    val streak = writeTimeoutStreak
+                    // UsbDeviceConnection.resetDevice() exists in AOSP but is @UnsupportedAppUsage, so not in the
+                    // SDK: call by reflection. The next iteration opens a fresh handle on the attached device,
+                    // and a wedged FTDI endpoint comes back without a re-plug.
+                    runCatching {
+                        val c: Any? = conn
+                        val m = c?.javaClass?.getMethod("resetDevice")
+                        m?.invoke(c)
+                    }.onSuccess {
+                        SsmTrace.log("USB write timeouts × $streak: resetDevice returned $it")
+                        writeTimeoutStreak = 0
+                    }.onFailure { SsmTrace.log("USB resetDevice: $it") }
+                }
                 runCatching { conn.close() }
                 SensorBoxLink.releaseEcu()
                 logger?.close(); logger = null
             }
-            delay(1000)
+            delay(if (resetUsbBeforeClose) 2500 else 1000)
         }
     }
 
@@ -2543,6 +2580,13 @@ class EcuService : Service() {
 
         /** A freshly opened K-line only listens this long: another tester or gauge polling is heard before our init. */
         private const val LISTEN_FIRST_MS = 1000L
+
+        /**
+         * Consecutive USB write-timeouts the pollLoop puts up with before it resets the USB device on the next pass.
+         * Three timeouts at ~1 s each is about 12 s of silence on the screen, which is enough to tell a wedged
+         * FTDI from an ignition flicker.
+         */
+        private const val WRITE_TIMEOUT_STREAK = 3
         /** Transmission requests unanswered in a row: its values go, it is asked again later (see [tcuMiss]). */
         internal const val TCU_MISSES_MAX = 3
         internal const val TCU_RETRY_MS = 30_000L
