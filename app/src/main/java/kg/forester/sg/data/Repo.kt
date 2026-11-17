@@ -333,7 +333,30 @@ class Settings(ctx: Context) {
     /** K-line: the ECU sends the values by itself (SSM continuous mode, RomRaider's «fast poll»), where it can. */
     var fastPoll: Boolean
         get() = p.getBoolean("fastPoll", true)
-        set(v) = p.edit().putBoolean("fastPoll", v).apply()
+        set(v) {
+            p.edit().putBoolean("fastPoll", v).apply()
+            // the switch turned on again is "try once more": the per-ROM decisions that turned it off go
+            if (v) fastPollOffRoms = emptySet()
+        }
+
+    /**
+     * ROMs whose fast-poll stream fell silent twice in a row on this build: the ECU polling stays plain until
+     * either the app is updated (new [kg.forester.sg.BuildConfig.VERSION_CODE]) or the Fast Poll switch is
+     * toggled off and on again. Saved so a cable reopen, a service restart or an app relaunch doesn't make the
+     * ECU choke on the same 25-address stream again (Серёга's Legacy BP, ROM 2F04207006, 1.0-beta8 log).
+     */
+    var fastPollOffRoms: Set<String>
+        get() {
+            val built = p.getInt("fastPollOffBuild", 0)
+            if (built != kg.forester.sg.BuildConfig.VERSION_CODE) return emptySet()
+            return p.getString("fastPollOffRoms", "")!!.split(',').filter { it.isNotBlank() }.toSet()
+        }
+        set(v) {
+            p.edit()
+                .putString("fastPollOffRoms", v.joinToString(","))
+                .putInt("fastPollOffBuild", kg.forester.sg.BuildConfig.VERSION_CODE)
+                .apply()
+        }
 
     /** The transmission unit is read every N-th engine poll (3 = as before; more = faster engine data). */
     var tcuEvery: Int

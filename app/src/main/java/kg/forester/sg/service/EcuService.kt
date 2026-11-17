@@ -809,8 +809,15 @@ class EcuService : Service() {
     /** Addresses per request each ECU (by ROM) took this run of the service: kept over reconnects (see SsmClient.presetReadLimit). */
     private val ecuReadLimits = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
-    /** Stream restarts each ECU let pass in silence this run of the service (see the fast poll in [session]). */
-    private val streamRestarts = StreamRestarts()
+    /**
+     * Stream restarts each ECU let pass in silence (see the fast poll in [session]). The ROMs whose stream fell silent
+     * twice are kept in [Settings.fastPollOffRoms] so a cable reopen or an app restart doesn't try them again on this
+     * build.
+     */
+    private val streamRestarts = StreamRestarts(
+        load = { Repo.settings.fastPollOffRoms },
+        save = { Repo.settings.fastPollOffRoms = it },
+    )
 
     /** ECUs (by ROM) that went mute on a plain cable this run of the service: the long gap from the next connection's start (KLineTransport.longGap). */
     private val longGapRoms = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>()) // newKeySet needs API 24
@@ -2563,25 +2570,37 @@ class EcuService : Service() {
 }
 
 /**
- * Stream restarts each ECU (by ROM) let pass in silence, the line live, this run of the service. A Legacy BP had 104 of
- * 117 stream drops right after a restart (the transmission read in between), one restart in seven, the ECU mute each
- * time until the line was held low. Once: the transmission far less often ([tcuGapMs]); [MAX] times: plain requests
- * for that ROM, which kept its line up far better. An ECU that streams through it all keeps the stream as it was.
+ * Stream restarts each ECU (by ROM) let pass in silence, the line live. A Legacy BP had 104 of 117 stream drops right
+ * after a restart (the transmission read in between), one restart in seven, the ECU mute each time until the line was
+ * held low. Once: the transmission far less often ([tcuGapMs]); [MAX] times: plain requests for that ROM, which kept
+ * its line up far better. An ECU that streams through it all keeps the stream as it was.
+ *
+ * The [MAX]-and-over set is sticky: a cable reopen inside this session, a service restart, or an app relaunch brings
+ * it back (the Legacy BP's log of 2026-11-16 had 12 session restarts in 65 min on the same ROM, each one starting the
+ * 25-address stream afresh before falling back to plain requests). [load] and [save] carry it; a new build clears the
+ * set (keyed by the installed versionCode in [Settings.fastPollOffRoms]). [load] is only called from the constructor.
  */
-internal class StreamRestarts {
-    private val fails = java.util.concurrent.ConcurrentHashMap<String, Int>()
+internal class StreamRestarts(
+    load: () -> Set<String> = { emptySet() },
+    private val save: (Set<String>) -> Unit = { },
+) {
+    private val fails = java.util.concurrent.ConcurrentHashMap<String, Int>().also { m ->
+        load().forEach { rom -> if (rom.isNotBlank()) m[rom] = MAX }
+    }
 
     fun off(rom: String) = (fails[rom] ?: 0) >= MAX
 
     /**
      * No frame since the stream was started again ([run] 0) though it ran in this connection ([frameSeen]), and our
      * start and stop came back off a live line ([ignored], see KLineTransport.ignoredRequests: not the ignition off).
-     * Returns how many such restarts this ROM has had, 0 when this one is not one.
+     * Returns how many such restarts this ROM has had, 0 when this one is not one. On the [MAX]-th one the ROM is
+     * remembered so a cable reopen or an app restart doesn't try the stream again.
      */
     fun silent(rom: String, run: Int, frameSeen: Boolean, ignored: Int): Int {
         if (run > 0 || !frameSeen || ignored < 2) return 0
         val n = (fails[rom] ?: 0) + 1
         fails[rom] = n
+        if (n == MAX) save(fails.entries.asSequence().filter { it.value >= MAX }.map { it.key }.toSet())
         return n
     }
 
