@@ -45,7 +45,7 @@ class MiniPlayerTest {
         // one state for the strip and the «Плеер» card, and the same buttons: Yandex is the own player's (LocalMusic) there
         val root = File("src/main/java").takeIf { it.isDirectory } ?: File("app/src/main/java")
         val mini = File(root, "kg/forester/sg/ui/MiniPlayer.kt").readText()
-        assertTrue(mini.contains("if (st.yandex) \"yandex\" else \"files\""))
+        assertTrue(mini.contains("if (st.yandex) \"yandex\" else if (st.zaycev) \"zaycev\" else \"files\""))
         assertTrue(mini.contains("val shared by lazy { MiniPlayerState() }"))
         val card = File(root, "kg/forester/sg/ui/HomeWidgets.kt").readText()
         assertTrue(card.contains("MiniPlayerState.shared") && card.contains("miniStep(") && card.contains("miniPress("))

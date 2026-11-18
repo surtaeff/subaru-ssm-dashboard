@@ -23,6 +23,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
@@ -58,6 +59,20 @@ import kg.forester.sg.video.VideoText
 import kg.forester.sg.video.rememberCarMoving
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.ui.draw.clipToBounds
+import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.X
+import com.composables.icons.lucide.ListVideo
+import com.composables.icons.lucide.Minimize2
+import com.composables.icons.lucide.Maximize2
+import com.composables.icons.lucide.RotateCcw
+import com.composables.icons.lucide.RotateCw
+import com.composables.icons.lucide.Pause
+import com.composables.icons.lucide.Play
+import com.composables.icons.lucide.SkipForward
 
 /** A poster the KgSearch / AltSearch screens already have in memory for an online hit. The Torrent section reuses these
  *  by normalized-title match so a release card can show a cover without a second HTTP round-trip. */
@@ -200,9 +215,19 @@ private fun TorrentPlayerDialog(r: TorrentRelease, onClose: () -> Unit) {
     val ctx = LocalContext.current
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
+    var playing by remember { mutableStateOf(false) }
     var pos by remember { mutableLongStateOf(0L) }
     var dur by remember { mutableLongStateOf(0L) }
+    var aspect by remember { mutableStateOf(16f / 9f) }
+    var controls by remember { mutableStateOf(true) }
+    var touched by remember { mutableIntStateOf(0) }
+    var fill by remember { mutableStateOf(kg.forester.sg.video.VideoFit.fill(ctx)) }
     val moving = rememberCarMoving()
+    // the release's episodes (one for a film); a series asks which one before it starts
+    var opened by remember { mutableStateOf<TorrentCatalog.Opened?>(null) }
+    var episode by remember { mutableStateOf<kg.forester.sg.torrent.TorrClient.TorrFile?>(null) }
+    var picking by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("Подключаюсь к раздаче…") }
 
     val player = remember {
         // Head units sit at a 48–192 MB Java heap even with largeHeap=true; a 4K stream at 50 Mb/s × 120 s maxBuffer plans
@@ -211,7 +236,12 @@ private fun TorrentPlayerDialog(r: TorrentRelease, onClose: () -> Unit) {
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 45_000, 1_500, 3_000)
             .build()
+        // the local TorrServer answers a stream only once it has the start of the film from the peers: ExoPlayer's 8 s
+        // read timeout gave «нет ответа от раздачи» on a live release (emulator and the owner's unit, 2026-11-18)
+        val http = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(15_000).setReadTimeoutMs(90_000).setAllowCrossProtocolRedirects(true)
         ExoPlayer.Builder(ctx)
+            .setMediaSourceFactory(androidx.media3.exoplayer.source.DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(ctx, http)))
             .setLoadControl(load)
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(androidx.media3.common.C.USAGE_MEDIA)
@@ -221,11 +251,34 @@ private fun TorrentPlayerDialog(r: TorrentRelease, onClose: () -> Unit) {
             .build()
     }
 
+    fun next(): kg.forester.sg.torrent.TorrClient.TorrFile? {
+        val eps = opened?.episodes ?: return null
+        val i = eps.indexOf(episode)
+        return eps.getOrNull(i + 1)
+    }
+
     DisposableEffect(player) {
         val l = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) { loading = false; dur = player.duration.coerceAtLeast(0L) }
                 if (state == Player.STATE_BUFFERING) loading = true
+                // the next episode by itself, as on ts.kg
+                if (state == Player.STATE_ENDED) next()?.let { episode = it } ?: run { controls = true }
+            }
+            // a format this unit's decoder can't take: ExoPlayer still tries and hangs at the start with no error
+            // (HEVC 10 bit on the emulator, 2026-11-18), so it is said at once
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                val video = tracks.groups.filter { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }
+                if (video.isNotEmpty() && video.none { g -> (0 until g.length).any { g.isTrackSupported(it, false) } }) {
+                    player.stop()
+                    loading = false
+                    error = "Это видео магнитола не декодирует (${video.first().getTrackFormat(0).codecs ?: "кодек"}). " +
+                        "Выберите раздачу с H.264 (AVC, x264), без HEVC 10 бит и HDR"
+                }
+            }
+            override fun onVideoSizeChanged(v: androidx.media3.common.VideoSize) {
+                if (v.width > 0 && v.height > 0) aspect = v.width * v.pixelWidthHeightRatio / v.height
             }
             override fun onPlayerError(e: PlaybackException) {
                 loading = false
@@ -236,57 +289,167 @@ private fun TorrentPlayerDialog(r: TorrentRelease, onClose: () -> Unit) {
         onDispose { player.removeListener(l); player.release() }
     }
 
+    DisposableEffect(opened?.hash) {
+        val hash = opened?.hash
+        onDispose { if (hash != null) TorrentCatalog.close(ctx, hash) }
+    }
     LaunchedEffect(r.magnet) {
         loading = true
         error = null
-        runCatching { TorrentCatalog.stream(ctx, r) }
-            .onSuccess { url ->
-                val item = MediaItem.fromUri(url)
-                player.setMediaItem(item)
-                player.prepare()
-                player.playWhenReady = true
+        runCatching { TorrentCatalog.open(ctx, r) }
+            .onSuccess { o ->
+                opened = o
+                if (o.episodes.size == 1) episode = o.episodes[0] else { loading = false; picking = true }
             }
             .onFailure { error = TorrentCatalog.message(it) }
     }
-
-    androidx.activity.compose.BackHandler(onBack = onClose)
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        androidx.compose.ui.viewinterop.AndroidView(
-            factory = { c -> android.view.SurfaceView(c).also { player.setVideoSurfaceView(it) } },
-            onRelease = { player.clearVideoSurfaceView(it) },
-            modifier = Modifier.fillMaxSize(),
-        )
-        if (loading) CircularProgressIndicator(color = C.Violet, modifier = Modifier.align(Alignment.Center))
-        error?.let { msg ->
-            Column(
-                Modifier.align(Alignment.Center).padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                T(msg, 16.sp, Color.White)
-                Chip("Закрыть", false, onClose)
+    LaunchedEffect(episode) {
+        val o = opened ?: return@LaunchedEffect
+        val f = episode ?: return@LaunchedEffect
+        loading = true
+        error = null
+        player.setMediaItem(MediaItem.fromUri(TorrentCatalog.episodeUrl(ctx, o.hash, f)))
+        player.prepare()
+        player.playWhenReady = true
+        // while the start comes in: how many peers give it, so the wait isn't a bare spinner
+        while (player.playbackState != Player.STATE_READY && error == null) {
+            TorrentCatalog.peers(ctx, o.hash)?.let { (seeders, peers) ->
+                status = if (peers == 0) "Ищу пиров…" else "Загружаю начало: $seeders сид., $peers пиров"
             }
+            kotlinx.coroutines.delay(1_500)
         }
-        // minimal controls — hidden while the car moves: picking a seek position or opening a new release is the gated
-        // action; what is already playing goes on (per the lock's intent).
-        if (!moving) {
-            Box(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(16.dp),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Chip(if (player.isPlaying) "Пауза" else "▶", false, { player.playWhenReady = !player.playWhenReady })
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(500)
+            pos = player.currentPosition
+            dur = player.duration.takeIf { it > 0 } ?: 0L
+        }
+    }
+    LaunchedEffect(controls, touched, playing) { if (controls && playing) { kotlinx.coroutines.delay(4_000); controls = false } }
+
+    FullScreen(onClose) {
+        androidx.compose.foundation.layout.BoxWithConstraints(
+            Modifier.fillMaxSize().clipToBounds().clickable(remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, null) {
+                controls = !controls; touched++
+            },
+            contentAlignment = Alignment.Center,
+        ) {
+            val (w, h) = kg.forester.sg.video.VideoFit.size(maxWidth.value, maxHeight.value, aspect, fill)
+            androidx.compose.ui.viewinterop.AndroidView(
+                factory = { c -> android.view.TextureView(c).also { player.setVideoTextureView(it) } },
+                onRelease = { player.clearVideoTextureView(it) },
+                modifier = Modifier.requiredSize(w.dp, h.dp),
+            )
+            if (loading && error == null && !picking) Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(color = C.Violet)
+                Spacer(Modifier.height(12.dp))
+                T(status, 15.sp, Color.White)
+            }
+            error?.let { msg ->
+                Column(Modifier.background(Color(0xCC000000)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    T(msg, 17.sp, Color.White)
                     Chip("Закрыть", false, onClose)
                 }
             }
-        }
-        // The driving-lock overlay: a thin strip at the top so it does not cover the picture — the stream keeps playing.
-        if (moving) {
-            Row(
+            if (picking) EpisodePicker(opened?.episodes.orEmpty(), episode, moving, onPick = { picking = false; episode = it }, onClose = {
+                picking = false; if (episode == null) onClose()
+            })
+            if (controls && error == null && !picking) {
+                Column(Modifier.fillMaxSize().background(Color(0x55000000)).padding(20.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RoundButton(Lucide.X, "Закрыть", 56.dp, onClick = onClose)
+                        Spacer(Modifier.width(16.dp))
+                        Column(Modifier.weight(1f)) {
+                            T(r.title.ifBlank { r.name }, 20.sp, Color.White, FontWeight.SemiBold, maxLines = 1)
+                            val eps = opened?.episodes.orEmpty()
+                            episode?.takeIf { eps.size > 1 }?.let { T(kg.forester.sg.torrent.Episodes.label(it.path), 15.sp, Color(0xFFCCCCCC), maxLines = 1) }
+                        }
+                        if ((opened?.episodes?.size ?: 0) > 1 && !moving) {
+                            Chip("Серии", false, { picking = true }, Lucide.ListVideo)
+                            Spacer(Modifier.width(10.dp))
+                        }
+                        Chip(if (fill) "Вписать" else "Заполнить экран", fill, {
+                            fill = !fill; kg.forester.sg.video.VideoFit.setFill(ctx, fill); touched++
+                        }, if (fill) Lucide.Minimize2 else Lucide.Maximize2)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    // seeking and the next file are the gated actions while moving; play and pause stay
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        if (!moving) RoundButton(Lucide.RotateCcw, "Назад 10 с") { player.seekTo(maxOf(0, player.currentPosition - 10_000)); touched++ }
+                        RoundButton(if (playing) Lucide.Pause else Lucide.Play, if (playing) "Пауза" else "Смотреть", 88.dp) {
+                            if (player.isPlaying) player.pause() else player.play(); touched++
+                        }
+                        if (!moving) RoundButton(Lucide.RotateCw, "Вперёд 30 с") { player.seekTo(player.currentPosition + 30_000); touched++ }
+                        if (!moving && next() != null) RoundButton(Lucide.SkipForward, "Следующая серия") { next()?.let { episode = it }; touched++ }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        T(kg.forester.sg.video.VideoText.time(pos), 15.sp, Color.White)
+                        Slider(
+                            value = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f,
+                            onValueChange = { f -> if (dur > 0 && !moving) { pos = (f * dur).toLong(); touched++ } },
+                            onValueChangeFinished = { if (dur > 0 && !moving) player.seekTo(pos) },
+                            enabled = dur > 0 && !moving,
+                            colors = SliderDefaults.colors(thumbColor = C.Violet, activeTrackColor = C.Violet),
+                            modifier = Modifier.weight(1f).padding(horizontal = 14.dp),
+                        )
+                        T(if (dur > 0) kg.forester.sg.video.VideoText.time(dur) else "--:--", 15.sp, Color.White)
+                    }
+                }
+            }
+            // the driving lock: a thin strip at the top, the stream keeps playing
+            if (moving) Row(
                 Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color(0xCC000000)).padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
-            ) {
-                T(TorrentDriving.TITLE, 14.sp, Color.White, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            ) { T(TorrentDriving.TITLE, 14.sp, Color.White, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f)) }
+        }
+    }
+}
+
+/** A series' episodes to start from; big rows for a car screen, the one playing marked. Only parked. */
+@Composable
+private fun EpisodePicker(
+    eps: List<kg.forester.sg.torrent.TorrClient.TorrFile>,
+    current: kg.forester.sg.torrent.TorrClient.TorrFile?,
+    moving: Boolean,
+    onPick: (kg.forester.sg.torrent.TorrClient.TorrFile) -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize().background(Color(0xEE000000)).padding(20.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            T("Выберите серию", 22.sp, Color.White, FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            T("${eps.size} в раздаче", 15.sp, Color(0xFFCCCCCC))
+            Spacer(Modifier.width(14.dp))
+            Chip("Закрыть", false, onClose, Lucide.X)
+        }
+        Spacer(Modifier.height(12.dp))
+        // a release with several seasons: a row of seasons, the episodes of the chosen one below
+        val seasonOf = remember(eps) { eps.associateWith { kg.forester.sg.torrent.Episodes.numbers(it.path)?.first } }
+        val seasons = remember(eps) { seasonOf.values.filterNotNull().distinct().sorted() }
+        var season by remember(eps) { mutableStateOf(current?.let { seasonOf[it] } ?: seasons.firstOrNull()) }
+        if (seasons.size > 1 && !moving) {
+            androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(seasons.size) { i -> val n = seasons[i]; Chip("Сезон $n", n == season, { season = n }) }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+        val shown = if (seasons.size > 1) eps.filter { seasonOf[it] == season || seasonOf[it] == null } else eps
+        if (moving) T(TorrentDriving.BODY, 15.sp, Color(0xFFCCCCCC))
+        else androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(shown.size) { i ->
+                val f = shown[i]
+                val now = f == current
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 64.dp).clip(RoundedCornerShape(12.dp))
+                        .background(if (now) C.Violet.copy(alpha = 0.35f) else C.CardHi).clickable { onPick(f) }.padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    T(kg.forester.sg.torrent.Episodes.label(f.path), 18.sp, Color.White, FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1)
+                    T(if (f.length >= 1L shl 30) "%.1f ГБ".format(f.length / (1L shl 30).toDouble()) else fileSize(f.length), 14.sp, Color(0xFFCCCCCC))
+                }
             }
         }
     }
@@ -310,7 +473,7 @@ private fun TorrentSettingsDialog(onEnabledChange: (Boolean) -> Unit, onClose: (
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     T("Показывать раздел «Торрент» в Видео", 15.sp)
-                    T("Качает и хранит временные файлы во внутренней памяти. Выключено по умолчанию.", 13.sp, C.Sub)
+                    T("Качает и хранит временные файлы во внутренней памяти. Включено по умолчанию.", 13.sp, C.Sub)
                 }
                 Switch(
                     checked = enabled,

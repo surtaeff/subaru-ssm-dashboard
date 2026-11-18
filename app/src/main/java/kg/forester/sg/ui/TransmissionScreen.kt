@@ -55,7 +55,7 @@ val TcuCards: CardNames = linkedMapOf(
 private val TcuEdit = BoardEdit(TcuBoard, gaugeable = setOf("atf", "lockup", "line"), rowWeight = ::tcuRowWeight)
 
 /** Row heights: big cards 1.1, charts 1.2, small tiles 0.55 (or 1.1 once shown as a needle). */
-private fun tcuRowWeight(t: TileCfg) = when {
+internal fun tcuRowWeight(t: TileCfg) = when {
     t.id.startsWith("chart") -> if (CarScreen.small) 1f else 1.2f
     // on a small screen the big cards' lines need the room, the charts give it up
     t.id in setOf("range", "atf", "converter") -> if (CarScreen.small) 1.85f else 1.1f
@@ -79,7 +79,7 @@ fun TransmissionScreen() {
     val lock = t?.lock ?: LockState.UNKNOWN
     val locked = lock == LockState.LOCKED || lock == LockState.SLIPPING
 
-    BoardScreen(TcuEdit, TcuCards, ::tcuRowWeight) { cfg, m ->
+    BoardScreen(TcuEdit, TcuCards, ::tcuRowWeight, leading = { PresetsChip(TcuEdit, ::tcuRowWeight, TcuCards) }) { cfg, m ->
         val info = "tcu.${cfg.id}"
         @Composable
         fun Small(icon: ImageVector, title: String, v: Float?, unit: String) =

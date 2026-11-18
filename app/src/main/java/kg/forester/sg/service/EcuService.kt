@@ -154,6 +154,8 @@ class EcuService : Service() {
     @Volatile private var activeRomId: String? = null
     /** elapsedRealtime of the last stream start still waiting for its first frame, 0 otherwise. */
     @Volatile private var streamInitAtMs = 0L
+    /** elapsedRealtime of this connection's ECU init, 0 before it: a USB loss soon after it is the long requests' (see [earlyUsbLoss]). */
+    @Volatile private var ecuInitAtMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -181,6 +183,7 @@ class EcuService : Service() {
         // first: the system gives a started service a few seconds for it, and a weak unit may spend them on what follows
         startInForeground()
         SsmTrace.init(this)
+        AudioWatch.start(this)
         // a log that did not go last time (only if the upload is on, the address is known and the limits allow)
         LogUpload.auto(this, "start", onlyPending = true)
         // the open folder for own RomRaider files, there from the first start for a file manager to find
@@ -275,7 +278,7 @@ class EcuService : Service() {
     private suspend fun linkLossWatch() {
         val loss = kg.forester.sg.data.LinkLoss()
         while (scope.isActive) {
-            if (loss.due(Repo.link.value, System.currentTimeMillis())) {
+            if (loss.due(Repo.link.value, System.currentTimeMillis(), Repo.linkHoldUntil.value)) {
                 SsmTrace.log("link lost for ${kg.forester.sg.data.LINK_LOSS_MS} ms: values cleared")
                 Repo.live.value = EcuSnapshot()
                 Repo.tcu.value = null
@@ -317,6 +320,7 @@ class EcuService : Service() {
             // per connection: an error before this one's ECU init is not the previous ROM's or its stream's
             activeRomId = null
             streamInitAtMs = 0L
+            ecuInitAtMs = 0L
             val kind = s.adapter
             when (kind) {
                 "elm_bt" -> { bluetoothSession(s.btAddress, s.btName); delay(3000); continue }
@@ -488,10 +492,24 @@ class EcuService : Service() {
                     // The USB device went away right after our stream start, before its first frame (Alexey's Xiaomi:
                     // «USB get_status request failed» 1.5 s after the 110-byte A8 01 request, then the device gone).
                     // Only that window counts: a cable pulled or a head unit asleep later in the run is not the stream's.
-                    val sinceStream = android.os.SystemClock.elapsedRealtime() - streamInitAtMs
+                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                    val sinceStream = nowMs - streamInitAtMs
                     if (e is java.io.IOException && streamInitAtMs > 0L && sinceStream < STREAM_INIT_BLAME_MS) {
                         activeRomId?.let { rom ->
                             if (usbGuiltyRoms.add(rom)) SsmTrace.log("USB lost $sinceStream ms after the stream start, fast poll off for ROM $rom in this run")
+                        }
+                    } else if (e is java.io.IOException && earlyUsbLoss(ecuInitAtMs, nowMs)) {
+                        // Alexey's FT232RL cable on beta11 (2026-11-18): ECU init and VIN fine, then the device gone from
+                        // USB 2-3 s later on an ordinary 122-byte read, every reconnect; his CH340 cable on the same phone
+                        // and OTG reads the same ECU fine. Long frames are what the cable fails on: short requests and no
+                        // stream for this ROM in this run.
+                        activeRomId?.let { rom ->
+                            usbGuiltyRoms.add(rom)
+                            if (ecuReadLimits[rom] != kg.forester.sg.ssm.SsmClient.MIN_SPLIT) {
+                                ecuReadLimits[rom] = kg.forester.sg.ssm.SsmClient.MIN_SPLIT
+                                SsmTrace.log("USB lost ${nowMs - ecuInitAtMs} ms after the ECU init: short requests " +
+                                    "(${kg.forester.sg.ssm.SsmClient.MIN_SPLIT} addresses) and no fast poll for ROM $rom in this run")
+                            }
                         }
                     }
                 }
@@ -1100,6 +1118,7 @@ class EcuService : Service() {
             codeWatch.newConnection(System.currentTimeMillis())
             SsmTrace.log("ECU init: SSM ${init.ssmId} ROM ${init.romId} caps ${init.capabilities.toHex(" ")}")
             activeRomId = init.romId
+            ecuInitAtMs = android.os.SystemClock.elapsedRealtime()
             // the ECU answered through this cable: whatever timed out before is over
             writeTimeoutStreak = 0
             guard.romIam = EngineGuard.RomIam()
@@ -1366,6 +1385,9 @@ class EcuService : Service() {
                     if (faultWatch.confirm(Repo.link.value == LinkState.CONNECTED, System.currentTimeMillis() - since)) LogUpload.auto(this@EcuService, "ECU silent")
                 }
             }
+            // the hold and the init that follows take about 3.5 s (Серёга's Legacy BP on beta11: mute every 20 s to 3 min,
+            // back each time): the last values stay meanwhile instead of dashes and a gap in every graph
+            if (muteHold) Repo.linkHoldUntil.value = System.currentTimeMillis() + kg.forester.sg.data.LINK_RECOVERY_MS
             Repo.link.value = LinkState.NO_ECU
             Repo.linkMessage.value = "Связь с ЭБУ потеряна"
             logger?.close(); logger = null
@@ -2646,6 +2668,11 @@ class EcuService : Service() {
         private const val WRITE_TIMEOUT_HARD_RESET = 10
         /** A USB error this soon after a stream start, before its first frame, is put down to the stream. */
         private const val STREAM_INIT_BLAME_MS = 5000L
+        /** A USB loss this soon after the ECU init is put down to the long requests of the first polls. */
+        const val EARLY_USB_LOSS_MS = 15_000L
+
+        /** Whether a USB loss at [nowMs] came within [EARLY_USB_LOSS_MS] of this connection's ECU init at [initAtMs] (0: none yet). */
+        fun earlyUsbLoss(initAtMs: Long, nowMs: Long): Boolean = initAtMs > 0L && nowMs - initAtMs in 0..EARLY_USB_LOSS_MS
         /** FTDI vendor request, host-to-device, device recipient: `0x40` per USB spec, used for every FTDI control command. */
         private const val FTDI_VENDOR_OUT = 0x40
         /** `SIO_RESET_REQUEST`: subcommand goes in wValue. */

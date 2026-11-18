@@ -59,6 +59,9 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
+/** How long the fuel level sender's last reading stays under «Осталось» when a frame comes without it. */
+private const val FUEL_SENSOR_HOLD_MS = 15_000L
+
 private enum class FuelTab(val title: String, val icon: ImageVector) {
     Current("Текущий", Lucide.ChartColumn),
     History("История", Lucide.FileText),
@@ -168,7 +171,7 @@ val FuelCards: CardNames = linkedMapOf(
 )
 
 /** Row heights: the gauge, the tank and the chart a little taller than the trip's row, as in the fixed layout. */
-private fun fuelRowWeight(t: TileCfg) = if (t.id == "inst" || t.id == "tank" || t.id == "chart") 1.2f else 1f
+internal fun fuelRowWeight(t: TileCfg) = if (t.id == "inst" || t.id == "tank" || t.id == "chart") 1.2f else 1f
 
 internal val FuelEdit = BoardEdit(FuelBoard, rowWeight = ::fuelRowWeight, effective = ::fuelEffective)
 
@@ -177,7 +180,7 @@ internal val FuelEdit = BoardEdit(FuelBoard, rowWeight = ::fuelRowWeight, effect
 private fun CurrentTab(allTimeHere: Boolean, totals: Pair<Double, Double>?) {
     val ts by Repo.trip.collectAsState()
     val version by Repo.dataVersion.collectAsState()
-    BoardScreen(FuelEdit, FuelCards, ::fuelRowWeight) { cfg, m ->
+    BoardScreen(FuelEdit, FuelCards, ::fuelRowWeight, leading = { PresetsChip(FuelEdit, ::fuelRowWeight, FuelCards) }) { cfg, m ->
         when (cfg.id) {
             "inst" -> InstCard(ts, m)
             "tank" -> TankCard(ts, allTimeHere, totals, m)
@@ -395,8 +398,14 @@ private fun TankCard(ts: kg.forester.sg.data.TripState, allTimeHere: Boolean, to
                 }
                 if (withNote) {
                     val since = "с заправки ${fmt(Repo.settings.usedSinceRefillL)} л"
-                    val sensor = live.fuelSensorV?.let { "датчик ${"%.2f".format(it)} В" }
+                    val fresh = live.fuelSensorV?.let { "датчик ${"%.2f".format(it)} В" }
                         ?: live.fuelSensorOhm?.let { "датчик ${"%.0f".format(it)} Ом" }
+                    // the level comes in some frames only (the fast poll's stream leaves it out): the last one stays a
+                    // while, or the note blinks on and off (@Scarecrowno, beta11, 2026-11-18)
+                    val held = androidx.compose.runtime.remember { arrayOf<Any?>(null, 0L) }
+                    val nowMs = System.currentTimeMillis()
+                    if (fresh != null) { held[0] = fresh; held[1] = nowMs }
+                    val sensor = fresh ?: (held[0] as String?)?.takeIf { nowMs - (held[1] as Long) < FUEL_SENSOR_HOLD_MS }
                     FirstThatFits {
                         if (sensor != null) T("$since · $sensor", car.secondary, C.Sub, maxLines = 1)
                         T(since, car.secondary, C.Sub, maxLines = 1)

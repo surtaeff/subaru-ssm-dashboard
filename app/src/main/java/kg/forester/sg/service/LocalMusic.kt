@@ -18,6 +18,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
 import kg.forester.sg.service.yandex.YaMusic
+import kg.forester.sg.service.zaycev.ZaycevMusic
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
 import kg.forester.sg.ssm.SsmTrace
@@ -26,7 +27,8 @@ import kg.forester.sg.ssm.SsmTrace
  * The Media screen's own player for music files: a USB stick, an SD card or the unit's memory, browsed by folder.
  * One ExoPlayer for the app, wrapped in a media session by [PlayerService] (notification, steering wheel keys,
  * other apps pause it). It remembers the folder, the track and the place in it, like a car stereo.
- * Internet radio and Yandex Music play through the same player (see [kg.forester.sg.service.yandex.YaMusic]).
+ * Internet radio, Yandex Music and zaycev.net play through the same player (see [kg.forester.sg.service.yandex.YaMusic],
+ * [kg.forester.sg.service.zaycev.ZaycevMusic]).
  */
 @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 object LocalMusic {
@@ -62,6 +64,8 @@ object LocalMusic {
         val error: String = "",
         /** A Yandex Music queue plays (see [kg.forester.sg.service.yandex.YaMusic]): [current] is «ya:» + the track's key. */
         val yandex: Boolean = false,
+        /** A zaycev.net queue plays (see [kg.forester.sg.service.zaycev.ZaycevMusic]): [current] is «zy:» + the track's id. */
+        val zaycev: Boolean = false,
     ) {
         val long: Boolean get() = durMs > LONG_MS
         val current: String? get() = queue.getOrNull(index)
@@ -266,9 +270,13 @@ object LocalMusic {
         exo?.let { return it }
         val app = ctx.applicationContext
         appCtx = app
-        // a Yandex item's link is asked for when the player opens it (YaMusic.resolver); files and stations pass as they were.
+        // a Yandex or zaycev.net item's link is asked for when the player opens it (YaMusic.resolver, ZaycevMusic.resolver);
+        // files and stations pass as they were.
         // Constant-bitrate seeking: Yandex's AAC (ADTS) and an MP3 without a seek table can be wound and resumed in the middle
-        val sources = DefaultMediaSourceFactory(ResolvingDataSource.Factory(DefaultDataSource.Factory(app), YaMusic.resolver(app)),
+        val ya = YaMusic.resolver(app)
+        val zy = ZaycevMusic.resolver()
+        val resolver = ResolvingDataSource.Resolver { spec -> if (spec.uri.scheme == ZaycevMusic.SCHEME) zy.resolveDataSpec(spec) else ya.resolveDataSpec(spec) }
+        val sources = DefaultMediaSourceFactory(ResolvingDataSource.Factory(DefaultDataSource.Factory(app), resolver),
             DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true))
         val p = ExoPlayer.Builder(app)
             .setMediaSourceFactory(sources)
@@ -281,6 +289,7 @@ object LocalMusic {
                 refresh(player)
                 if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) || events.contains(Player.EVENT_IS_PLAYING_CHANGED)) save()
                 YaMusic.onEvents(player, events)
+                ZaycevMusic.onEvents(player, events)
             }
 
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
@@ -291,7 +300,7 @@ object LocalMusic {
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 SsmTrace.log("player: ${error.errorCodeName} ${p.currentMediaItem?.mediaId}")
-                if (YaMusic.onError(p, error)) return
+                if (YaMusic.onError(p, error) || ZaycevMusic.onError(p, error)) return
                 val stream = p.currentMediaItem?.mediaId?.startsWith(STREAM) == true
                 state.value = state.value.copy(error = if (stream) "Станция не отвечает, попробуйте другую" else "Этот файл не играет (${error.errorCodeName})")
             }
@@ -300,6 +309,7 @@ object LocalMusic {
 
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 YaMusic.onTransition(p, item)
+                ZaycevMusic.onTransition(item)
                 // an audiobook chapter picks up where it was left; a finished one forgets its place
                 val sp = prefs() ?: return
                 if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) lastId?.let { sp.edit().remove("book:$it").apply() }
@@ -336,7 +346,8 @@ object LocalMusic {
         val path = p.currentMediaItem?.mediaId.orEmpty()
         val old = state.value
         val ya = YaMusic.isYa(path)
-        val art = if (path == old.current && old.art != null) old.art else if (ya || path.startsWith(STREAM)) null else artFor(md.artworkData, path)
+        val zy = ZaycevMusic.isZy(path)
+        val art = if (path == old.current && old.art != null) old.art else if (ya || zy || path.startsWith(STREAM)) null else artFor(md.artworkData, path)
         val dur = p.duration.takeIf { it != C.TIME_UNSET } ?: 0
         // music always at its own speed, a long file at the speed chosen for books
         val want = if (dur > LONG_MS) bookSpeed() else 1f
@@ -353,7 +364,7 @@ object LocalMusic {
                 art = null, durMs = 0, shuffle = false, repeat = Player.REPEAT_MODE_ALL,
                 nextTitle = if (ni == C.INDEX_UNSET) "" else p.getMediaItemAt(ni).mediaMetadata.station?.toString().orEmpty(),
                 speed = 1f, audioSession = (p as? ExoPlayer)?.audioSessionId ?: 0,
-                stream = true, station = st, artUrl = item?.mediaMetadata?.artworkUri?.toString().orEmpty(), yandex = false,
+                stream = true, station = st, artUrl = item?.mediaMetadata?.artworkUri?.toString().orEmpty(), yandex = false, zaycev = false,
             )
             return
         }
@@ -369,14 +380,33 @@ object LocalMusic {
                 durMs = dur.takeIf { it > 0 } ?: t?.durationMs ?: 0, shuffle = p.shuffleModeEnabled, repeat = p.repeatMode,
                 nextTitle = if (ni == C.INDEX_UNSET) "" else p.getMediaItemAt(ni).mediaMetadata.title?.toString().orEmpty(),
                 speed = 1f, audioSession = (p as? ExoPlayer)?.audioSessionId ?: 0,
-                stream = false, station = "", artUrl = item?.mediaMetadata?.artworkUri?.toString().orEmpty(), yandex = true,
+                stream = false, station = "", artUrl = item?.mediaMetadata?.artworkUri?.toString().orEmpty(), yandex = true, zaycev = false,
             )
             // the cover comes from the network: shown when it's there, if this track still plays
             if (state.value.art == null && t != null) YaMusic.loadArt(path, t.cover)
             return
         }
+        if (zy) {
+            val t = ZaycevMusic.trackOf(path)
+            val same = path == old.current && old.zaycev
+            state.value = old.copy(
+                queue = (0 until p.mediaItemCount).map { p.getMediaItemAt(it).mediaId },
+                index = p.currentMediaItemIndex, playing = p.isPlaying,
+                title = md.title?.toString()?.takeIf { it.isNotBlank() } ?: t?.title.orEmpty(),
+                // the mp3s carry no names of their own: the list's are the ones, no album
+                artist = md.artist?.toString()?.takeIf { it.isNotBlank() } ?: t?.artist.orEmpty(), album = "",
+                art = if (same && old.art != null) old.art else t?.let(ZaycevMusic::cachedArt),
+                durMs = dur.takeIf { it > 0 } ?: t?.durationMs ?: 0, shuffle = p.shuffleModeEnabled, repeat = p.repeatMode,
+                nextTitle = if (ni == C.INDEX_UNSET) "" else p.getMediaItemAt(ni).mediaMetadata.title?.toString().orEmpty(),
+                speed = 1f, audioSession = (p as? ExoPlayer)?.audioSessionId ?: 0,
+                stream = false, station = "", artUrl = item?.mediaMetadata?.artworkUri?.toString().orEmpty(), yandex = false, zaycev = true,
+            )
+            // the small cover of the list at once if it is there, the bigger one when it has come
+            if (t != null && (!same || state.value.art == null)) ZaycevMusic.loadArt(path, t)
+            return
+        }
         state.value = old.copy(
-            stream = false, station = "", artUrl = "", yandex = false,
+            stream = false, station = "", artUrl = "", yandex = false, zaycev = false,
             nextTitle = if (ni == C.INDEX_UNSET) "" else pretty(File(p.getMediaItemAt(ni).mediaId)),
             speed = want,
             audioSession = (p as? ExoPlayer)?.audioSessionId ?: 0,
@@ -444,7 +474,7 @@ object LocalMusic {
         startService(ctx)
         state.value = state.value.copy(folder = folder.path, art = null)
         // after Yandex's wave (no repeat) the files get their own repeat back
-        if (state.value.yandex) p.repeatMode = prefs()?.getInt("repeat", Player.REPEAT_MODE_ALL) ?: Player.REPEAT_MODE_ALL
+        if (state.value.yandex || state.value.zaycev) p.repeatMode = prefs()?.getInt("repeat", Player.REPEAT_MODE_ALL) ?: Player.REPEAT_MODE_ALL
         p.setMediaItems(tracks.map { MediaItem.Builder().setUri(Uri.fromFile(it)).setMediaId(it.path).build() },
             if (shuffle) tracks.indices.random() else start.coerceIn(tracks.indices), 0L)
         p.shuffleModeEnabled = shuffle
@@ -559,6 +589,7 @@ object LocalMusic {
         lastSaveMs = System.currentTimeMillis()
         // a Yandex queue keeps its own place; the files' one stays for when they play again
         if (YaMusic.isYa(path)) { YaMusic.save(p); return }
+        if (ZaycevMusic.isZy(path)) { ZaycevMusic.save(p); return }
         if (p.duration > LONG_MS && p.currentPosition > 30_000) prefs()?.edit()?.putLong("book:$path", p.currentPosition)?.apply()
         prefs()?.edit()
             ?.putString("folder", state.value.folder.ifEmpty { File(path).parent.orEmpty() })

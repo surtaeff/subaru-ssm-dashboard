@@ -510,7 +510,7 @@ fun PlayerCard(info: String, m: Modifier) {
     LaunchedEffect(now?.source, now?.title, now?.durMs) {
         while (true) {
             val n = now ?: break
-            posMs = if (n.source == "files" || n.source == "yandex") LocalMusic.position() else (state.share.floatValue * n.durMs).toLong()
+            posMs = if (n.source == "files" || n.source == "yandex" || n.source == "zaycev") LocalMusic.position() else (state.share.floatValue * n.durMs).toLong()
             delay(500)
         }
     }

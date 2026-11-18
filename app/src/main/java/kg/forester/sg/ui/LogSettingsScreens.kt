@@ -75,7 +75,9 @@ fun LogScreen() {
     viewing?.let { f -> LogViewer(f) { viewing = null }; return }
     Row(Modifier.fillMaxSize()) {
         // the current values beside it have the longer lines
-        Panel(Modifier.width(if (LocalCar.current.small) 300.dp else 420.dp).fillMaxHeight()) {
+        // wider than before: the files' dates were cut on a 7-8" unit (Enderold, 2026-11-17); «Текущие значения» on the
+        // right have room to spare
+        Panel(Modifier.width(if (LocalCar.current.small) 340.dp else 460.dp).fillMaxHeight()) {
             ListWithHead({
             PanelTitle(Lucide.FileText, "Запись лога")
             Spacer(Modifier.height(12.dp))
@@ -145,11 +147,15 @@ fun LogScreen() {
                         Icon(if (now) Lucide.CirclePlay else Lucide.FileSpreadsheet, null,
                             tint = if (now) C.Green else C.Sub, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
-                        T(f.name, 13.sp, modifier = Modifier.weight(1f), maxLines = 1)
-                        T(fileSize(sizes[f.name] ?: 0L), 12.sp, C.Sub)
+                        // the date and time first and the size under it: the raw name and a size column beside it left
+                        // «2026-11-1…» on a 7-8" unit, no day to tell the drives apart (Enderold, 2026-11-17)
+                        Column(Modifier.weight(1f)) {
+                            T(logLabel(f.name), 13.sp, maxLines = 1)
+                            T(fileSize(sizes[f.name] ?: 0L), 11.sp, C.Sub, maxLines = 1)
+                        }
                         Spacer(Modifier.width(2.dp))
+                        // no «›» after the buttons: the whole row opens the charts, and the room goes to the date
                         LogFileActions(f, small = true) { listScope.launch { listFiles() } }
-                        Icon(Lucide.ChevronRight, null, tint = C.Sub, modifier = Modifier.size(16.dp))
                     }
                 }
             }
@@ -814,7 +820,7 @@ private fun FeatureSettings() {
                 F("sensors", "Экран «Датчики»", "Все параметры ЭБУ из базы RomRaider")
                 F("health", "Экран «Мониторинг»", "Мотор, ТО, шины и журнал предупреждений (сами предупреждения настраиваются слева)")
                 F("mine", "Экран «Мой экран»", "Свой экран из любых карточек; выключите, если хватает главного")
-                F("video", "Экран «Видео»", "Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах Rutube, YouTube и приложения кинотеатров")
+                F("video", "Экран «Видео»", "Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах YouTube и приложения кинотеатров")
                 if (s.feature("video")) Box(Modifier.fillMaxWidth().clip(Rounded).background(C.CardHi).padding(10.dp)) { Column { VideoRegionSetting() } }
                 // SSM only (the fast poll, the transmission unit): another make has neither
                 if (!kg.forester.sg.data.CarKind.other.collectAsState().value) TcuRateSetting()

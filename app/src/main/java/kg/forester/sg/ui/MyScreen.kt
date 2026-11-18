@@ -1,25 +1,11 @@
 package kg.forester.sg.ui
 
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.composables.icons.lucide.Hand
-import com.composables.icons.lucide.LayoutTemplate
-import com.composables.icons.lucide.Lucide
 import kg.forester.sg.data.MyBoard
 import kg.forester.sg.data.Repo
 import kg.forester.sg.data.SensorBox
@@ -56,7 +42,7 @@ internal val MyEdit by lazy {
 
 /**
  * «Мой экран»: the driver picks what to see and how (a number, a bar or a dial in any of the designs), the author's
- * screens stay as they are. Long press to edit, as on the home screen; «Шаблоны» puts a ready-made layout on it.
+ * screens stay as they are. Long press to edit, as on the home screen; «Пресеты» puts a ready-made layout on it.
  */
 @Composable
 fun MyScreen() {
@@ -64,17 +50,10 @@ fun MyScreen() {
     val avail by Repo.rrAvailable.collectAsState()
     val layout by Repo.myTiles.collectAsState()
     val names = myCards()
-    var presets by remember { mutableStateOf(false) }
-    if (presets) PresetPicker { presets = false }
     Column(Modifier.fillMaxSize()) {
-        if (layout.isEmpty()) Row(Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Lucide.Hand, null, tint = C.Violet, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(8.dp))
-            FitText("Это ваш экран: удерживайте карточку, чтобы настроить его. Или начните с шаблона", LocalCar.current.secondary, Modifier.weight(1f), C.Sub, maxLines = 2)
-            Spacer(Modifier.width(8.dp))
-            Parked { Chip("Шаблоны", false, { presets = true }, Lucide.LayoutTemplate) }
-        }
-        BoardScreen(MyEdit, names, ::myRowWeight, leading = { Chip("Шаблоны", false, { presets = true }, Lucide.LayoutTemplate) }) { t, m ->
+        if (layout.isEmpty()) PresetHint(MyEdit, ::myRowWeight, names,
+            "Это ваш экран: удерживайте карточку, чтобы настроить его. Или начните с пресета", closable = false)
+        BoardScreen(MyEdit, names, ::myRowWeight, leading = { PresetsChip(MyEdit, ::myRowWeight, names) }) { t, m ->
             if (t.id.startsWith("outw_")) { OutputWidget(t.id, m); return@BoardScreen }
             val info = "home.${t.id}"
             val ind = Metrics.of(t.id, avail)

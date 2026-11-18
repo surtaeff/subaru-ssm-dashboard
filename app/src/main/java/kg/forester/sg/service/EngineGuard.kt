@@ -357,6 +357,10 @@ class EngineGuard {
         val s = Repo.settings
         val fKnock = s.feature("knock"); val fTurbo = s.feature("turbo")
         val fCool = s.feature("cooling"); val fService = s.feature("service")
+        // A long pause in the samples is a key-off: the ECU just goes dark and no sample with the engine stopped comes, so
+        // the oil estimate and the warm-up clock of the last drive must not carry over to a cold start (owner's SG,
+        // 2026-11-18: 87° of oil after a long stand, falling slowly towards the cold coolant).
+        if (newSession(lastMs, now)) { oilEst = null; engineOnSince = 0L; coldStartMs = 0L; movingMsSinceCold = 0L }
         val dt = if (lastMs == 0L) 0f else ((now - lastMs) / 1000f).coerceIn(0f, 2f)
         lastMs = now
         val rpm = e.rpm ?: 0
@@ -639,6 +643,13 @@ class EngineGuard {
 
         private const val FAILS = 3
         private const val RETRY_MS = 30L * 24 * 3600_000L
+
+        /** No sample for this long: the engine was off in between (an ECU that stops answering mid-drive is back well before). */
+        const val SESSION_GAP_MS = 60_000L
+
+        /** Whether the sample at [nowMs] starts a new engine session after the one at [lastMs]: a long pause or a clock set back. */
+        fun newSession(lastMs: Long, nowMs: Long): Boolean =
+            lastMs != 0L && (nowMs - lastMs > SESSION_GAP_MS || nowMs < lastMs)
 
         /**
          * IAM 0…1 from the value read in the parameter's [units]: RomRaider's "raw ecu value" (E1 and the 1-byte

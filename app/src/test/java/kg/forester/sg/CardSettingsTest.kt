@@ -1,13 +1,11 @@
 package kg.forester.sg
 
-import kg.forester.sg.data.MyBoard
 import kg.forester.sg.ui.NavCfg
-import kg.forester.sg.ui.PresetLayouts
 import kg.forester.sg.ui.SportCfg
 import org.junit.Assert.*
 import org.junit.Test
 
-/** The own settings of the Спорт-дисплей and «Приборка с картой» cards, and the ready-made «Мой экран» layouts. */
+/** The own settings of the Спорт-дисплей and «Приборка с картой» cards (the ready-made layouts: BuiltInPresetsTest). */
 class CardSettingsTest {
     @Test fun sportFactoryLookIsAnEmptyStyle() {
         assertEquals("", SportCfg().format())
@@ -39,21 +37,5 @@ class CardSettingsTest {
         assertFalse(';' in c.format())
         assertEquals(c, NavCfg.parse(c.format()))
         assertEquals(19.0, NavCfg.parse("nav:z=40").zoom, 0.0)
-    }
-
-    @Test fun presetsUseRealCardsAndKeepTheRest() {
-        val known = MyBoard.defaults.map { it.id }.toSet()
-        PresetLayouts.forEach { p ->
-            p.tiles.forEach { assertTrue("${p.id}: no card ${it.id}", it.id in known) }
-            val parsed = MyBoard.parse(p.format())
-            assertEquals("${p.id}: every card of the board is still there", known, parsed.map { it.id }.toSet())
-            assertEquals(p.tiles.map { it.id }, parsed.filter { it.on }.map { it.id })
-            assertEquals(p.free, MyBoard.isFree(p.format()))
-            if (p.free) p.tiles.forEach { t ->
-                val r = t.free!!
-                assertTrue("${p.id}/${t.id} inside the area", r.x >= 0f && r.y >= 0f && r.x + r.w <= 1.001f && r.y + r.h <= 1.001f)
-            } else MyBoard.rows(p.tiles).forEach { row -> assertTrue("${p.id}: a row over 12 columns", row.sumOf { it.span } <= 12) }
-        }
-        assertEquals(PresetLayouts.size, PresetLayouts.map { it.id }.distinct().size)
     }
 }

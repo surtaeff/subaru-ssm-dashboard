@@ -435,6 +435,15 @@ object Updater {
             }
             return false to "Разрешите установку из этого приложения и нажмите «Скачать и установить» ещё раз"
         }
+        // before Android 8 one switch for every app: «Неизвестные источники» in the security settings (hvte62's
+        // Android 6 unit, beta11: «не хочет обновляться»)
+        @Suppress("DEPRECATION")
+        if (Build.VERSION.SDK_INT < 26 && runCatching {
+                Settings.Secure.getInt(ctx.contentResolver, Settings.Secure.INSTALL_NON_MARKET_APPS) == 0 }.getOrDefault(false)) {
+            runCatching { ctx.startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            SsmTrace.log("update: unknown sources off (SDK ${Build.VERSION.SDK_INT}), security settings opened", keep = true)
+            return false to "Включите «Неизвестные источники» в настройках безопасности и нажмите «Скачать и установить» ещё раз"
+        }
         val v = verdictOf(ctx, apk)
         verdictText(v)?.let { text ->
             if (v == Verdict.UNREADABLE) apk.delete()
@@ -449,7 +458,14 @@ object Updater {
         return runCatching { session(ctx, apk); true to WAITING }.getOrElse { t ->
             // the units whose installer service doesn't take sessions still open an APK file
             SsmTrace.log("update: session failed, the file goes to the installer: $t", keep = true)
-            val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".files", apk)
+            // Android 6's installer opens only a file:// address, and only a file it can read: a copy on the external
+            // storage (file:// to another app is refused from Android 7 on, so the FileProvider from there)
+            val uri = if (Build.VERSION.SDK_INT < 24) {
+                val dir = ctx.externalCacheDir ?: ctx.cacheDir
+                val copy = File(dir, apk.name).also { if (it != apk) apk.copyTo(it, overwrite = true) }
+                @Suppress("SetWorldReadable") copy.setReadable(true, false)
+                Uri.fromFile(copy)
+            } else FileProvider.getUriForFile(ctx, ctx.packageName + ".files", apk)
             ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
             true to "Установщик открыт: подтвердите обновление. Если он пишет «конфликт пакетов» — у вас версия с другой " +

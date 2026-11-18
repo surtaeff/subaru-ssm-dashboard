@@ -498,7 +498,8 @@ fun App() {
         // where the driver left it; the first time the Home screen (it used to be Расход unless the app was the launcher)
         mutableStateOf(screenRestored(Repo.settings.lastScreen)?.takeIf { it != Screen.Settings } ?: Screen.Home)
     }
-    LaunchedEffect(screen) { Repo.settings.lastScreen = screen.name }
+    LaunchedEffect(screen) { Repo.settings.lastScreen = screen.name; kg.forester.sg.service.AudioWatch.screen = screen.name }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { kg.forester.sg.service.AudioWatch.screen = "-" } }
     // Back goes to the Home screen first; as the home app we never close ourselves.
     val menuShown = visibleScreens()
     // home, or the first in the menu with Главная hidden

@@ -215,6 +215,7 @@ fun HomeEditBar(onDone: () -> Unit) {
     val cluster by Repo.clusterSize.collectAsState()
     val free = HomeLayout.board.isFree(Repo.homeTiles.collectAsState().value)
     BoardEditBar(HomeEdit, if (free) HomeTileInfo else HomeTileInfo - "car3d", onDone) {
+        PresetsChip(HomeEdit, { 1f }, HomeTileInfo)
         Chip("Просто", false, {
             val turbo = Repo.guard.value.turboCar
             // another make: no ATF temperature (that is the Subaru transmission unit's)
@@ -437,7 +438,7 @@ fun BoxScope.TileEditOverlay(edit: BoardEdit, cfg: TileCfg, title: String = "", 
 @Composable
 fun BoardScreen(
     edit: BoardEdit, names: CardNames, rowWeight: (TileCfg) -> Float,
-    /** Screen-specific controls at the start of the edit bar («Мой экран»: the ready-made layouts). */
+    /** Screen-specific controls at the start of the edit bar (the presets). */
     leading: @Composable RowScope.() -> Unit = {},
     /** What else the factory picture of this screen goes by, when it changes. */
     factoryKey: Any? = null,
@@ -453,6 +454,7 @@ fun BoardScreen(
     val longPress = Modifier.onLongPressBuzz { editing = true }
     // Back ends the editing before it leaves the screen
     androidx.activity.compose.BackHandler(enabled = editing) { editing = false }
+    PresetUndoBar(edit.board.key)
     if (edit.board.isFree(layout)) {
         FreeFrame(if (editing) ({ BoardEditBar(edit, names, { editing = false }, leading) }) else null, Modifier.fillMaxSize()) { m ->
             FreeArea(edit, list.filter { it.on }, editing, names, longPress, m, card = card)

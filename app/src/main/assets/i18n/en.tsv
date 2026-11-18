@@ -210,7 +210,6 @@ MP-T: в ровном круизе скважность небольшая, ра
 Считается по текущей цене, а не по цене в день поездки.	Counted at the current price, not the price on the trip's day.
 Расход по режимам	Consumption by mode
 Доля топлива на город, трассу, смешанный режим и стоянку и расход в каждом. В центре — общий расход.	Share of fuel for city, highway, mixed and standing, and the consumption in each. In the centre: total consumption.
-// ui/InfoTexts.kt
 Режим — по средней скорости за 2 минуты: до 45 км/ч город, 45–75 км/ч смешанный, от 75 км/ч трасса. Стоянка — мотор работает, скорость ниже 2 км/ч. Доля = литры режима / все литры; расход = л / км × 100 (при пробеге от 0,3 км). Текущая поездка, если в ней больше 0,2 л, иначе все поездки.	Mode by the average speed over 2 minutes: under 45 km/h city, 45–75 km/h mixed, from 75 km/h highway. Standing: engine running, speed below 2 km/h. Share = litres of the mode / all litres; consumption = l / km × 100 (from 0.3 km). The current trip if it has over 0.2 l, otherwise all trips.
 Большая доля стоянки — прогревы и пробки. Трасса обычно заметно экономичнее города.	A large standing share means warm-ups and jams. Highway is usually noticeably more economical than city.
 Последние поездки	Recent trips
@@ -2873,18 +2872,12 @@ RPM \ нагрузка г/об	RPM \ load g/rev
 Навигация	Navigation
 Приборка с картой и подсказками навигатора, под ней четыре главных числа	Cluster with a map and navigator hints, four main numbers under it
 Турбо	Turbo
-Наддув и обороты крупно, смесь, IAM, откат зажигания и всё, что важно под наддувом (для турбомоторов)	Boost and rpm large, mixture, IAM, ignition retard and everything important under boost (for turbo engines)
 Спорт	Sport
 Спорт-дисплей и G-метр, под ними температуры, смесь и детонация	Sport display and G-meter, temperatures, mixture and knock under them
-Скорость, расход и запас хода крупно, внизу итоги поездки	Speed, consumption and range large, trip totals below
 Три прибора с цифрами в стиле ЖК-табло, мягкие для глаз ночью	Three gauges with LCD-style digits, soft on the eyes at night
 Минимум	Minimum
 Только скорость, температура и напряжение: три крупных прибора без лишнего	Only speed, temperature and voltage: three large gauges, nothing extra
 Диагностика	Diagnostics
-Шестнадцать чисел: температуры, смесь и коррекции, зажигание, нагрузка	Sixteen numbers: temperatures, mixture and trims, ignition, load
-Шаблоны экрана	Screen templates
-Шаблон заменит раскладку, дальше её можно править как обычно	A template replaces the layout, you can edit it after as usual
-Вернуть мой экран	Bring back my screen
 Меню	Menu
 Весь экран	Full screen
 ID устройства	Device ID
@@ -4445,12 +4438,10 @@ ABS: датчик ускорения (G-сенсор) — разъём, креп
 {} Ом	{} Ω
 {} В	{} V
 {} л	{} l
-// small words, units, patterns
 Wi-Fi адаптер {} не отвечает	Wi-Fi adapter {} doesn't answer
 Подключение к Wi-Fi адаптеру {}…	Connecting to Wi-Fi adapter {}…
 бит {}	bit {}
 Выбрано: {} · порт {}	Selected: {} · port {}
-// small words, units, patterns
 с # км/ч	from # km/h
 до # км/ч	to # km/h
 пик -# g	peak -# g
@@ -4602,7 +4593,6 @@ YouTube: поиск {}	YouTube: search {}
 отмена	cancel
 список команд	command list
 так не умеет	can't do this
-// service/Commands.kt: labels and descriptions shown on screen (English phrases are in service/CommandsEn.kt)
 1 сут	1 day
 #м #⚠	# m #⚠
 #м #	# m #
@@ -4895,7 +4885,6 @@ K-линия занята другим прибором: только слуша
 Блок АКПП перестал отвечать, пробую снова	The transmission unit stopped answering, trying again
 На линии другой прибор (Blitz и т.п.)	Another device on the line (Blitz etc.)
 Приложение ничего не шлёт на K-линию и показывает только то, что спрашивает этот прибор	The app sends nothing on the K-line and shows only what that device asks for
-// service/Analyzer.kt
 С даунпайпом или без катализатора на стоковой прошивке так и бывает: турбина дует больше, чем просит карта. Нужна настройка WGDC (скважности вестгейта) под выпуск, до неё не разгоняйтесь в пол	With a downpipe or no catalyst on the stock tune this is what happens: the turbo blows more than the map asks for. The WGDC (wastegate duty) needs tuning for the exhaust; don't floor it until then
 Под наддувом смесь бедная: AFR #	The mixture is lean under boost: AFR #
 , а ЭБУ просит #	, while the ECU asks for #
@@ -4904,7 +4893,6 @@ K-линия занята другим прибором: только слуша
 Впуск с другим корпусом датчика отмечен в доработках: перекалибруйте ДМРВ в прошивке, без этого и расход по MAF неточен	An intake with another MAF housing is ticked in the mods: rescale the MAF in the tune, until then the MAF-based consumption is off too
 С другим корпусом датчика на впуске (отмечен в доработках) так и бывает: перекалибруйте ДМРВ в прошивке. Кондиционер и обогревы тоже добавляют	With another MAF housing on the intake (ticked in the mods) this is expected: rescale the MAF in the tune. A/C and heaters add some too
 С другим корпусом датчика на впуске (отмечен в доработках) перекалибруйте ДМРВ в прошивке. Иначе ищите подсос воздуха после датчика или грязный датчик	With another MAF housing on the intake (ticked in the mods), rescale the MAF in the tune. Otherwise look for an air leak after the sensor or a dirty sensor
-// ui/LogSettingsScreens.kt
 Доработки машины	Car mods
 Подсказки и ошибки учитывают доработки: снятый катализатор, даунпайп на стоковой прошивке, другой впуск. После смены выпуска, турбины или прошивки обычный наддув и выход на наддув выучиваются заново.	Hints and trouble codes take the mods into account: a removed catalyst, a downpipe on the stock tune, another intake. After a change of the exhaust, turbo or tune the usual boost and spool point are learned again.
 Катализатор снят	Catalyst removed
@@ -5126,7 +5114,6 @@ CAN FD (до 64)	CAN FD (up to 64)
 CAN: скорость шины	CAN: bus speed
 Кадров нет. CAN-адаптер подключён, выбран в настройках (или Авто для CANable), скорость шины верная, зажигание включено?	No frames. Is the CAN adapter connected, picked in the settings (or Auto for a CANable), the bus speed right, the ignition on?
 Значение выходит за 64 байта кадра CAN FD	The value goes past the 64 bytes of a CAN FD frame
-// ui/CarSetup.kt
 CAN-адаптер	CAN adapter
 Экспериментально. CAN-адаптер на шине для дашбордов спортивного ЭБУ или своих датчиков: CANable (slcan), платы с протоколом RealDash CAN или GVRET (ESP32RET) по USB, Bluetooth или Wi-Fi. Link G4+/G4X с потоком Dash2Pro или Generic Dash распознаётся сам, остальное добавляется своими значениями. Ничего не запрашивает, только слушает; передача выключена и возможна лишь вручную через шлюз с ограничениями. Вместо CANable подойдёт SensorBox на ESP32-S3 с трансивером CAN («Датчики и экраны», шаг «CAN-шина»). Коды ошибок Subaru, IAM и проверки по заводским таблицам при этом недоступны.	Experimental. A CAN adapter on a sports ECU's dash bus or your own sensors' bus: CANable (slcan), boards with the RealDash CAN or GVRET (ESP32RET) protocol over USB, Bluetooth or Wi-Fi. A Link G4+/G4X with a Dash2Pro or Generic Dash stream is recognised by itself, anything else is added as your own values. Asks nothing, only listens; transmitting is off and possible only by hand through a gate with limits. Instead of a CANable, a SensorBox on an ESP32-S3 with a CAN transceiver will do («Sensors and screens», the «CAN bus» step). Subaru trouble codes, IAM and checks against the factory tables are not available then.
 // service/EcuService.kt
@@ -5301,7 +5288,6 @@ P или N: блок АКПП их не различает	P or N: the transmiss
 Отдалить	Zoom out
 Нажмите, чтобы открыть «Медиа»	Tap to open «Media»
 в эфире	on air
-// ui/InfoTexts.kt
 Тёмная карта с машиной в середине, повёрнутая по ходу движения или севером вверх. Пока есть маршрут, на ней линия маршрута, следующий поворот вверху слева и время, расстояние и время прибытия внизу справа.	A dark map with the car in the middle, turned along the course or north up. While there is a route it shows the route line, the next turn at the top left, and time, distance and arrival time at the bottom right.
 Карта своя (OpenStreetMap), положение и курс по GPS. Маршрут тот же, что у карточки «Приборка с картой»: кнопка с лупой («Куда едем») строит его по OpenStreetMap. Поворот берётся из уведомления навигатора, пока он ведёт (нужен доступ к уведомлениям), или от 2ГИС. Без маршрута подсказок нет, только карта.	The map is the app's own (OpenStreetMap), position and course from GPS. The route is the same as on the «Cluster with map» card: the magnifier button («Where to») builds it from OpenStreetMap. The turn comes from the navigator's notification while it guides (needs notification access), or from 2GIS. Without a route there are no hints, just the map.
 Кнопки слева: приближение, «Куда едем» и компас (север вверху или по ходу движения). Нажатие на карту открывает навигатор.	Buttons on the left: zoom, «Where to» and the compass (north up or along the course). A tap on the map opens the navigator.
@@ -5434,7 +5420,7 @@ VK Видео	VK Video
 Следующая серия	Next episode
 Открыть в {}	Open in {}
 С{} Э{}	S{} E{}
-{} открывается только из Кыргызстана. В других странах смотрите Rutube и приложения кинотеатров: Настройки → Функции → «Регион видео».	{} opens only from Kyrgyzstan. In other countries watch Rutube and the cinema apps: Settings → Features → «Video region».
+{} открывается только из Кыргызстана. В других странах смотрите YouTube и приложения кинотеатров: Настройки → Функции → «Регион видео».	{} opens only from Kyrgyzstan. Elsewhere watch YouTube and the cinema apps: Settings → Features → «Video region».
 {} не отвечает. Попробуйте позже	{} doesn't answer. Try later
 {}: не удалось загрузить	{}: could not load
 Не удалось загрузить	Could not load
@@ -5448,8 +5434,7 @@ VK Видео	VK Video
 Кинопоиск	Kinopoisk
 Видео	Video
 Экран «Видео»	«Video» screen
-Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах Rutube, YouTube и приложения кинотеатров	Films and series: ts.kg and oc.kg in Kyrgyzstan, Rutube, YouTube and the cinema apps elsewhere
-// ui/MediaYandex.kt
+Фильмы и сериалы: в Кыргызстане ts.kg и oc.kg, в других странах YouTube и приложения кинотеатров	Films and series: ts.kg and oc.kg in Kyrgyzstan, YouTube and the cinema apps elsewhere
 Справа код для входа с телефона, или войдите на этой магнитоле	The sign-in code for the phone is on the right, or sign in on this head unit
 Справа: вход через страницу Яндекса или токен	On the right: sign in on Yandex's page or with a token
 Или войдите на этой магнитоле:	Or sign in on this head unit:
@@ -5534,3 +5519,132 @@ SSM1: кабель не берёт скорость 1953 бод	SSM1: the cable 
 байт {}: {}	byte {}: {}
 Нужна прошивка 6: обновите	Firmware 6 needed: update
 Значение выходит за {} байт кадра	The value goes past the frame's {} bytes
+
+Поиск фильма	Search for a film
+Поиск на YouTube	Search YouTube
+Заполнить экран	Fill the screen
+Вписать	Fit
+Открыть в Rutube	Open in Rutube
+Rutube не отдаёт это видео. Попробуйте ещё раз или другое	Rutube does not give this video. Try again or another one
+Rutube не отдаёт это видео (платное, удалено или закрыто в вашей стране)	Rutube does not give this video (paid, removed or closed in your country)
+Включите «Неизвестные источники» в настройках безопасности и нажмите «Скачать и установить» ещё раз	Turn on «Unknown sources» in the security settings and press «Download and install» again
+Зайцев	Zaycev
+Зайцев.нет	Zaycev.net
+Новинки	New
+За день	Today
+За неделю	This week
+За месяц	This month
+Песня или исполнитель	Song or artist
+Недоступен для прослушивания	Not available for listening
+Популярное, новинки и поиск, без регистрации	Popular, new and search, no account needed
+Найдётся всё, что есть на zaycev.net	Finds anything zaycev.net has
+Этот трек недоступен для прослушивания	This track is not available for listening
+Трек не найден на zaycev.net	Track not found on zaycev.net
+zaycev.net не пускает: возможно, недоступен в этой стране	zaycev.net refuses: it may be unavailable in this country
+zaycev.net не отвечает, попробуйте позже	zaycev.net does not answer, try later
+Нет связи с zaycev.net: проверьте интернет	No connection to zaycev.net: check the internet
+Не получилось, попробуйте ещё раз	Did not work, try again
+// ui/PresetsUi.kt, data/BuiltInPresets.kt, data/Presets.kt
+Пресеты	Presets
+Пресет	Preset
+Пресет «{}» применён	Preset “{}” applied
+без {}	without {}
+Для вашей машины: {}	For your car: {}
+Пресеты · {}	Presets · {}
+Пресет заменит раскладку, её можно править как обычно	A preset replaces the layout, you can edit it as usual
+Вернуть как было	Bring back what was there
+Импорт	Import
+Готовые	Ready-made
+Мои · {}	Mine · {}
+Правый руль	Right-hand drive
+Поделиться текущим	Share the current one
+В буфере есть пресет «{}»: добавить?	The clipboard holds the preset “{}”: add it?
+Посмотреть	Look
+Не для этой машины · {}	Not for this car · {}
+Сохраните свою раскладку, чтобы вернуться к ней одним касанием или отправить её другу	Save your layout to come back to it with one tap or send it to a friend
+Сейчас на экране	On screen now
+Сохранить текущий	Save the current one
+Раскладка этого экрана как она есть сейчас: вернуть одним касанием или поделиться	This screen's layout as it is now: back with one tap, or share it
+Действия	Actions
+Переименовать	Rename
+Обновить из текущего	Update from the current one
+Точно удалить?	Delete for sure?
+Сохранить пресет	Save preset
+Переименовать пресет	Rename preset
+Описание (можно пусто)	Description (may be empty)
+Мест нет: удалите какой-нибудь из своих пресетов (их до {})	No room left: delete one of your presets (up to {} of them)
+Пресет CarPulse «{}» для экрана «{}»:	CarPulse preset “{}” for the “{}” screen:
+Отправить пресет	Send preset
+Поделиться пресетом	Share preset
+«{}» для экрана «{}»	“{}” for the “{}” screen
+Отсканируйте телефоном или покажите другу. Код можно отправить в Telegram или WhatsApp, на другой машине: «Пресеты», «Импорт».	Scan it with a phone or show it to a friend. The code can go by Telegram or WhatsApp; on the other car: “Presets”, “Import”.
+Отправить код	Send the code
+Файлом	As a file
+Скопировать код	Copy the code
+Импорт пресета	Import a preset
+Код пресета (CPP1:…)	Preset code (CPP1:…)
+Вставить из буфера	Paste from the clipboard
+Открыть файл	Open a file
+Вставьте код, который вам прислали, или откройте файл .cpreset	Paste the code you were sent, or open a .cpreset file
+Здесь нет кода пресета: он начинается с CPP1:	No preset code here: it starts with CPP1:
+Код повреждён или обрезан	The code is damaged or cut short
+Пресет из более новой версии CarPulse: обновите приложение	A preset from a newer CarPulse: update the app
+Это пресет для экрана «{}»	This is a preset for the “{}” screen
+Сохраните его в «Мои»: он появится в пресетах того экрана	Save it to “Mine”: it shows up in that screen's presets
+Сохранить в «Мои»	Save to “Mine”
+Не перенесено: {}	Not carried over: {}
+Файл не открылся	The file did not open
+Настраивать долго? Начните с пресета: разгон, отклик, смесь, детонация, замеры	Setting it up takes long? Start with a preset: acceleration, response, mixture, knock, runs
+Это ваш экран: удерживайте карточку, чтобы настроить его. Или начните с пресета	This is your screen: hold a card to set it up. Or start with a preset
+Езда	Driving
+Мотор и турбо	Engine and turbo
+Бездорожье и АКПП	Off-road and automatic
+Ночь и минимум	Night and minimum
+Готовые панели	Ready-made panels
+Каждый день	Every day
+Скорость, температуры ОЖ и масла крупно, внизу напряжение, расход, запас хода и впуск	Speed, coolant and oil temperatures large, voltage, consumption, range and intake below
+Скорость, расход и запас хода крупно, внизу итоги поездки и топливо в баке	Speed, consumption and range large, trip totals and fuel in the tank below
+Прогрев и зима	Warm-up and winter
+ОЖ и масло крупно, напряжение, впуск и подсказка, когда можно крутить мотор и глушить турбину	Coolant and oil large, voltage, intake and a hint when the engine may rev and the turbo may be shut down
+Трек-день	Track day
+Масло и ОЖ с тревогой, наддув, перегрузки и пики, внизу смесь, детонация и напряжение	Oil and coolant with alarms, boost, G-forces and peaks, mixture, knock and voltage below
+Наддув и обороты крупно, масло, смесь, откат и IAM, ниже ошибка наддува и форсунки	Boost and rpm large, oil, mixture, knock correction and IAM, boost error and injectors below
+Давление и температура масла, температура выхлопа и смесь с ваших датчиков	Oil pressure and temperature, exhaust temperature and mixture from your sensors
+Бездорожье и прицеп	Off-road and trailer
+ATF, ОЖ и масло с тревогой, крен и уклон, муфта полного привода и блокировка	ATF, coolant and oil with alarms, roll and pitch, AWD clutch and lock-up
+На стоянке: шестнадцать чисел, температуры, смесь и коррекции, зажигание, нагрузка	Parked: sixteen numbers, temperatures, mixture and trims, ignition, load
+Большой блок с машиной и приборами, пять главных чисел	A big block with the car and gauges, five main numbers
+Машина и приборы, температуры, напряжение, расход, запас хода и смесь	The car and gauges, temperatures, voltage, consumption, range and mixture
+Большие приборы, расход, средний, запас хода и топливо в баке	Big gauges, consumption, average, range and fuel in the tank
+ОЖ, масло, напряжение, впуск и подсказка про прогрев и охлаждение турбины	Coolant, oil, voltage, intake and a hint on warm-up and turbo cool-down
+Карта с маршрутом на две трети, спидометр и четыре числа	The route map on two thirds, the speedometer and four numbers
+Турбо-контроль	Turbo watch
+Наддув, смесь, детонация, IAM и масло, ниже цель наддува и форсунки	Boost, mixture, knock, IAM and oil, boost target and injectors below
+ATF, ОЖ, масло, крен и уклон, муфта полного привода и блокировка	ATF, coolant, oil, roll and pitch, AWD clutch and lock-up
+Ночь	Night
+Мягкие ЖК-приборы и три числа	Soft LCD gauges and three numbers
+На стоянке: пятнадцать чисел без машины, температуры, смесь, коррекции, зажигание, давление	Parked: fifteen numbers without the car, temperatures, mixture, trims, ignition, pressure
+Отклик	Response
+Педаль и дроссель, нагрузка и детонация, графики педали и зажигания, внизу AVCS, MAF и форсунки	Pedal and throttle, load and knock, pedal and ignition charts, AVCS, MAF and injectors below
+Трек	Track
+Спорт-дисплей и G-метр, графики оборотов и зажигания	Sport display and G-meter, rpm and ignition charts
+Разгон, пики поездки и перегрузки, графики последнего разгона и торможения	Acceleration, trip peaks and G-forces, charts of the last acceleration and braking
+Наддув, дроссель и детонация, графики наддува и смеси, форсунки и wastegate	Boost, throttle and knock, boost and mixture charts, injectors and wastegate
+Цель и факт наддува, IAM, график наддува, wastegate и форсунки	Boost target and actual, IAM, boost chart, wastegate and injectors
+Откат и IAM крупно, график зажигания во всю ширину, внизу нагрузка, наддув и дроссель	Knock correction and IAM large, full-width ignition chart, load, boost and throttle below
+Две большие стрелки и график смеси	Two big needles and the mixture chart
+AFR и коррекции, MAF и зажигание на графиках, внизу MAF, нагрузка и форсунки	AFR and trims, MAF and ignition on charts, MAF, load and injectors below
+Селектор, ATF и гидротрансформатор, блокировка, давление, муфта, колёса и два графика	Selector, ATF and torque converter, lock-up, pressure, clutch, wheels and two charts
+ATF крупно со стрелкой и тревогой, селектор, график температуры: для прицепа и пробок	ATF large with a needle and alarm, selector, temperature chart: for towing and traffic jams
+Муфта, скорость колёс и ATF, графики колёс и блокировки: проверка пробуксовки	Clutch, wheel speeds and ATF, wheel and lock-up charts: a slip check
+Селектор, ATF и гидротрансформатор, под ними график температуры	Selector, ATF and torque converter, the temperature chart under them
+Гидротрансформатор и блокировка, графики блокировки и оборотов турбины	Torque converter and lock-up, lock-up and turbine speed charts
+Диагностика АКПП	Automatic diagnostics
+На стоянке: селектор, ATF, гидротрансформатор, давление, муфта, колёса и графики турбины и колёс	Parked: selector, ATF, torque converter, pressure, clutch, wheels and turbine and wheel charts
+Текущий расход, бак, график, поездка, режимы и последние поездки	Current consumption, tank, chart, trip, modes and recent trips
+Компактный	Compact
+Текущий расход и бак крупно, под ними поездка во всю ширину	Current consumption and tank large, the trip full width under them
+Текущий расход и поездка, ниже график и расход по режимам	Current consumption and the trip, the chart and consumption by mode below
+Экономия	Economy
+Текущий расход и режимы крупно, ниже график и бак	Current consumption and modes large, the chart and tank below
+Бак и последние поездки, график расхода во всю ширину	Tank and recent trips, the full-width consumption chart

@@ -3,7 +3,7 @@ package kg.forester.sg.service
 import android.graphics.Bitmap
 
 /**
- * What plays now, for the mini player. [source]: "files", "stream", "yandex" (all the own player), "fm" (the tuner), "bt", "app"
+ * What plays now, for the mini player. [source]: "files", "stream", "yandex", "zaycev" (all the own player), "fm" (the tuner), "bt", "app"
  * (another player's session, [pkg]; "fyt" is the head unit's stock player).
  */
 data class NowPlaying(
@@ -21,6 +21,7 @@ fun pickNow(mode: String, own: NowPlaying?, fm: NowPlaying?, bt: NowPlaying?, ap
         "apps" -> app
         "radio" -> own?.takeIf { it.source == "stream" } ?: fm
         "yandex" -> own?.takeIf { it.source == "yandex" }
+        "zaycev" -> own?.takeIf { it.source == "zaycev" }
         else -> own?.takeIf { it.source == "files" }
     }
     if (chosen?.playing == true) return chosen

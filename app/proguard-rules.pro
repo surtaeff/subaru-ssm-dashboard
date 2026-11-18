@@ -13,3 +13,18 @@
 
 # Tile sources and overlays by name in a library with no rules of its own.
 -keep class org.osmdroid.** { *; }
+
+# NewPipe Extractor (YouTube): Rhino runs YouTube's player JavaScript and finds its classes by reflection; the extractor
+# reads JSON into its own classes and protobuf-lite reads its messages' fields by name.
+-keep class org.schabi.newpipe.extractor.** { *; }
+-keep class org.mozilla.javascript.** { *; }
+-keep class org.mozilla.classfile.** { *; }
+-keep class com.grack.nanojson.** { *; }
+-keep class * extends com.google.protobuf.GeneratedMessageLite { *; }
+-dontwarn org.mozilla.javascript.**
+-dontwarn javax.script.**
+-dontwarn java.beans.**
+-dontwarn jdk.dynalink.**
+-dontwarn org.jspecify.annotations.**
+-dontwarn javax.annotation.**
+-dontwarn com.google.re2j.**

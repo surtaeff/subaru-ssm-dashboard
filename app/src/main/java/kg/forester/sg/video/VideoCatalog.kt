@@ -68,7 +68,7 @@ object VideoCatalog {
     /** What the driver reads instead of an exception. */
     fun message(e: Throwable?): String = when {
         e is VideoSourceException && e.blocked ->
-            "${e.source.label} открывается только из Кыргызстана. В других странах смотрите Rutube и приложения кинотеатров: Настройки → Функции → «Регион видео»."
+            "${e.source.label} открывается только из Кыргызстана. В других странах смотрите YouTube и приложения кинотеатров: Настройки → Функции → «Регион видео»."
         e is VideoSourceException && e.cause is java.net.UnknownHostException -> "Нет интернета"
         e is VideoSourceException && (e.cause is java.net.SocketTimeoutException || e.cause is java.net.ConnectException) ->
             "${e.source.label} не отвечает. Попробуйте позже"

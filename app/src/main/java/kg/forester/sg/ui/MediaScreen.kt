@@ -108,7 +108,8 @@ import kotlin.math.sin
 /**
  * «Медиа»: one player for everything that plays in the car. The mode is switched inside it, like the SRC key of
  * a car stereo: USB (the app's own player: stick, card, memory), Bluetooth from the phone, radio (the FYT tuner
- * and internet radio), Yandex Music (signed in here, played by the own player: see MediaYandex.kt), other player
+ * and internet radio), Yandex Music (signed in here, played by the own player: see MediaYandex.kt), zaycev.net (no
+ * account, the same player: see MediaZaycev.kt), other player
  * apps (VK…). Behind it the cover, blurred; on the right a panel that slides out for the mode: folders, presets and
  * stations, players. Accents in the interface colour.
  */
@@ -119,7 +120,8 @@ fun MediaScreen() {
     val scope = rememberCoroutineScope()
     val modes = listOf(
         Triple("files", "USB", Lucide.Usb), Triple("bt", "Bluetooth", Lucide.Bluetooth),
-        Triple("radio", "Радио", Lucide.Radio), Triple("yandex", "Яндекс", Lucide.Waves), Triple("apps", "Приложения", Lucide.LayoutGrid),
+        Triple("radio", "Радио", Lucide.Radio), Triple("yandex", "Яндекс", Lucide.Waves),
+        Triple("zaycev", "Зайцев", Lucide.Rabbit), Triple("apps", "Приложения", Lucide.LayoutGrid),
     )
     var mode by remember { mutableStateOf(Repo.settings.mediaSource.takeIf { s -> modes.any { it.first == s } } ?: "files") }
     var panel by remember { mutableStateOf(true) }
@@ -132,12 +134,15 @@ fun MediaScreen() {
         if (mode == "radio" && !radio.internet) scope.launch { audio.radio.off() }
         mode = s; Repo.settings.mediaSource = s
         // one source at a time, like the head unit's own: the own player pauses when another source takes over. Files,
-        // internet radio and Yandex share it: Yandex pauses what the others played, and they what Yandex played
+        // internet radio, Yandex and zaycev.net share it: Yandex and zaycev.net each pause what the others played, and they
+        // what those two played
         val ownYandex = LocalMusic.state.value.yandex
+        val ownZaycev = LocalMusic.state.value.zaycev
         val keeps = when (s) {
-            "files" -> !ownYandex
-            "radio" -> radio.internet && !ownYandex
+            "files" -> !ownYandex && !ownZaycev
+            "radio" -> radio.internet && !ownYandex && !ownZaycev
             "yandex" -> ownYandex
+            "zaycev" -> ownZaycev
             else -> false
         }
         if (!keeps) LocalMusic.pause()
@@ -162,16 +167,17 @@ fun MediaScreen() {
     }
     val st by LocalMusic.state.collectAsState()
     val art: Bitmap? = when (mode) {
-        "files" -> st.art.takeIf { !st.stream && !st.yandex }
+        "files" -> st.art.takeIf { !st.stream && !st.yandex && !st.zaycev }
         "radio" -> radio.coverBitmap()
         "yandex" -> st.art.takeIf { st.yandex }
+        "zaycev" -> st.art.takeIf { st.zaycev }
         else -> null
     }
     val shape = RoundedCornerShape(20.dp)
     Box(Modifier.fillMaxSize().clip(shape).panelFill().border(1.dp, C.Border, shape)) {
         Backdrop(art)
         Column(Modifier.fillMaxSize().padding(18.dp)) {
-            // five sources: on a narrower screen only the chosen one keeps its name, the others their icon
+            // six sources: on a narrower screen only the chosen one keeps its name, the others their icon
             BoxWithConstraints { val compact = maxWidth < 1100.dp; Row(verticalAlignment = Alignment.CenterVertically) {
                 ModeSwitch(modes, mode, compact) { pick(it) }
                 Spacer(Modifier.width(10.dp))
@@ -188,7 +194,7 @@ fun MediaScreen() {
                         }
                     }
                 }
-                if (mode == "files" || mode == "yandex" || (mode == "radio" && radio.internet)) {
+                if (mode == "files" || mode == "yandex" || mode == "zaycev" || (mode == "radio" && radio.internet)) {
                     var sound by remember { mutableStateOf(false) }
                     RoundIcon(Lucide.SlidersHorizontal, "Звук") { sound = true }
                     if (sound) SoundDialog { sound = false }
@@ -204,6 +210,7 @@ fun MediaScreen() {
                             "bt" -> BluetoothHero(audio.bt)
                             "radio" -> RadioHero(radio)
                             "yandex" -> YandexHero()
+                            "zaycev" -> ZaycevHero()
                             "apps" -> androidx.compose.runtime.key(appsKey, appsVer) { AppsHero() }
                             else -> FilesHero()
                         }
@@ -225,6 +232,7 @@ fun MediaScreen() {
                                 "bt" -> BluetoothPanel()
                                 "radio" -> RadioPanel(radio)
                                 "yandex" -> YandexPanel()
+                                "zaycev" -> ZaycevPanel()
                                 "apps" -> androidx.compose.runtime.key(appsKey) { AppsPanel(audio.ownSources) }
                                 else -> FilesPanel()
                             }
@@ -677,7 +685,7 @@ private fun FilesHero() {
         if (granted) LocalMusic.player(ctx)
         while (true) { pos = LocalMusic.position(); delay(500) }
     }
-    val files = !st.stream && !st.yandex
+    val files = !st.stream && !st.yandex && !st.zaycev
     Hero(
         cover = { GlowCover(if (files) st.art else null, Lucide.Disc3, st.playing && files, it) },
         onNext = { LocalMusic.next(ctx) }, onPrev = { LocalMusic.prev(ctx) },

@@ -97,55 +97,59 @@ fun DriveScreen() {
     val knock by Repo.knock.collectAsState()
 
     val turbo by Repo.carTurbo.collectAsState()
-    BoardScreen(DriveEdit, DriveCards, ::driveRowWeight, factoryKey = turbo) { t, m ->
-        val info = "drive.${t.id}"
-        @Composable
-        fun Mini(icon: ImageVector, title: String, v: Float?, min: Float, max: Float, unit: String, fmt: String, sub: String? = null, red: Float? = null) =
-            ValueCard(CardValue(icon, title, v, min, max, unit, fmt, info, red, warnRule = WarnRule(above = red)), t.style, m) {
-                MiniGauge(icon, title, v, min, max, unit, fmt, m, sub = sub, info = info, warnRule = WarnRule(above = red))
+    val saved by Repo.driveTiles.collectAsState()
+    Column(Modifier.fillMaxSize()) {
+        if (saved.isEmpty()) PresetHint(DriveEdit, ::driveRowWeight, DriveCards, "Настраивать долго? Начните с пресета: разгон, отклик, смесь, детонация, замеры")
+        BoardScreen(DriveEdit, DriveCards, ::driveRowWeight, leading = { PresetsChip(DriveEdit, ::driveRowWeight, DriveCards) }, factoryKey = turbo) { t, m ->
+            val info = "drive.${t.id}"
+            @Composable
+            fun Mini(icon: ImageVector, title: String, v: Float?, min: Float, max: Float, unit: String, fmt: String, sub: String? = null, red: Float? = null) =
+                ValueCard(CardValue(icon, title, v, min, max, unit, fmt, info, red, warnRule = WarnRule(above = red)), t.style, m) {
+                    MiniGauge(icon, title, v, min, max, unit, fmt, m, sub = sub, info = info, warnRule = WarnRule(above = red))
+                }
+            @Composable
+            fun Small(icon: ImageVector, title: String, v: Float?, min: Float, max: Float, unit: String, fmt: String) =
+                ValueCard(CardValue(icon, title, v, min, max, unit, fmt, info), t.style, m) {
+                    Tile(icon, title, v?.let { fmt.format(it) } ?: "—", unit, m, info)
+                }
+            @Composable
+            fun Chart(title: String, lines: ChartLines, min: Float, max: Float, fmt: String = "%.1f", zero: Boolean = false) =
+                ChartCard(title, lines, min, max, m, fmt, zero, info)
+            when (t.id) {
+                "pedal" -> Mini(Lucide.ChevronsUp, "Педаль газа", live.pick { it.pedalPct }, 0f, 100f, "%", "%.0f")
+                "throttle" -> Mini(Lucide.Disc, "Дроссель", live.pick { it.throttlePct }, 0f, 100f, "%", "%.0f")
+                "boost" -> Mini(Lucide.Fan, "Наддув", live.pick { it.boostBar }, 0f, boostTop, "бар", "%.2f",
+                    sub = live.pick { e -> e.vacuumKpa?.takeIf { it > 1f }?.let { "разрежение %.0f кПа".format(it) } })
+                "load" -> Mini(Lucide.Activity, "Нагрузка", live.pick { it.loadGRev }, 0f, loadTop, "г/об", "%.2f")
+                "rpm" -> Mini(Lucide.Gauge, "Обороты", live.pick { it.rpm?.toFloat() }, 0f, engine.rpmTop, "об/мин", "%.0f", red = engine.rpmRedFrom)
+                "knock" -> KnockCard(knock, live.pick { it.knockDeg }, m)
+                "chartPedal" -> Chart(
+                    "Педаль и дроссель, %",
+                    rememberChart(Repo.history, ChartLine("педаль", C.Violet) { it.pedalPct }, ChartLine("дроссель", C.Blue) { it.throttlePct }),
+                    0f, 100f, "%.0f",
+                )
+                "chartBoost" -> Chart("Наддув, бар", rememberChart(Repo.history, ChartLine("наддув", C.Green) { it.boostBar }), 0f, boostTop, "%.2f")
+                "chartAfr" -> Chart("Смесь (AFR)", rememberChart(Repo.history, ChartLine("AFR", C.Orange) { it.afr }), 10f, 20f)
+                "chartTiming" -> Chart(
+                    "Зажигание, °",
+                    rememberChart(Repo.history, ChartLine("УОЗ", C.Blue) { it.timingDeg }, ChartLine("детонация", C.Red) { it.knockDeg }),
+                    -10f, 45f, "%.0f", zero = true,
+                )
+                "chartRpm" -> Chart("Обороты, об/мин", rememberChart(Repo.history, ChartLine("обороты", C.Violet) { it.rpm?.toFloat() }), 0f, engine.rpmTop, "%.0f")
+                "chartTrims" -> Chart(
+                    "Коррекции A/F, %",
+                    rememberChart(Repo.history, ChartLine("коррекция", C.Orange) { it.afCorrPct }, ChartLine("обучение", C.Blue) { it.afLearnPct }),
+                    -25f, 25f, "%.0f", zero = true,
+                )
+                "chartMaf" -> Chart("MAF, г/с", rememberChart(Repo.history, ChartLine("MAF", C.Blue) { it.mafGs }), 0f, mafTop, "%.0f")
+                "avcs" -> Small(Lucide.RefreshCw, "AVCS (впуск)", live.pick { it.avcsDeg }, -10f, 50f, "°", "%.0f")
+                "injDuty" -> Small(Lucide.Droplets, "Форсунки", live.pick { it.injDutyPct }, 0f, 100f, "%", "%.0f")
+                "maf" -> Small(Lucide.Wind, "MAF", live.pick { it.mafGs }, 0f, mafTop, "г/с", "%.1f")
+                "throttleMotor" -> Small(Lucide.Cog, "Привод др.", live.pick { it.throttleMotorPct }, -100f, 100f, "%", "%.0f")
+                "wgdc" -> Small(Lucide.Wind, "Wastegate", live.pick { it.wastegatePct }, 0f, 100f, "%", "%.0f")
+                "pressure" -> Tile(Lucide.Gauge, "Абс. давление", live.pick { e -> "${fmtF(e.mapKpa, 0)} / ${fmtF(e.atmKpa, 0)}" }, "кПа", m, info)
+                else -> ExtraCard(t.id, info, m, t.style)
             }
-        @Composable
-        fun Small(icon: ImageVector, title: String, v: Float?, min: Float, max: Float, unit: String, fmt: String) =
-            ValueCard(CardValue(icon, title, v, min, max, unit, fmt, info), t.style, m) {
-                Tile(icon, title, v?.let { fmt.format(it) } ?: "—", unit, m, info)
-            }
-        @Composable
-        fun Chart(title: String, lines: ChartLines, min: Float, max: Float, fmt: String = "%.1f", zero: Boolean = false) =
-            ChartCard(title, lines, min, max, m, fmt, zero, info)
-        when (t.id) {
-            "pedal" -> Mini(Lucide.ChevronsUp, "Педаль газа", live.pick { it.pedalPct }, 0f, 100f, "%", "%.0f")
-            "throttle" -> Mini(Lucide.Disc, "Дроссель", live.pick { it.throttlePct }, 0f, 100f, "%", "%.0f")
-            "boost" -> Mini(Lucide.Fan, "Наддув", live.pick { it.boostBar }, 0f, boostTop, "бар", "%.2f",
-                sub = live.pick { e -> e.vacuumKpa?.takeIf { it > 1f }?.let { "разрежение %.0f кПа".format(it) } })
-            "load" -> Mini(Lucide.Activity, "Нагрузка", live.pick { it.loadGRev }, 0f, loadTop, "г/об", "%.2f")
-            "rpm" -> Mini(Lucide.Gauge, "Обороты", live.pick { it.rpm?.toFloat() }, 0f, engine.rpmTop, "об/мин", "%.0f", red = engine.rpmRedFrom)
-            "knock" -> KnockCard(knock, live.pick { it.knockDeg }, m)
-            "chartPedal" -> Chart(
-                "Педаль и дроссель, %",
-                rememberChart(Repo.history, ChartLine("педаль", C.Violet) { it.pedalPct }, ChartLine("дроссель", C.Blue) { it.throttlePct }),
-                0f, 100f, "%.0f",
-            )
-            "chartBoost" -> Chart("Наддув, бар", rememberChart(Repo.history, ChartLine("наддув", C.Green) { it.boostBar }), 0f, boostTop, "%.2f")
-            "chartAfr" -> Chart("Смесь (AFR)", rememberChart(Repo.history, ChartLine("AFR", C.Orange) { it.afr }), 10f, 20f)
-            "chartTiming" -> Chart(
-                "Зажигание, °",
-                rememberChart(Repo.history, ChartLine("УОЗ", C.Blue) { it.timingDeg }, ChartLine("детонация", C.Red) { it.knockDeg }),
-                -10f, 45f, "%.0f", zero = true,
-            )
-            "chartRpm" -> Chart("Обороты, об/мин", rememberChart(Repo.history, ChartLine("обороты", C.Violet) { it.rpm?.toFloat() }), 0f, engine.rpmTop, "%.0f")
-            "chartTrims" -> Chart(
-                "Коррекции A/F, %",
-                rememberChart(Repo.history, ChartLine("коррекция", C.Orange) { it.afCorrPct }, ChartLine("обучение", C.Blue) { it.afLearnPct }),
-                -25f, 25f, "%.0f", zero = true,
-            )
-            "chartMaf" -> Chart("MAF, г/с", rememberChart(Repo.history, ChartLine("MAF", C.Blue) { it.mafGs }), 0f, mafTop, "%.0f")
-            "avcs" -> Small(Lucide.RefreshCw, "AVCS (впуск)", live.pick { it.avcsDeg }, -10f, 50f, "°", "%.0f")
-            "injDuty" -> Small(Lucide.Droplets, "Форсунки", live.pick { it.injDutyPct }, 0f, 100f, "%", "%.0f")
-            "maf" -> Small(Lucide.Wind, "MAF", live.pick { it.mafGs }, 0f, mafTop, "г/с", "%.1f")
-            "throttleMotor" -> Small(Lucide.Cog, "Привод др.", live.pick { it.throttleMotorPct }, -100f, 100f, "%", "%.0f")
-            "wgdc" -> Small(Lucide.Wind, "Wastegate", live.pick { it.wastegatePct }, 0f, 100f, "%", "%.0f")
-            "pressure" -> Tile(Lucide.Gauge, "Абс. давление", live.pick { e -> "${fmtF(e.mapKpa, 0)} / ${fmtF(e.atmKpa, 0)}" }, "кПа", m, info)
-            else -> ExtraCard(t.id, info, m, t.style)
         }
     }
 }

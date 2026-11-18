@@ -50,6 +50,8 @@ class TorrEngine(context: Context, val port: Int = TorrClient.DEFAULT_PORT) {
             Log.e(TAG, "TorrServer binary missing at ${binary.absolutePath}")
             return false
         }
+        // what a run before left (the app killed while a film played): a fresh engine starts with an empty cache
+        clearCache()
         spawn()
         val up = awaitUp(timeoutMs = 20_000)
         if (up) applySettingsOnce() else Log.e(TAG, "TorrServer did not come up")

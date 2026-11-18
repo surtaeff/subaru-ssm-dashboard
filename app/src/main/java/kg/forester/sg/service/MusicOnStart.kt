@@ -7,7 +7,9 @@ import kg.forester.sg.service.audio.AudioPlatforms
 import kg.forester.sg.service.audio.Transport
 import kg.forester.sg.ssm.SsmTrace
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -27,7 +29,7 @@ object MusicOnStart {
     fun plan(on: Boolean, playing: Boolean, source: String, musicApp: String): String? = when {
         !on || playing -> null
         source == "apps" && musicApp.isEmpty() -> null
-        source in setOf("files", "bt", "radio", "apps", "yandex") -> source
+        source in setOf("files", "bt", "radio", "apps", "yandex", "zaycev") -> source
         else -> null
     }
 
@@ -61,16 +63,23 @@ object MusicOnStart {
         return am.isMusicActive || Fyt.music.value.playing || Fyt.appId.value == 1 || LocalMusic.state.value.playing
     }
 
+    /**
+     * The own player (ExoPlayer) only on the main thread: the service's scope runs on a worker, and beta11 failed with
+     * «Player is accessed on the wrong thread» on a Yandex start (BK7Y68V2, 2026-11-18).
+     */
+    private suspend fun onPlayer(block: suspend () -> Unit) = withContext(Dispatchers.Main) { block() }
+
     private suspend fun go(ctx: Context, what: String) {
         val audio = AudioPlatforms.current(ctx)
         when (what) {
-            "files" -> LocalMusic.resume(ctx)
-            "yandex" -> kg.forester.sg.service.yandex.YaMusic.resume(ctx)
+            "files" -> onPlayer { LocalMusic.resume(ctx) }
+            "yandex" -> onPlayer { kg.forester.sg.service.yandex.YaMusic.resume(ctx) }
+            "zaycev" -> onPlayer { kg.forester.sg.service.zaycev.ZaycevMusic.resume(ctx) }
             "bt" -> { audio.bt.enter(byUser = true); audio.bt.send(Transport.PLAY) }
             "radio" -> {
                 val internet = ctx.getSharedPreferences("radio", Context.MODE_PRIVATE).getBoolean("internet", false)
                 // the internet station plays from the own player's queue (kept while the unit only slept)
-                if (internet) LocalMusic.resume(ctx) else audio.radio.on()
+                if (internet) onPlayer { LocalMusic.resume(ctx) } else audio.radio.on()
             }
             "apps" -> {
                 val pkg = Repo.settings.musicApp

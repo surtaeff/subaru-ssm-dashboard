@@ -12,6 +12,11 @@ class CarPulseApp : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        // Before any service or activity: Android brings EcuService back by itself (a sticky service after the head unit's
+        // sleep or a killed process) and its fields read Repo.settings while it is being constructed, before its onCreate.
+        // beta11 crashed that way at ignition off (BK7Y68V2 and Роман, 2026-11-18): «lateinit property settings has not
+        // been initialized» in EcuService.<init>. Repo.init is idempotent, MainActivity and EcuService still call it.
+        kg.forester.sg.data.Repo.init(this)
     }
 }
 

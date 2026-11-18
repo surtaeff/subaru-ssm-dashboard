@@ -96,7 +96,7 @@ class MiniPlayerState {
             if (shown?.key() != track?.key()) track = shown
             known = shown != null
             if (DeviceTier.current.value != Tier.LOW && shown != null) {
-                val pos = if (shown.source == "files" || shown.source == "yandex") LocalMusic.position() else shown.posMs
+                val pos = if (shown.source == "files" || shown.source == "yandex" || shown.source == "zaycev") LocalMusic.position() else shown.posMs
                 share.floatValue = if (shown.durMs > 0) (pos.toFloat() / shown.durMs).coerceIn(0f, 1f) else 0f
             }
             delay(1000)
@@ -109,7 +109,7 @@ class MiniPlayerState {
         val st = LocalMusic.state.value
         if (st.current == null) return null
         return if (st.stream) NowPlaying("stream", st.station.ifBlank { st.title }, if (st.station.isBlank()) "" else st.title, null, st.playing)
-        else NowPlaying(if (st.yandex) "yandex" else "files", st.title, st.artist, st.art, st.playing, durMs = st.durMs)
+        else NowPlaying(if (st.yandex) "yandex" else if (st.zaycev) "zaycev" else "files", st.title, st.artist, st.art, st.playing, durMs = st.durMs)
     }
 
     private fun btNow(t: BtTrack): NowPlaying? {

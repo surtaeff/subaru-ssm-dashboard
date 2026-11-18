@@ -547,8 +547,9 @@ object Voice {
                 say("Пауза")
             }
             VoiceIntent.PLAY -> {
-                // Media is on Yandex: its queue or wave goes on, whatever the unit's own player has
+                // Media is on Yandex (zaycev.net): its queue or wave goes on, whatever the unit's own player has
                 if (kg.forester.sg.data.Repo.settings.mediaSource == "yandex" && !otherAppPlaying() && YaMusic.resume(app)) say("Играю")
+                else if (kg.forester.sg.data.Repo.settings.mediaSource == "zaycev" && !otherAppPlaying() && kg.forester.sg.service.zaycev.ZaycevMusic.resume(app)) say("Играю")
                 else if (audio.ownSources && !otherAppPlaying()) {
                     if (!Fyt.music.value.playing) Fyt.playPause()
                     Fyt.mute(false)

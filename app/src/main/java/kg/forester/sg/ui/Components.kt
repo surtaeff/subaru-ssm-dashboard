@@ -1285,7 +1285,7 @@ fun rememberNoLink(): Boolean {
     var lost by remember { mutableStateOf(false) }
     LaunchedEffect(watch) {
         while (true) {
-            lost = watch.lost(kg.forester.sg.data.Repo.link.value, System.currentTimeMillis())
+            lost = watch.lost(kg.forester.sg.data.Repo.link.value, System.currentTimeMillis(), kg.forester.sg.data.Repo.linkHoldUntil.value)
             kotlinx.coroutines.delay(250)
         }
     }

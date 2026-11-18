@@ -58,6 +58,7 @@ import com.composables.icons.lucide.ArrowLeft
 import com.composables.icons.lucide.Clapperboard
 import com.composables.icons.lucide.Globe
 import com.composables.icons.lucide.History
+import com.composables.icons.lucide.Flame
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.MapPin
 import com.composables.icons.lucide.Play
@@ -452,8 +453,9 @@ private fun EpisodeRow(d: VideoDetails, e: VideoEpisode, current: Boolean, @Supp
 // ---------------------------------------------------------------------------------------------- outside Kyrgyzstan
 
 /**
- * Outside Kyrgyzstan: Rutube (its tops, films with rights, search) in its own embedded player, YouTube (search with the
- * driver's own API key, else in its app), VK Видео and the online cinemas' apps.
+ * Outside Kyrgyzstan: Rutube (its tops, films with rights, search) in the app's own player, YouTube (search with no
+ * key, or with the driver's own; watched in its embed on a new enough WebView, else in its app), and the installed apps
+ * of VK Видео and the online cinemas. Nothing opens a browser.
  */
 @Composable
 private fun OtherVideo(openRegion: () -> Unit) {
@@ -465,37 +467,49 @@ private fun OtherVideo(openRegion: () -> Unit) {
     var open by remember { mutableStateOf<AltVideo?>(null) }
     open?.let { AltPlayerDialog(it) { open = null } }
     val ytKey by YouTube.key.collectAsState()
+    // YouTube where it can be watched: its embed on a new enough WebView, else its app; never a browser
+    val ytOn = remember { YouTube.watchable(ctx) }
+    fun play(v: AltVideo) {
+        open = v
+    }
     androidx.activity.compose.BackHandler(enabled = searched != null) { searched = null }
     fun find() { if (query.trim().length >= 2) searched = query.trim() }
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            SearchField(query, if (ytKey.isBlank()) "Поиск на Rutube" else "Поиск на Rutube и YouTube", Modifier.weight(1f), onSearch = ::find) { query = it }
+            SearchField(query, listOfNotNull("Rutube".takeIf { Rutube.ENABLED }, "YouTube".takeIf { ytOn }).let {
+                if (it.isEmpty()) "Поиск фильма" else "Поиск на " + it.joinToString(" и ")
+            }, Modifier.weight(1f), onSearch = ::find) { query = it }
             Chip("Найти", false, ::find, Lucide.Search)
             if (searched != null) Chip("Главная", false, { searched = null }, Lucide.Clapperboard)
-            if (ytKey.isBlank()) Chip("YouTube", false, {
-                if (query.isNotBlank()) VideoApps.youtubeSearch(ctx, query.trim()) else { VideoApps.open(ctx, VideoApps.YOUTUBE) || VideoApps.view(ctx, "https://www.youtube.com") }
-            }, Lucide.Youtube)
-            Chip("VK Видео", false, { VideoApps.vkVideo(ctx) }, Lucide.SquarePlay)
+            // YouTube and VK Видео as their apps are in «Приложения» below; no buttons that open a browser
             Chip("Другая страна", false, openRegion, Lucide.Globe)
         }
         Spacer(Modifier.height(10.dp))
         val s = searched
-        if (s != null) AltSearch(s, ytKey) { open = it } else AltHome { open = it }
+        // with Rutube off its catalog still gives the films and posters; a tap looks the film up on the torrent trackers
+        if (s != null) AltSearch(s, ytKey, ytOn, ::play) else AltHome(::play) { title -> query = title; searched = title }
     }
 }
 
 @Composable
-private fun AltHome(play: (AltVideo) -> Unit) {
+private fun AltHome(play: (AltVideo) -> Unit, find: (String) -> Unit) {
     val ctx = LocalContext.current
     var reload by remember { mutableIntStateOf(0) }
+    val torrent = remember { kg.forester.sg.data.Repo.settings.torrentEnabled }
     val rows by produceState<Result<List<AltRow>>?>(null, reload) {
         value = null
-        value = withContext(Dispatchers.IO) { runCatching { Rutube.home() } }
+        value = if (Rutube.ENABLED) withContext(Dispatchers.IO) { runCatching { Rutube.home() } } else Result.success(emptyList())
+    }
+    // what people read about now (Wikipedia), for the torrent search; not a streaming service's catalogue
+    val feed by produceState<Result<List<kg.forester.sg.video.FeedFilm>>?>(null, reload) {
+        value = null
+        value = if (torrent) withContext(Dispatchers.IO) { runCatching { kg.forester.sg.video.WikiFeed.films() } } else Result.success(emptyList())
     }
     val version by AltStore.version.collectAsState()
-    val recent = remember(version) { AltStore.recent(20) }
+    // what can be opened now: no Rutube entries while it is off
+    val recent = remember(version) { AltStore.recent(20).filter { Rutube.ENABLED || it.video.service != AltVideo.Service.RUTUBE } }
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item("apps") { AppTiles(title = "Приложения") }
+        item("apps") { AppTiles(title = "Приложения", emptyHint = !Rutube.ENABLED && !torrent) }
         if (recent.isNotEmpty()) item("recent") {
             RowTitle(Lucide.History, "Продолжить просмотр")
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -511,8 +525,23 @@ private fun AltHome(play: (AltVideo) -> Unit) {
                 }
             }
         }
+        if (torrent) {
+            val f = feed
+            when {
+                f == null -> item("feed-loading") { Loading() }
+                f.getOrNull().isNullOrEmpty() -> item("feed-err") {
+                    ErrorLine("Подборка: " + VideoCatalog.message(f.exceptionOrNull()) + ". Найдите фильм через поиск выше") { reload++ }
+                }
+                else -> item("feed") {
+                    RowTitle(Lucide.Flame, "Сейчас смотрят", "торрент")
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(f.getOrNull()!!, key = { it.title }) { film -> FeedCard(film) { find(film.title) } }
+                    }
+                }
+            }
+        }
         val r = rows
-        when {
+        if (Rutube.ENABLED) when {
             r == null -> item("loading") { Loading() }
             r.getOrNull().isNullOrEmpty() -> item("err") { ErrorLine("Rutube: " + VideoCatalog.message(r.exceptionOrNull())) { reload++ } }
             else -> r.getOrNull()!!.forEach { row ->
@@ -527,26 +556,41 @@ private fun AltHome(play: (AltVideo) -> Unit) {
     }
 }
 
+/** A film of «Сейчас смотрят»: its poster (Wikipedia's picture of the article), title, year; a tap searches the trackers. */
 @Composable
-private fun AltSearch(query: String, ytKey: String, play: (AltVideo) -> Unit) {
+private fun FeedCard(f: kg.forester.sg.video.FeedFilm, onClick: () -> Unit) {
+    Column(Modifier.width(150.dp).clip(RoundedCornerShape(12.dp)).tapClickable(onClick = onClick)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(12.dp)).background(C.CardHi), contentAlignment = Alignment.Center) {
+            if (f.thumb != null) RemoteImage(f.thumb, Modifier.fillMaxSize())
+            else T(f.title, 15.sp, C.Sub, textAlign = TextAlign.Center, modifier = Modifier.padding(10.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        T(f.title, 15.sp, maxLines = 2)
+        T(listOfNotNull(f.year?.toString(), if (f.series) "сериал" else "фильм").joinToString(" · "), 13.sp, C.Sub, maxLines = 1)
+    }
+}
+
+@Composable
+private fun AltSearch(query: String, ytKey: String, ytOn: Boolean, play: (AltVideo) -> Unit) {
     var retry by remember { mutableIntStateOf(0) }
     val rt by produceState<Result<List<AltVideo>>?>(null, query, retry) {
         value = null
-        value = withContext(Dispatchers.IO) { runCatching { Rutube.search(query) } }
+        if (Rutube.ENABLED) value = withContext(Dispatchers.IO) { runCatching { Rutube.search(query) } }
     }
     val yt by produceState<Result<List<AltVideo>>?>(null, query, ytKey, retry) {
         value = null
-        if (ytKey.isNotBlank()) value = withContext(Dispatchers.IO) { runCatching { YouTube.search(query, ytKey) } }
+        if (ytOn) value = withContext(Dispatchers.IO) { runCatching { YouTube.search(query, ytKey) } }
     }
     // Same poster-reuse as the Kyrgyzstan path: AltVideo's thumb goes into the pool so Торрент can match on normalized title.
     val onlinePosters = remember(rt, yt) {
         (rt?.getOrNull().orEmpty() + yt?.getOrNull().orEmpty()).map { v ->
             OnlinePoster(VideoText.normalize(v.title), 0, v.thumb)
-        }
+        } + kg.forester.sg.video.WikiFeed.cachedFilms().map { f -> OnlinePoster(VideoText.normalize(f.title), f.year ?: 0, f.thumb) }
     }
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         listOf("Rutube" to rt, "YouTube" to yt).forEach { (name, res) ->
-            if (name == "YouTube" && ytKey.isBlank()) return@forEach
+            if (name == "YouTube" && !ytOn) return@forEach
+            if (name == "Rutube" && !Rutube.ENABLED) return@forEach
             item(name) {
                 val list = res?.getOrNull()
                 RowTitle(Lucide.Search, "Найдено", name + (list?.let { " · ${it.size}" } ?: ""))
@@ -590,10 +634,18 @@ private fun AltCard(v: AltVideo, progress: Float? = null, onClick: () -> Unit) {
 
 /** The official apps of the online cinemas that are installed: opened as they are, with the driver's own subscription. */
 @Composable
-private fun AppTiles(title: String) {
+private fun AppTiles(title: String, emptyHint: Boolean = false) {
     val ctx = LocalContext.current
-    val apps by produceState(emptyList<VideoApp>()) { value = withContext(Dispatchers.IO) { VideoApps.installed(ctx) } }
-    if (apps.isEmpty()) return
+    val found by produceState<List<VideoApp>?>(null) { value = withContext(Dispatchers.IO) { VideoApps.installed(ctx) } }
+    val list = found ?: return
+    if (list.isEmpty()) {
+        // nothing else on this screen then (Rutube off, YouTube not playable here): say what makes it useful
+        if (emptyHint) T("Здесь появятся установленные приложения онлайн-кинотеатров: Кинопоиск, Okko, Wink, ivi, Start, Premier, Kion, VK Видео, YouTube. " +
+            "Поставьте нужное на магнитолу, и оно откроется отсюда." + if (YouTube.watchable(ctx)) " Поиск выше ищет видео на YouTube." else "",
+            15.sp, C.Sub)
+        return
+    }
+    val apps = list
     Column {
         RowTitle(Lucide.Clapperboard, title)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -649,11 +701,11 @@ fun VideoRegionSetting() {
         if (setting == VideoRegion.AUTO) Chip("Проверить сейчас", false, { scope.launch { VideoRegion.refresh(ctx, force = true) } }, Lucide.RefreshCw)
     }
     Spacer(Modifier.height(6.dp))
-    val nowText = when (kg) { true -> "Кыргызстан: ts.kg и oc.kg"; false -> "другая страна: Rutube и приложения кинотеатров"; null -> "ещё не определён" }
+    val nowText = when (kg) { true -> "Кыргызстан: ts.kg и oc.kg"; false -> if (Rutube.ENABLED) "другая страна: Rutube и приложения кинотеатров" else "другая страна: YouTube и приложения кинотеатров"; null -> "ещё не определён" }
     SettingHint(
         (if (setting == VideoRegion.AUTO) "Сейчас: $nowText. " else "") +
             "ts.kg и oc.kg открываются только из Кыргызстана. «Авто» спрашивает их сервер раз в 12 часов: отказ значит другую страну, " +
-            "и тогда вместо них Rutube и приложения онлайн-кинотеатров.",
+            "и тогда вместо них ${if (Rutube.ENABLED) "Rutube" else "YouTube"} и приложения онлайн-кинотеатров.",
     )
     Spacer(Modifier.height(12.dp))
     remember { YouTube.loadKey(ctx); true }
@@ -670,6 +722,6 @@ fun VideoRegionSetting() {
         )
         Chip(if (key == saved) "Сохранён" else "Сохранить", false, { YouTube.setKey(ctx, key) })
     }
-    SettingHint("С ключом поиск YouTube работает прямо здесь и видео играет во встроенном плеере YouTube. Ключ бесплатный: Google Cloud Console → YouTube Data API v3 → «Создать учётные данные». " +
-        "Хранится только на этом устройстве. Без ключа кнопка YouTube открывает поиск в приложении YouTube.")
+    SettingHint("Поиск YouTube работает и без ключа. С ключом он идёт через официальный YouTube Data API. Ключ бесплатный: Google Cloud Console → YouTube Data API v3 → «Создать учётные данные». " +
+        "Хранится только на этом устройстве. Если WebView на магнитоле старый, видео YouTube открывается в приложении YouTube.")
 }

@@ -12,6 +12,48 @@ import java.net.URL
  * head unit: see docs/torrent-streaming-plan.md («ПОДТВЕРЖДЕНО на ТВ»). The server speaks JSON, and everything
  * synchronous: callers run it inside an IO coroutine, as the rest of the video sources do.
  */
+/** Episode numbers from a file name: «S01E02», «1x02», «Серия 2», «02. Name», else the name in natural order. */
+object Episodes {
+    private val SE = Regex("""[Ss](\d{1,2})[ ._-]?[EeЕе](\d{1,3})""")
+    private val X = Regex("""(?<!\d)(\d{1,2})[xXхХ](\d{1,3})(?!\d)""")
+    private val EP = Regex("""(?:серия|серии|episode|ep|эпизод)[ ._-]*(\d{1,3})""", RegexOption.IGNORE_CASE)
+    private val SEASON = Regex("""(?:сезон|season)[ ._-]*(\d{1,2})|(\d{1,2})[ ._-]*сезон|[Ss](\d{1,2})(?![\dEeЕе])""", RegexOption.IGNORE_CASE)
+    private val LEAD = Regex("""^(\d{1,3})(?!\d)""")
+
+    /** (season, episode) when the name tells; season null when only the episode is known. */
+    fun numbers(path: String): Pair<Int?, Int>? {
+        val name = path.substringAfterLast('/')
+        SE.find(name)?.let { return it.groupValues[1].toInt() to it.groupValues[2].toInt() }
+        X.find(name)?.let { return it.groupValues[1].toInt() to it.groupValues[2].toInt() }
+        val season = SEASON.find(path)?.groupValues?.drop(1)?.firstOrNull { it.isNotEmpty() }?.toInt()
+        EP.find(name)?.let { return season to it.groupValues[1].toInt() }
+        LEAD.find(name)?.let { return season to it.groupValues[1].toInt() }
+        return null
+    }
+
+    /** «Сезон 1 · Серия 2», «Серия 2», else the file name without its extension. */
+    fun label(path: String): String {
+        val n = numbers(path) ?: return path.substringAfterLast('/').substringBeforeLast('.')
+        return listOfNotNull(n.first?.let { "Сезон $it" }, "Серия ${n.second}").joinToString(" · ")
+    }
+
+    private val NUM = Regex("""\d+""")
+    /** «Episode 2» before «Episode 10». */
+    private fun natural(a: String, b: String): Int {
+        val ka = NUM.replace(a.lowercase()) { it.value.padStart(6, '0') }
+        val kb = NUM.replace(b.lowercase()) { it.value.padStart(6, '0') }
+        return ka.compareTo(kb)
+    }
+
+    val order: Comparator<TorrClient.TorrFile> = Comparator { x, y ->
+        val nx = numbers(x.path); val ny = numbers(y.path)
+        if (nx != null && ny != null) {
+            val s = (nx.first ?: 0).compareTo(ny.first ?: 0)
+            if (s != 0) s else nx.second.compareTo(ny.second).takeIf { it != 0 } ?: natural(x.path, y.path)
+        } else natural(x.path, y.path)
+    }
+}
+
 class TorrClient(val baseUrl: String = DEFAULT_BASE_URL) {
 
     /** File inside a torrent; [id] is the `index` for a stream URL. */
@@ -34,6 +76,16 @@ class TorrClient(val baseUrl: String = DEFAULT_BASE_URL) {
     ) {
         /** The largest video file: usually the film or an episode. */
         val mainVideo: TorrFile? get() = files.filter { it.isVideo }.maxByOrNull { it.length }
+
+        /**
+         * The series' episodes in watching order (season, then episode, else the names in natural order); samples and
+         * trailers (under a tenth of the largest file) left out. One entry for a film.
+         */
+        val episodes: List<TorrFile> get() {
+            val videos = files.filter { it.isVideo }
+            val big = videos.maxOfOrNull { it.length } ?: return emptyList()
+            return videos.filter { it.length >= big / 10 }.sortedWith(Episodes.order)
+        }
     }
 
     /** The server's version, e.g. "MatriX.148", or null when the process is not answering yet. */

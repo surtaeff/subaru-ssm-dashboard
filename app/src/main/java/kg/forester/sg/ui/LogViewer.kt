@@ -236,6 +236,15 @@ private fun shareLog(ctx: Context, f: File) {
     }
 }
 
+private val LOG_NAME = Regex("""^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})(?:-\d{2})?(.*)\.csv$""")
+
+/** A drive's log as the list shows it: «17.11.2026 16:00» for «2026-11-17_16-00-15.csv»; any other file keeps its name. */
+fun logLabel(name: String): String {
+    val m = LOG_NAME.matchEntire(name) ?: return name
+    val (y, mo, d, h, mi, rest) = m.destructured
+    return "$d.$mo.$y $h:$mi" + rest.trim('_', '-', ' ').let { if (it.isEmpty()) "" else " · $it" }
+}
+
 /**
  * Saves the file to «Загрузки/CarPulse», shares it, and (with [onDeleted]) deletes it after a confirmation;
  * the log being written right now cannot be deleted.

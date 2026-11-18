@@ -107,7 +107,6 @@ class VideoTest {
         assertEquals(1, list.size)
         assertEquals("Канал", list[0].author)
         assertTrue(list[0].licensed)
-        assertTrue(Rutube.embedPage(list[0].id, 120).contains("rutube.ru/play/embed/9c6df91219c4bb53ded45019c8475768?autoplay=true&t=120"))
     }
 
     private fun ep(id: String, s: Int, n: Int) = VideoEpisode(id, s, n)

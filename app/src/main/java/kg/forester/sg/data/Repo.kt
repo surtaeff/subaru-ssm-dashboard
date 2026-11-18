@@ -388,7 +388,8 @@ class Settings(ctx: Context) {
         get() = p.getString("musicApp", "")!!
         set(v) = p.edit().putString("musicApp", v).apply()
 
-    /** The Media screen's source: "files" (own player), "bt", "radio", "yandex" (Yandex Music in the own player), "apps". */
+    /** The Media screen's source: "files" (own player), "bt", "radio", "yandex" (Yandex Music in the own player),
+     *  "zaycev" (zaycev.net in the own player), "apps". */
     var mediaSource: String
         get() = p.getString("mediaSource", "files")!!
         set(v) = p.edit().putString("mediaSource", v).apply()
@@ -428,11 +429,14 @@ class Settings(ctx: Context) {
         get() = p.getLong("updCheck", 0L)
         set(v) = p.edit().putLong("updCheck", v).apply()
 
-    // -------- Torrent (TorrServer + jacred). The master switch stays off until the owner turns it on on their own unit.
+    // -------- Torrent (TorrServer + jacred).
 
-    /** Master switch for the «Торрент» section in Видео. Off by default — see carpulse-local-only-overhaul memory. */
+    /**
+     * Master switch for the «Торрент» section in Видео. On by default since 2026-11-18 (the owner: jacred on by default,
+     * so the screen outside Kyrgyzstan is not empty with Rutube off); a driver who turned it off keeps it off.
+     */
     var torrentEnabled: Boolean
-        get() = p.getBoolean("torrentEnabled", false)
+        get() = p.getBoolean("torrentEnabled", true)
         set(v) = p.edit().putBoolean("torrentEnabled", v).apply()
 
     /** On-disk cache size for TorrServer, in MiB. Rungs: 64, 128, 192, 256, 384. */
@@ -783,10 +787,9 @@ class Settings(ctx: Context) {
     fun board(key: String) = p.getString(key, "")!!
     fun setBoard(key: String, v: String) { p.edit().putString(key, v).apply(); Repo.boardFlow(key).value = v }
 
-    /** «Мой экран» as the driver had set it before a ready-made layout replaced it ("" = none), for «Вернуть мой экран». */
-    var myTilesPrev: String
-        get() = p.getString("myTilesPrev", "")!!
-        set(v) { p.edit().putString("myTilesPrev", v).apply() }
+    /** A plain text setting by its key: the own presets and each board's layout before a preset (see PresetStore). */
+    fun text(key: String): String = p.getString(key, "")!!
+    fun setText(key: String, v: String) = p.edit().putString(key, v).apply()
 
     /** The cluster route's destination (Place.format, "" = none), kept so the route comes back after a restart. */
     var navDest: String
@@ -955,6 +958,8 @@ object Repo {
     lateinit var settings: Settings
 
     val link = MutableStateFlow(LinkState.NO_CABLE)
+    /** Wall clock until which a lost link keeps the last values: a mute ECU being brought back (see LINK_RECOVERY_MS). */
+    val linkHoldUntil = MutableStateFlow(0L)
     val linkMessage = MutableStateFlow("")
     val ecuInit = MutableStateFlow<EcuInit?>(null)
     /** What is normal for this engine (RulesHost.profile), for the rev scales and the shift light. */

@@ -10,7 +10,7 @@ import org.json.JSONObject
 /**
  * The legal services for everyone outside Kyrgyzstan (and for anyone who wants them). No pirate sites: Rutube's own
  * public API and its official embedded player, YouTube's official Data API (with the driver's own key) and its official
- * embedded player, and the official apps of VK Видео and the online cinemas, opened as they are.
+ * embedded player, and the official apps of VK Видео and the online cinemas, opened as they are. Nothing goes to a browser.
  */
 
 /** A video of Rutube or YouTube, played in that service's own embedded player. */
@@ -40,6 +40,13 @@ data class AltRow(val id: String, val title: String, val items: List<AltVideo>)
  * and the US. Played in Rutube's documented embed (rutube.ru/info/embed): start time `t`, events by postMessage.
  */
 object Rutube {
+    /**
+     * Off (2026-11-18). Rutube's embed is black on an old WebView (Android 9, WebView 66: «globalThis is not defined»),
+     * and its HLS in the app's own player ([kg.forester.sg.ui.AltPlayerDialog]) started only after a seek on the test
+     * emulator, so the owner had it switched off until it is checked on a real head unit. Back on: true here.
+     */
+    const val ENABLED = false
+
     private val ID = Regex("[0-9a-f]{32}")
 
     /** The rows of the home: Rutube's own tops and new films. Films, series and cartoons only where Rutube marks the rights. */
@@ -51,6 +58,14 @@ object Rutube {
         Feed("rt-kids", "Мультфильмы", "https://rutube.ru/api/v2/video/recommendation/main/top_cartoon?type=tag&limit=30", true),
         Feed("rt-auto", "Авто", "https://rutube.ru/api/tags/video/6102/?sort=tagged_d&limit=30", false),
     )
+
+    /**
+     * A Rutube film's own title for a torrent search: «Сердце зверя | Heart of the Beast (2026,4K)» → «Сердце зверя»,
+     * «Полярные противоположности (2025) / Polar Opposites» → «Полярные противоположности».
+     */
+    fun filmTitle(title: String): String =
+        title.substringBefore('|').substringBefore(" / ").replace(Regex("""\([^)]*\)|\[[^]]*]"""), " ")
+            .replace(Regex("""\s+"""), " ").trim().ifEmpty { title.trim() }
 
     /** Each row on its own: one that fails or comes back empty is left out. Blocking. */
     fun home(): List<AltRow> = FEEDS.mapNotNull { f ->
@@ -82,24 +97,53 @@ object Rutube {
     }
 
     /**
-     * The page the WebView loads: Rutube's iframe from [startSec], its events handed to `CarPulse.on(type, json)`.
-     * A page of our own around the iframe, so the player knows where it is embedded (as on any site).
+     * The film's HLS address from Rutube's own play API (what its site's player asks for): played in the app's own
+     * player, not in Rutube's embed, whose script needs a newer WebView than many head units have (Android 9 with
+     * WebView 66: «globalThis is not defined», a black screen; 2026-11-18). Null when Rutube gives no stream (paid,
+     * blocked in the region, removed). Blocking.
      */
-    fun embedPage(id: String, startSec: Long): String = """
-        <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{border:0;width:100%;height:100%}</style></head>
-        <body><iframe id="p" src="https://rutube.ru/play/embed/$id?autoplay=true${if (startSec > 5) "&t=$startSec" else ""}"
-          allow="clipboard-write; autoplay; fullscreen" allowfullscreen></iframe>
-        <script>
-          window.addEventListener('message', function (e) {
-            try {
-              var m = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
-              if (m && m.type) CarPulse.on(String(m.type), JSON.stringify(m.data || {}));
-            } catch (x) {}
-          });
-          function cmd(type) { document.getElementById('p').contentWindow.postMessage(JSON.stringify({type: type, data: {}}), '*'); }
-        </script></body></html>
-    """.trimIndent()
+    fun streamUrl(id: String): String? {
+        if (!ID.matches(id)) return null
+        val body = VideoNet.get("https://rutube.ru/api/play/options/$id/?format=json&no_404=true&referer=https%3A%2F%2Frutube.ru",
+            12_000, "Referer", "https://rutube.ru/")
+        return streamOf(body)
+    }
+
+    /**
+     * Rutube's master playlist names every quality twice (a local ISP cache and Rutube's own CDN, the same bitrate):
+     * the player started on one and then stopped loading, BUFFERING at 0:00 for good (emulator, 2026-11-18). One entry
+     * per quality, Rutube's own host first.
+     */
+    fun dedupeMaster(m3u8: String): String {
+        val lines = m3u8.lines()
+        val out = ArrayList<String>()
+        val seen = HashMap<String, Int>() // stream-info line → index of its address in [out]
+        var i = 0
+        while (i < lines.size) {
+            val l = lines[i]
+            if (l.startsWith("#EXT-X-STREAM-INF") && i + 1 < lines.size) {
+                val url = lines[i + 1].trim()
+                val at = seen[l]
+                if (at == null) { out += l; out += url; seen[l] = out.size - 1 }
+                else if (ownHost(url) && !ownHost(out[at])) out[at] = url
+                i += 2
+                continue
+            }
+            out += l
+            i++
+        }
+        return out.joinToString("\n")
+    }
+
+    private fun ownHost(url: String) = runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("").endsWith("rutube.ru")
+
+    fun streamOf(body: String): String? {
+        val o = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        if (o.optJSONObject("acl_access")?.optBoolean("allowed", true) == false) return null
+        val b = o.optJSONObject("video_balancer") ?: return null
+        return (VideoJson.str(b, "m3u8") ?: VideoJson.str(b, "default"))?.takeIf { it.startsWith("https://") }
+    }
+
 }
 
 /**
@@ -114,9 +158,21 @@ object YouTube {
     fun setKey(c: Context, k: String) { key.value = k.trim(); prefs(c).edit().putString("ytKey", k.trim()).apply() }
     private fun prefs(c: Context) = c.applicationContext.getSharedPreferences("video", Context.MODE_PRIVATE)
 
+    /** YouTube plays in the app's own player through NewPipe Extractor (see [YouTubeStreams]): on every unit. */
+    @Suppress("UNUSED_PARAMETER")
+    fun watchable(c: Context): Boolean = true
+
+    /**
+     * Search with no key: YouTube's own results page, its `ytInitialData` (the way the TV launcher does it). With the
+     * driver's own API key the Data API instead. Blocking.
+     */
     fun search(query: String, apiKey: String): List<AltVideo> {
         val q = query.trim()
-        if (q.length < 2 || apiKey.isBlank()) return emptyList()
+        if (q.length < 2) return emptyList()
+        // no key: NewPipe's search (the page parse below stays as the fallback)
+        if (apiKey.isBlank()) return runCatching { YouTubeStreams.search(q) }.getOrNull()?.takeIf { it.isNotEmpty() }
+            ?: parsePage(VideoNet.get("https://www.youtube.com/results?hl=ru&search_query=" + VideoNet.q(q),
+                15_000, "Accept-Language", "ru-RU,ru;q=0.9"))
         val url = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&safeSearch=moderate" +
             "&relevanceLanguage=ru&maxResults=25&q=" + VideoNet.q(q) + "&key=" + VideoNet.q(apiKey)
         return parse(VideoNet.get(url, 12_000))
@@ -138,14 +194,45 @@ object YouTube {
         return out
     }
 
-    /** YouTube's iframe from [startSec]; the page is ours so the embed has an origin (YouTube refuses embeds without one). */
-    fun embedPage(id: String, startSec: Long): String = """
-        <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{border:0;width:100%;height:100%}</style></head>
-        <body><iframe id="p" src="https://www.youtube.com/embed/$id?autoplay=1&playsinline=1&rel=0${if (startSec > 5) "&start=$startSec" else ""}"
-          referrerpolicy="strict-origin-when-cross-origin" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>
-        </body></html>
-    """.trimIndent()
+    private val INITIAL = Regex("""var ytInitialData = (\{.*?\});</script>""", RegexOption.DOT_MATCHES_ALL)
+
+    /** The videos of a results page (its videoRenderer entries, in order, no live streams, no repeats). */
+    fun parsePage(html: String): List<AltVideo> {
+        val raw = INITIAL.find(html)?.groupValues?.get(1) ?: return emptyList()
+        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyList()
+        val out = LinkedHashMap<String, AltVideo>()
+        fun text(o: JSONObject?): String? {
+            o ?: return null
+            VideoJson.str(o, "simpleText")?.let { return it }
+            val runs = o.optJSONArray("runs") ?: return null
+            return (0 until runs.length()).joinToString("") { runs.optJSONObject(it)?.optString("text").orEmpty() }.ifEmpty { null }
+        }
+        fun video(v: JSONObject) {
+            val id = VideoJson.str(v, "videoId")?.takeIf { ID.matches(it) } ?: return
+            val title = text(v.optJSONObject("title")) ?: return
+            val length = text(v.optJSONObject("lengthText")) ?: return // none: a live stream or a premiere
+            val thumbs = v.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+            val thumb = thumbs?.optJSONObject(thumbs.length() - 1)?.let { VideoJson.str(it, "url") }?.substringBefore('?')
+                ?: "https://i.ytimg.com/vi/$id/hqdefault.jpg"
+            out.putIfAbsent(id, AltVideo(AltVideo.Service.YOUTUBE, id, title,
+                text(v.optJSONObject("ownerText")) ?: text(v.optJSONObject("longBylineText")), thumb, seconds(length)))
+        }
+        fun walk(x: Any?) {
+            when (x) {
+                is JSONObject -> {
+                    x.optJSONObject("videoRenderer")?.let(::video)
+                    x.keys().forEach { walk(x.opt(it)) }
+                }
+                is JSONArray -> for (i in 0 until x.length()) walk(x.opt(i))
+            }
+        }
+        walk(root)
+        return out.values.toList()
+    }
+
+    /** «1:02:03» or «12:34» in seconds, 0 when it is something else. */
+    fun seconds(s: String): Int = s.split(':').map { it.trim().toIntOrNull() ?: return 0 }.fold(0) { a, n -> a * 60 + n }
+
 }
 
 /**
@@ -245,22 +332,17 @@ object VideoApps {
         return runCatching { c.startActivity(i) }.isSuccess
     }
 
-    /** The query in YouTube's app (its own search), else on the site in a browser. */
-    fun youtubeSearch(c: Context, query: String): Boolean {
-        val inApp = Intent(Intent.ACTION_SEARCH).setPackage(YOUTUBE).putExtra("query", query).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (runCatching { c.startActivity(inApp) }.isSuccess) return true
-        return view(c, "https://www.youtube.com/results?search_query=" + VideoNet.q(query))
-    }
+    fun appOf(v: AltVideo): String = if (v.service == AltVideo.Service.RUTUBE) RUTUBE else YOUTUBE
 
-    /** VK Видео has no search a link can open: its app, else its site. */
-    fun vkVideo(c: Context): Boolean = open(c, VK_VIDEO) || view(c, "https://vkvideo.ru/")
+    fun hasApp(c: Context, pkg: String): Boolean = c.packageManager.getLaunchIntentForPackage(pkg) != null
 
-    /** A video in its service's app when that is there, else in a browser. */
+    /**
+     * A video in its service's app; false when the app isn't there. Never a browser: on a head unit a browser page is
+     * a dead end (the owner, 2026-11-18: VK Видео opening the browser is no good).
+     */
     fun openInApp(c: Context, v: AltVideo): Boolean {
-        val pkg = if (v.service == AltVideo.Service.RUTUBE) RUTUBE else YOUTUBE
-        val app = Intent(Intent.ACTION_VIEW, Uri.parse(v.pageUrl)).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (runCatching { c.startActivity(app) }.isSuccess) return true
-        return view(c, v.pageUrl)
+        val app = Intent(Intent.ACTION_VIEW, Uri.parse(v.pageUrl)).setPackage(appOf(v)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return runCatching { c.startActivity(app) }.isSuccess
     }
 
     fun view(c: Context, url: String): Boolean =

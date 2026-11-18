@@ -110,6 +110,7 @@ fun HomeScreen() {
     androidx.activity.compose.BackHandler(enabled = edit) { edit = false }
 
     var tip by remember { mutableStateOf(!Repo.settings.homeTipSeen) }
+    PresetUndoBar(kg.forester.sg.data.HomeLayout.board.key)
     if (kg.forester.sg.data.HomeLayout.board.isFree(layout)) {
         // free layout: the 3D car, the tachometer and the speedometer are cards like the others, anything can
         // go anywhere and over anything; the area keeps its size with the edit bar or the tip over it

@@ -15,8 +15,8 @@ android {
         applicationId = "kg.forester.sg"
         minSdk = 23
         targetSdk = 34
-        versionCode = 51
-        versionName = "1.0-beta11"
+        versionCode = 52
+        versionName = "1.0-beta12"
         // Yandex Music's code sign-in («Войти с телефона») needs the official app's OAuth client secret. It is not in this
         // public repo: put yandexClientSecret=… into ~/.gradle/gradle.properties; without it that way in isn't offered
         // (the sign-in on Yandex's page and a pasted token need no secret)
@@ -80,6 +80,9 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // java.time / java.util.function / java.nio.file below API 26-33 for NewPipe Extractor (YouTube in Видео) and
+        // the newer jsoup it needs, on the Android 6 units too (as FreeLite does)
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions {
         jvmTarget = "17"
@@ -141,9 +144,15 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1") // some internet stations stream HLS (.m3u8), ts.kg episodes too
-    // «Видео»: the ts.kg pages. 1.15.3 is the last one that runs on Android 6 without library desugaring
-    // (1.15.4 went over to java.util.function, API 24+)
-    implementation("org.jsoup:jsoup:1.15.3")
+    // «Видео»: the ts.kg pages and NewPipe Extractor's. Newer than 1.15.3 needs java.util.function (API 24+): fine on
+    // Android 6 with core library desugaring (below)
+    implementation(files("libs/jsoup-1.24.1.jar"))
+    // YouTube with no key and no WebView (GPL-3.0, like this app): NewPipe Extractor 0.27.1 and what it needs, the same
+    // jars as FreeLite's; the film plays in the app's own ExoPlayer (DASH from the stream index)
+    implementation(files("libs/newpipe-extractor-0.27.1.jar", "libs/nanojson-e9d656dd.jar", "libs/rhino-1.8.1.jar",
+        "libs/protobuf-javalite-4.36.2.jar", "libs/jsr305-3.0.2.jar"))
+    implementation("androidx.media3:media3-exoplayer-dash:1.4.1")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
     // offline speech synthesis for the warnings (k2-fsa sherpa-onnx, Apache-2.0; ARM-only copy of the v1.13.8 AAR)
     implementation(files("libs/sherpa-onnx-1.13.8-arm.aar"))
