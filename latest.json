@@ -1,9 +1,9 @@
 {
- "tag": "v1.0-beta11",
- "name": "1.0-beta11",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta11/subaru-ssm-dashboard.apk",
- "size": 139799339,
- "notes": "Сброс USB после зависания кабеля теперь действительно срабатывает, а быстрый опрос выключается, только если кабель теряется сразу после его включения. Плюс всё из 1.0-beta9: экран Видео, Яндекс Музыка в своём плеере, виджеты на главной, свой CAN-адаптер, голосовой ассистент не глушит собеседника при звонке и ровная связь с ЭБУ Subaru BP после долгих поездок.",
+ "tag": "v1.0-beta12",
+ "name": "1.0-beta12",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta12/subaru-ssm-dashboard.apk",
+ "size": 141060731,
+ "notes": "Пресеты для всех экранов с виджетами, YouTube без ключа в своём плеере, Зайцев в Медиа, торрент с подборкой и выбором серий, видео на весь экран, исправлен вылет при выключении зажигания и другие правки по журналам.",
  "logUrl": "https://script.google.com/macros/s/AKfycbyItYtasioVogj8klr_jO6DD3v2052wrEYNdCeyKa0b5J9jsX2sAIYam7JFS9xnCrmYkA/exec",
- "sha256": "55db582384127213918f5edac51b99085c947ee9b340f7c8c54ac976fd30050d"
+ "sha256": "9d23e1e734db356277e22bf139c62aee6b1c93c8c3b5dfed4ee840dc8072ea9e"
 }
