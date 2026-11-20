@@ -592,13 +592,19 @@ private fun NetPanel(ui: RadioUi) {
     var tab by remember { mutableStateOf(if (RadioLogos.favourites(ctx).isNotEmpty()) "fav" else "top") }
     var query by remember { mutableStateOf("") }
     var list by remember { mutableStateOf<List<RadioLogos.Station>?>(null) }
-    LaunchedEffect(tab, ui.cc, query, favVer) {
+    // the catalogue did not answer (no connection, or the unit's Android refused its certificate): not «nothing found»
+    var failed by remember { mutableStateOf<Throwable?>(null) }
+    var retry by remember { mutableStateOf(0) }
+    LaunchedEffect(tab, ui.cc, query, favVer, retry) {
         list = null
-        list = when {
+        failed = null
+        val got = when {
             query.isNotBlank() -> { kotlinx.coroutines.delay(500); withContext(Dispatchers.IO) { RadioLogos.search(query.trim()) } }
-            tab == "fav" -> RadioLogos.favourites(ctx)
+            tab == "fav" -> RadioLogos.Loaded(RadioLogos.favourites(ctx))
             else -> withContext(Dispatchers.IO) { RadioLogos.streams(ctx, ui.cc) }
         }
+        failed = got.error
+        list = got.stations
     }
     PanelBox(Lucide.Globe, "Станции") {
         val head: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {
@@ -615,10 +621,17 @@ private fun NetPanel(ui: RadioUi) {
         Spacer(Modifier.height(8.dp))
         }
         val l = list
+        val err = failed
         when {
             l == null -> { head(); T("Загружаю…", 14.sp, C.Sub) }
+            l.isEmpty() && err != null -> {
+                head()
+                T(kg.forester.sg.data.Failure.text(err, "Не удалось открыть каталог станций"), 14.sp, C.Sub)
+                Spacer(Modifier.height(8.dp))
+                Pill("Повторить", Lucide.RotateCw, height = 38.dp) { retry++ }
+            }
             l.isEmpty() -> { head(); T(if (tab == "fav" && query.isBlank()) "Нажмите ★ у станции, и она будет здесь"
-                else "Ничего не нашлось. Нужен интернет.", 14.sp, C.Sub) }
+                else "Ничего не нашлось", 14.sp, C.Sub) }
             else -> ListWithHead(head) {
                 items(l.size, key = { l[it].url + it }) { i ->
                     val s = l[i]

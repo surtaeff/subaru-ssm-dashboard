@@ -69,17 +69,23 @@ object MusicOnStart {
      */
     private suspend fun onPlayer(block: suspend () -> Unit) = withContext(Dispatchers.Main) { block() }
 
+    /** The folders are looked at here, on the worker (a stick still mounting after the wake); only the player on Main. */
+    private suspend fun resumeFiles(ctx: Context) {
+        val last = LocalMusic.lastFolder(ctx)
+        onPlayer { LocalMusic.resume(ctx, last) }
+    }
+
     private suspend fun go(ctx: Context, what: String) {
         val audio = AudioPlatforms.current(ctx)
         when (what) {
-            "files" -> onPlayer { LocalMusic.resume(ctx) }
+            "files" -> resumeFiles(ctx)
             "yandex" -> onPlayer { kg.forester.sg.service.yandex.YaMusic.resume(ctx) }
             "zaycev" -> onPlayer { kg.forester.sg.service.zaycev.ZaycevMusic.resume(ctx) }
             "bt" -> { audio.bt.enter(byUser = true); audio.bt.send(Transport.PLAY) }
             "radio" -> {
                 val internet = ctx.getSharedPreferences("radio", Context.MODE_PRIVATE).getBoolean("internet", false)
                 // the internet station plays from the own player's queue (kept while the unit only slept)
-                if (internet) onPlayer { LocalMusic.resume(ctx) } else audio.radio.on()
+                if (internet) resumeFiles(ctx) else audio.radio.on()
             }
             "apps" -> {
                 val pkg = Repo.settings.musicApp

@@ -47,6 +47,26 @@ class WakeWatch(private val ctx: Context, private val onSleptWake: () -> Unit, p
         override fun onReceive(c: Context, i: Intent) = wake(i.action ?: "?")
     }
 
+    /** USB lines in this process: a cable that drops and comes back every few seconds must not fill the log. */
+    private var usbLines = 0
+
+    /**
+     * The going-down side, only logged (see [RunTrail]): the screen off, ACC off as the firmware may send it, a shutdown, a
+     * USB device leaving or coming. A death right after them is the unit's sleep, not a fault of ours.
+     */
+    private val offReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            val a = i.action ?: return
+            val usb = a == android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED || a == android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED
+            if (usb && usbLines++ >= MAX_USB_LINES) return
+            @Suppress("DEPRECATION")
+            val dev = if (usb) i.getParcelableExtra<android.hardware.usb.UsbDevice>(android.hardware.usb.UsbManager.EXTRA_DEVICE) else null
+            val line = "unit: ${a.substringAfterLast('.')}" + (dev?.let { " %04X:%04X".format(it.vendorId, it.productId) } ?: "")
+            kg.forester.sg.RunTrail.note(line)
+            SsmTrace.log(line, keep = true)
+        }
+    }
+
     private var scope: CoroutineScope? = null
 
     fun start(scope: CoroutineScope) {
@@ -58,6 +78,11 @@ class WakeWatch(private val ctx: Context, private val onSleptWake: () -> Unit, p
         runCatching {
             if (Build.VERSION.SDK_INT >= 33) ctx.registerReceiver(receiver, f, Context.RECEIVER_EXPORTED)
             else ctx.registerReceiver(receiver, f)
+        }
+        val off = IntentFilter().apply { OFF_ACTIONS.forEach { addAction(it) } }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 33) ctx.registerReceiver(offReceiver, off, Context.RECEIVER_EXPORTED)
+            else ctx.registerReceiver(offReceiver, off)
         }
         scope.launch {
             // elapsedRealtime counts deep sleep, uptimeMillis doesn't: their gap grows only while the unit sleeps
@@ -73,6 +98,7 @@ class WakeWatch(private val ctx: Context, private val onSleptWake: () -> Unit, p
 
     fun stop() {
         runCatching { ctx.unregisterReceiver(receiver) }
+        runCatching { ctx.unregisterReceiver(offReceiver) }
     }
 
     private fun wake(why: String) {
@@ -80,7 +106,8 @@ class WakeWatch(private val ctx: Context, private val onSleptWake: () -> Unit, p
         if (sleepWakes.take(why, now)) onSleptWake()
         if (now - lastWakeMs < 60_000) return // the screen, ACC and the sleep gap all come at once
         lastWakeMs = now
-        SsmTrace.log("wake: $why")
+        SsmTrace.log("wake: $why", keep = true)
+        kg.forester.sg.RunTrail.note("wake: $why")
         onWake(why)
         scope?.let { MusicOnStart.start(ctx, it, "wake") }
     }
@@ -89,6 +116,14 @@ class WakeWatch(private val ctx: Context, private val onSleptWake: () -> Unit, p
         val ACTIONS = listOf(
             Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT,
         ) + ACC_ACTIONS
+
+        /** Logged only: ACC off under the names FYT-like firmware may use (as for ACC on), a shutdown, USB coming and going. */
+        val OFF_ACTIONS = listOf(
+            Intent.ACTION_SCREEN_OFF, Intent.ACTION_SHUTDOWN,
+            "com.fyt.boot.ACCOFF", "com.glsx.boot.ACCOFF", "android.intent.action.ACC_OFF",
+            android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED, android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED,
+        )
+        private const val MAX_USB_LINES = 30
 
         /** Set by [MainActivity] between onResume and onPause. */
         @Volatile var appOnScreen = false

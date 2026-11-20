@@ -12,6 +12,13 @@ class CarPulseApp : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        // before anything goes online: Android 6–7.0 don't trust Let's Encrypt by themselves (see TlsRoots)
+        kg.forester.sg.service.TlsRoots.install(this)
+        // how the previous run ended when it left no crash trace (a kill, an ANR, a native crash), and a watch on the
+        // main thread that logs where it is stuck before Android's ANR kills the process
+        RunTrail.start(this, CrashLog.version)
+        MainWatch.start()
+        Thread({ ExitInfo.logNew(this) }, "exit-info").apply { isDaemon = true; start() }
         // Before any service or activity: Android brings EcuService back by itself (a sticky service after the head unit's
         // sleep or a killed process) and its fields read Repo.settings while it is being constructed, before its onCreate.
         // beta11 crashed that way at ignition off (BK7Y68V2 and Роман, 2026-11-18): «lateinit property settings has not
@@ -31,10 +38,15 @@ object CrashLog {
     private const val MAX_LINES = 120
     private const val MAX_CHARS = 16_000
 
+    /** The installed versionName, known after [install]. */
+    var version = "?"
+        private set
+
     fun install(app: Application) {
         val prev = Thread.getDefaultUncaughtExceptionHandler()
         if (prev is Handler) return
         val ver = runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull() ?: "?"
+        version = ver
         runCatching { SsmTrace.init(app) }
         Thread.setDefaultUncaughtExceptionHandler(Handler(app.filesDir, ver, prev))
         restore(app.filesDir)?.let { SsmTrace.log("the previous run crashed:\n$it", keep = true) }
@@ -72,6 +84,7 @@ object CrashLog {
                 val t = text(th.name, e, version, System.currentTimeMillis())
                 runCatching { save(dir, t) }
                 runCatching { SsmTrace.log(t, keep = true) }
+                runCatching { RunTrail.note("crash in \"${th.name}\": $e") }
             } catch (_: Throwable) {
             }
             if (prev != null) prev.uncaughtException(th, e)

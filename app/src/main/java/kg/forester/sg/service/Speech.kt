@@ -524,6 +524,8 @@ object Speech {
     // BT music that played when a phrase began: some phones and units pause it for the voice and never resume
     @Volatile private var resumeBt = false
     private val turns = VoiceTurns()
+    /** A phrase of ours is in the air (its focus may hold the player back: no call, see [CallGuard.playerHeld]). */
+    val speaking: Boolean get() = turns.busy
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** After the last phrase in a row: if the BT music it found playing is paused now, plays it again. */

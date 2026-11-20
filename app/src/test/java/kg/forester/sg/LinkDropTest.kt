@@ -109,34 +109,103 @@ class LinkDropTest {
         assertEquals(20_000L, EcuService.fastTcuGapMs(30, 1))
         // another ECU keeps its stream as it was
         assertEquals(3000L, r.tcuGapMs("3C04504316", 3))
+        r.streamed(rom)
         assertEquals(2, r.silent(rom, run = 0, frameSeen = true, ignored = 2))
         assertTrue(r.off(rom))
         assertFalse(r.off("3C04504316"))
     }
 
-    @Test fun offRomsAreKeptAcrossCableReopensAndAppRestarts() {
+    @Test fun restartsOfOneMuteCountOnce() {
+        // 1.0-beta12 log of a 4244307006 on a KKL cable: two silent restarts 1.6 s apart, no frame between, and the
+        // stream was off for the ROM at once. The same silence goes on until a frame comes
+        val r = StreamRestarts()
+        assertEquals(1, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        assertEquals(0, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        assertEquals(0, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        assertFalse(r.off(rom))
+        // the next connection streamed again, then fell silent once more: that is the second mute
+        r.streamed(rom)
+        assertEquals(2, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        assertTrue(r.off(rom))
+    }
+
+    @Test fun offRomsAreKeptForTheDriveAcrossCableReopensAndAppRestarts() {
         // Серёга's Legacy BP 1.0-beta8 log: the stream fell silent twice, the plain-requests decision then had to
         // hold through 12 cable reopens in 65 min instead of each new session firing the 25-address stream again
-        val store = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
+        var now = 1_000_000_000L
+        val store = java.util.concurrent.ConcurrentHashMap<String, Map<String, Long>>()
         val key = "store"
-        val first = StreamRestarts(load = { store[key] ?: emptySet() }, save = { store[key] = it })
+        fun restarts() = StreamRestarts(load = { store[key] ?: emptyMap() }, save = { store[key] = it }, clock = { now })
+        val first = restarts()
         assertEquals(1, first.silent(rom, run = 0, frameSeen = true, ignored = 3))
         assertNull(store[key])
+        first.streamed(rom)
         assertEquals(2, first.silent(rom, run = 0, frameSeen = true, ignored = 2))
-        assertEquals(setOf(rom), store[key])
-        // the service came back (a new EcuService instance): this ROM stays off straight away
-        val second = StreamRestarts(load = { store[key] ?: emptySet() }, save = { store[key] = it })
+        assertEquals(mapOf(rom to now), store[key])
+        // the service came back (a new EcuService instance) a few minutes on: this ROM stays off straight away
+        now += 5 * 60_000L
+        val second = restarts()
         assertTrue(second.off(rom))
+        assertEquals(mapOf(rom to now), store[key])
         assertFalse(second.off("3C04504316"))
         // a second ROM falling silent is added to the stored set, not written over it
         assertEquals(1, second.silent("3C04504316", run = 0, frameSeen = true, ignored = 2))
-        assertEquals(setOf(rom), store[key])
+        assertEquals(setOf(rom), store[key]!!.keys)
+        second.streamed("3C04504316")
         assertEquals(2, second.silent("3C04504316", run = 0, frameSeen = true, ignored = 2))
-        assertEquals(setOf(rom, "3C04504316"), store[key])
+        assertEquals(setOf(rom, "3C04504316"), store[key]!!.keys)
+        // reconnects every few minutes all drive long keep it off: each one moves the drive's end on
+        repeat(20) { now += 20 * 60_000L; assertTrue(second.off(rom)) }
         // the owner cleared the set (Fast Poll switch off and on): a fresh StreamRestarts starts blank
-        store[key] = emptySet()
-        val fresh = StreamRestarts(load = { store[key] ?: emptySet() }, save = { store[key] = it })
-        assertFalse(fresh.off(rom))
+        store[key] = emptyMap()
+        assertFalse(restarts().off(rom))
+    }
+
+    @Test fun theFastPollSwitchOnAgainForgetsTheCountInTheRunningService() {
+        var now = 1_000_000_000L
+        var store = emptyMap<String, Long>()
+        var retries = 0
+        val r = StreamRestarts(load = { store }, save = { store = it }, clock = { now }, retries = { retries })
+        assertEquals(1, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        r.streamed(rom)
+        assertEquals(2, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        assertTrue(r.off(rom))
+        // Settings.fastPoll = true: the saved set emptied, the counter up
+        store = emptyMap(); retries++
+        now += 60_000L
+        assertFalse("the next connection tries the stream", r.off(rom))
+        assertEquals("and does not save the ROM again", emptyMap<String, Long>(), store)
+    }
+
+    @Test fun theNextDriveTriesTheStreamAgain() {
+        // Enderold's 572 on 1.0-beta12: one drive's mute took the fast poll for every drive after it, 2 rows a second
+        // instead of 10. The car stood longer than the gap: the stream again, in this service run and after a restart
+        var now = 1_000_000_000L
+        val store = java.util.concurrent.ConcurrentHashMap<String, Map<String, Long>>()
+        val key = "store"
+        fun restarts() = StreamRestarts(load = { store[key] ?: emptyMap() }, save = { store[key] = it }, clock = { now })
+        val r = restarts()
+        assertEquals(1, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        r.streamed(rom)
+        assertEquals(2, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        assertTrue(r.off(rom))
+        now += StreamRestarts.DRIVE_GAP_MS
+        assertFalse(restarts().off(rom))
+        assertFalse(r.off(rom))
+        assertEquals(emptyMap<String, Long>(), store[key])
+        assertEquals(3000L, r.tcuGapMs(rom, 3))
+        // it falls silent again in the new drive: twice more to be off, the last drive's count is gone
+        assertEquals(1, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        assertFalse(r.off(rom))
+        // one silent restart in a drive and another in the next don't add up either
+        now += StreamRestarts.DRIVE_GAP_MS + 1
+        r.streamed(rom)
+        assertEquals(1, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        // a clock set back (a head unit before its GPS fix) ends the drive rather than holding it for good
+        r.streamed(rom)
+        assertEquals(2, r.silent(rom, run = 0, frameSeen = true, ignored = 3))
+        now -= 24 * 3600_000L
+        assertFalse(r.off(rom))
     }
 
     @Test fun aRestartTheEcuIgnoresIsToldFromADeadLine() {
@@ -356,6 +425,8 @@ class LinkDropTest {
     @Test fun aTesterAtAnotherAddressIsHeard() {
         val line = Line()
         assertFalse(line.passive)
+        line.hear(frameOf(SsmClient.ECU, 0xF1, byteArrayOf(0xA8.toByte(), 0, 0, 0, 0x08)))
+        Thread.sleep(KLineTransport.FOREIGN_SPACING_MS + 20)
         line.hear(frameOf(SsmClient.ECU, 0xF1, byteArrayOf(0xA8.toByte(), 0, 0, 0, 0x08)))
         assertTrue(line.passive)
         assertNull(SsmClient(line).read(intArrayOf(0x08)))

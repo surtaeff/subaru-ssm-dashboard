@@ -307,6 +307,12 @@ object LocalMusic {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) { if (isPlaying) state.value = state.value.copy(error = "") }
 
+            // another app took the sound for a while (a head unit's Bluetooth app for a call): the assistant lets go
+            // of the microphone meanwhile; our own phrase taking it is no call
+            override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
+                CallGuard.playerHeld(playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS && !Speech.speaking)
+            }
+
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 YaMusic.onTransition(p, item)
                 ZaycevMusic.onTransition(item)
@@ -549,14 +555,26 @@ object LocalMusic {
      * «Включи музыку» with nothing playing: the app's own player goes on where it stopped, else plays the folder
      * played last. False when it has never played anything (nothing to go on with).
      */
-    fun resume(ctx: Context): Boolean {
+    fun resume(ctx: Context): Boolean = resume(ctx, lastFolder(ctx))
+
+    /** [resume] with the folder already looked up by [lastFolder] (null: none); the player calls only, for the main thread. */
+    fun resume(ctx: Context, last: Pair<File, List<File>>?): Boolean {
         val p = player(ctx)
         if (p.isPlaying) return true
         if (p.mediaItemCount > 0) { toggle(ctx); return true }
-        val dir = recent().firstOrNull { list(it).tracks.isNotEmpty() } ?: return false
-        playFolder(ctx, dir, list(dir).tracks, 0)
+        val (dir, tracks) = last ?: return false
+        playFolder(ctx, dir, tracks, 0)
         return true
     }
+
+    /**
+     * The folder played last that still has music, and its tracks: listings of a USB stick or SD card, which right after a
+     * wake may still be mounting and hold the caller for seconds, so «music on start» asks off the main thread.
+     */
+    fun lastFolder(ctx: Context): Pair<File, List<File>>? =
+        ctx.getSharedPreferences("music", Context.MODE_PRIVATE).getString("recent", "").orEmpty().split('\n')
+            .filter { it.isNotBlank() }.map(::File).filter { it.isDirectory }
+            .firstNotNullOfOrNull { d -> list(d).tracks.takeIf { it.isNotEmpty() }?.let { d to it } }
 
     /** ⏭; at the last of «Моя волна» it waits for the wave's next tracks. */
     fun next(ctx: Context) = player(ctx).let { if (it.hasNextMediaItem()) it.seekToNextMediaItem() else YaMusic.nextAtEnd() }
@@ -622,6 +640,7 @@ object LocalMusic {
         AudioFx.release()
         exo?.release()
         exo = null
+        CallGuard.playerHeld(false)
         state.value = State()
     }
 }

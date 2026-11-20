@@ -116,12 +116,17 @@ object LogColumns {
     /**
      * The parameters read besides the regular ones that are worth a column of their own: not one a regular column
      * already has (the engine speed ticked on «Датчики», the IAM the guard reads for itself), so a log has no twins.
+     * What the app reads for its own features ([internal]: the guard's IAM, the AFR target, the fan relays and the A/C
+     * the diagnostic rules use) is no column unless the driver ticked it too ([ticked]): Enderold's 572 log had E31 IAM,
+     * E123 Final Fueling Base, S26 A/C and S28/S29 fan relays he had never chosen and couldn't untick.
      */
-    fun extras(polled: List<kg.forester.sg.ssm.RrParam>, roleIds: Map<String, String>): List<kg.forester.sg.ssm.RrParam> {
-        val on = enabled().map { it.key }.toSet()
+    fun extras(
+        polled: List<kg.forester.sg.ssm.RrParam>, roleIds: Map<String, String>, internal: Set<String>, ticked: Set<String>,
+        on: Set<String> = enabled().map { it.key }.toSet(),
+    ): List<kg.forester.sg.ssm.RrParam> {
         val covered = roleIds.filter { (role, _) -> roleColumn[role] in on }.values.toSet()
         return polled.filter { p ->
-            p.id !in covered && !(p.kind == kg.forester.sg.ssm.RrParam.Kind.STD && p.bit < 0 &&
+            p.id !in covered && (p.id !in internal || p.id in ticked) && !(p.kind == kg.forester.sg.ssm.RrParam.Kind.STD && p.bit < 0 &&
                 (if (p.target == 2) tcuAddr[p.addr] else ecuAddr[p.addr]) in on)
         }.distinctBy { it.id }
     }

@@ -127,7 +127,6 @@ private fun android.app.Activity.pretendCodes(i: android.content.Intent) {
 /** The open screen as it is kept over a recreated activity (rememberSaveable), and back; an unknown name is dropped. */
 fun screenSaved(s: Screen): String = s.name
 fun screenRestored(v: String): Screen? = Screen.values().firstOrNull { it.name == v }
-private var exitReasonsLogged = false
 private val ScreenSaver = androidx.compose.runtime.saveable.Saver<Screen, String>({ screenSaved(it) }, { screenRestored(it) })
 
 class MainActivity : ComponentActivity() {
@@ -145,7 +144,7 @@ class MainActivity : ComponentActivity() {
         SsmTrace.log("start: saved=${savedInstanceState != null} sdk=${android.os.Build.VERSION.SDK_INT}", keep = true)
         lastCfg = android.content.res.Configuration(resources.configuration)
         kg.forester.sg.ui.SplitScreen.on.value = android.os.Build.VERSION.SDK_INT >= 24 && isInMultiWindowMode
-        logExitReasons()
+        RunTrail.note("activity: create, saved=${savedInstanceState != null}")
         // adb: am start -n kg.forester.sg/.MainActivity --ez demo true [--ez skipSetup true]
         if (intent?.hasExtra("demo") == true) Repo.settings.demo = intent.getBooleanExtra("demo", false)
         // adb: … --ez linkdemo true: a made-up Link G4X on a CANable (what a sports-ECU car would see)
@@ -181,6 +180,14 @@ class MainActivity : ComponentActivity() {
         EcuService.start(this)
         // «Выход» in the service notification closes the screen too
         lifecycleScope.launch { EcuService.exitRequested.collect { finishAndRemoveTask() } }
+        // «Не гасить экран», like a navigator: a phone or tablet doesn't go dark or lock while the app is on the screen.
+        // The window's flag only counts while the window is visible (in split screen too), so it can stay set off the screen.
+        lifecycleScope.launch {
+            Repo.keepScreenOn.collect { on ->
+                if (on) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        }
         setContent {
             if (!kg.forester.sg.ui.languageReady()) return@setContent
             // one gallery launcher for gauge pictures at the root, so the result survives the closed picker dialog
@@ -232,19 +239,6 @@ class MainActivity : ComponentActivity() {
         SsmTrace.log("cfg: changed=$diff ${newConfig.screenWidthDp}x${newConfig.screenHeightDp}dp density=${newConfig.densityDpi} " +
             "orientation=${newConfig.orientation} uiMode=${newConfig.uiMode} font=${newConfig.fontScale}", keep = true)
         lastCfg = android.content.res.Configuration(newConfig)
-    }
-
-    /** Why the previous runs of the process ended (the system's own record): a kill, a crash, a plain exit. */
-    private fun logExitReasons() {
-        // once per process: a recreated activity would repeat it, a restore after a background kill (saved != null) must not skip it
-        if (android.os.Build.VERSION.SDK_INT < 30 || exitReasonsLogged) return
-        exitReasonsLogged = true
-        runCatching {
-            val am = getSystemService(android.app.ActivityManager::class.java)
-            am.getHistoricalProcessExitReasons(packageName, 0, 5).forEach { r ->
-                SsmTrace.log("exit: reason=${r.reason} status=${r.status} importance=${r.importance} at=${r.timestamp} ${r.description.orEmpty()}", keep = true)
-            }
-        }
     }
 
     // adb: am start -n kg.forester.sg/.MainActivity --es alert "текст" [--es level danger|warn|info]: how a warning looks
@@ -306,6 +300,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        RunTrail.note("activity: start")
         EcuService.start(this)
         uiRecomposer()?.resumeCompositionFrameClock()
         // it can wait for a model being read: not on this thread
@@ -348,6 +343,7 @@ class MainActivity : ComponentActivity() {
     // with background work off, the service (polling, logging) stops once the app leaves the screen
     override fun onStop() {
         super.onStop()
+        RunTrail.note("activity: stop")
         if (!Repo.settings.backgroundWork && !isChangingConfigurations) {
             stopService(android.content.Intent(this, EcuService::class.java))
         }
@@ -355,6 +351,14 @@ class MainActivity : ComponentActivity() {
         if (!isChangingConfigurations) uiRecomposer()?.pauseCompositionFrameClock()
         // the system says UI_HIDDEN only to a process that drops in priority, and the foreground service keeps this one up
         if (!isChangingConfigurations) giveMemoryBack(android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN)
+    }
+
+    override fun onDestroy() {
+        // the system's ACC-off cleanup on some units closes the activity: then this is in the log, and a death after it is not ours
+        val why = "activity: destroyed, finishing=$isFinishing, config change=$isChangingConfigurations"
+        RunTrail.note(why)
+        if (!isChangingConfigurations) SsmTrace.log(why, keep = true)
+        super.onDestroy()
     }
 
     private fun hideSystemBars() {

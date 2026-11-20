@@ -336,24 +336,30 @@ class Settings(ctx: Context) {
         set(v) {
             p.edit().putBoolean("fastPoll", v).apply()
             // the switch turned on again is "try once more": the per-ROM decisions that turned it off go
-            if (v) fastPollOffRoms = emptySet()
+            if (v) { fastPollOffRoms = emptyMap(); Repo.fastPollRetry.value++ }
         }
 
     /**
-     * ROMs whose fast-poll stream fell silent twice in a row on this build: the ECU polling stays plain until
-     * either the app is updated (new [kg.forester.sg.BuildConfig.VERSION_CODE]) or the Fast Poll switch is
-     * toggled off and on again. Saved so a cable reopen, a service restart or an app relaunch doesn't make the
-     * ECU choke on the same 25-address stream again (Серёга's Legacy BP, ROM 2F04207006, 1.0-beta8 log).
+     * ROMs whose fast-poll stream fell silent on restarts twice this drive, with when each was last connected (wall
+     * clock, see StreamRestarts.DRIVE_GAP_MS): the ECU polling stays plain until the drive is over, the app is updated
+     * (new [kg.forester.sg.BuildConfig.VERSION_CODE]) or the Fast Poll switch is toggled off and on again. Saved so a
+     * service restart or an app relaunch inside the drive doesn't make the ECU choke on the same stream again
+     * (Серёга's Legacy BP, ROM 2F04207006, 1.0-beta8 log); kept for good as in 1.0-beta12, it took the stream from an
+     * ECU that went mute once in one drive and streamed fine in every other (Enderold's 572).
      */
-    var fastPollOffRoms: Set<String>
+    var fastPollOffRoms: Map<String, Long>
         get() {
             val built = p.getInt("fastPollOffBuild", 0)
-            if (built != kg.forester.sg.BuildConfig.VERSION_CODE) return emptySet()
-            return p.getString("fastPollOffRoms", "")!!.split(',').filter { it.isNotBlank() }.toSet()
+            if (built != kg.forester.sg.BuildConfig.VERSION_CODE) return emptyMap()
+            // "ROM@ms"; a bare ROM (1.0-beta12) has no time and is a drive long over
+            return p.getString("fastPollOffRoms", "")!!.split(',').mapNotNull { e ->
+                val at = e.substringAfter('@', "").toLongOrNull() ?: return@mapNotNull null
+                e.substringBefore('@').takeIf { it.isNotBlank() }?.let { it to at }
+            }.toMap()
         }
         set(v) {
             p.edit()
-                .putString("fastPollOffRoms", v.joinToString(","))
+                .putString("fastPollOffRoms", v.entries.joinToString(",") { "${it.key}@${it.value}" })
                 .putInt("fastPollOffBuild", kg.forester.sg.BuildConfig.VERSION_CODE)
                 .apply()
         }
@@ -751,6 +757,11 @@ class Settings(ctx: Context) {
         get() = p.getBoolean("backgroundWork", true)
         set(v) { p.edit().putBoolean("backgroundWork", v).apply() }
 
+    /** «Не гасить экран»: while the app is on the screen it doesn't go dark or lock, like a navigator (MainActivity). */
+    var keepScreenOn: Boolean
+        get() = p.getBoolean("keepScreenOn", true)
+        set(v) { p.edit().putBoolean("keepScreenOn", v).apply(); Repo.keepScreenOn.value = v }
+
     /** Start the service when the head unit / phone starts or wakes up (ACC on). */
     var autostartService: Boolean
         get() = p.getBoolean("autostartService", !phone)
@@ -1023,6 +1034,9 @@ object Repo {
     /** tachometer style id to speedometer style id */
     val dialStyles = MutableStateFlow("neon" to "neon")
     val clusterSize = MutableStateFlow(1)
+    val keepScreenOn = MutableStateFlow(true)
+    /** Counts the times the Fast Poll switch was turned on: «try once more» for what the running service has learnt against the stream. */
+    val fastPollRetry = MutableStateFlow(0)
     val carVersion = MutableStateFlow(0)
     /** How many parameters the ECU is polled for (fewer than all = some are not supported). */
     val pollAddresses = MutableStateFlow(0)
@@ -1131,6 +1145,7 @@ object Repo {
             fuelTiles.value = settings.board("fuelTiles")
             dialStyles.value = settings.tachStyle to settings.speedoStyle
             clusterSize.value = settings.clusterSize
+            keepScreenOn.value = settings.keepScreenOn
             kg.forester.sg.ui.C.applyPalette(settings.uiTheme)
             kg.forester.sg.ui.C.applyTheme(settings.accentTheme)
             kg.forester.sg.ssm.SsmTrace.enabled = settings.traceEnabled

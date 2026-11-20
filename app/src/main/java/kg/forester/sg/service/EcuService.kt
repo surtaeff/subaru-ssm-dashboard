@@ -137,9 +137,15 @@ class EcuService : Service() {
      *      `UsbDeviceConnection.resetDevice()`, a bus reset. On some kernels the device comes back under a new
      *      address and Android asks for the permission again, so it is the last resort.
      *
-     * Back to 0 when the ECU answers its init through the cable, after a non-timeout error, and after a bus reset.
+     * Back to 0 when the ECU answers its init through the cable, after a non-timeout error on an open port, and after a
+     * bus reset. A port that fails to open is [openFailures]' and leaves the streak as it is.
      */
     private var writeTimeoutStreak = 0
+    /** A chip that fails usb-serial's open() itself, before any session: retries, bus resets and a growing pause. */
+    private val openFailures = UsbOpenFailures()
+    /** Losses in the stream-start and early windows below: blamed on the ROM at the second, see [UsbBlame]. */
+    private val streamBlame = UsbBlame()
+    private val earlyBlame = UsbBlame()
     /**
      * ROMs whose fast-poll start lost the USB device until the service restarts (not saved: one bad moment must not
      * cost the stream for good). Alexey's Xiaomi 21081111RG on Android 14 (2026-11-17): «USB get_status request
@@ -179,6 +185,8 @@ class EcuService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val createdAt = android.os.SystemClock.uptimeMillis()
+        kg.forester.sg.RunTrail.note("service: create")
         Repo.init(this)
         // first: the system gives a started service a few seconds for it, and a weak unit may spend them on what follows
         startInForeground()
@@ -221,15 +229,27 @@ class EcuService : Service() {
                 delay(3600_000)
             }
         }
+        // all of this runs on the main thread, and Android gives a foreground service 20 s for it before an ANR
+        val took = android.os.SystemClock.uptimeMillis() - createdAt
+        if (took >= 1000) SsmTrace.log("service: onCreate took $took ms", keep = true)
     }
 
+    private var commands = 0
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // the first command, and a restart by Android itself (no intent: the sticky service after its process was killed)
+        if (commands++ == 0 || intent == null || flags != 0) {
+            val how = if (intent == null) "restarted by Android after its process died" else intent.action ?: "plain"
+            kg.forester.sg.RunTrail.note("service: start, $how, flags $flags")
+            SsmTrace.log("service: start, $how, flags $flags", keep = true)
+        }
         when (intent?.action) {
             ACTION_RESET_TRIP -> scope.launch { tracker.resetTrip() }
             ACTION_START_GPS -> { startGps(); Voice.start(this) }
             ACTION_RELEASE -> releaseAdapter()
             ACTION_RECONNECT -> reconnectAdapter()
             ACTION_EXIT -> {
+                kg.forester.sg.RunTrail.note("exit by the user (notification)")
                 exitRequested.tryEmit(Unit)
                 stopService(Intent(this, PlayerService::class.java))
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
@@ -240,7 +260,31 @@ class EcuService : Service() {
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        kg.forester.sg.RunTrail.note("service: task removed")
+        super.onTaskRemoved(rootIntent)
+    }
+
+    private var trimLevel = 0
+
+    /** Memory running short: the steps before Android's low-memory killer, for a death that follows them. */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level != trimLevel && level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            kg.forester.sg.RunTrail.note("service: memory trim level $level")
+        }
+        trimLevel = level
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        kg.forester.sg.RunTrail.note("service: low memory")
+        SsmTrace.log("service: low memory", keep = true)
+    }
+
     override fun onDestroy() {
+        kg.forester.sg.RunTrail.note("service: destroyed")
+        SsmTrace.log("service: destroyed", keep = true)
         wakeWatch.stop()
         scope.launch { tracker.shutdown() }
         logger?.close()
@@ -334,6 +378,10 @@ class EcuService : Service() {
             // the SensorBox (an Arduino next to the cable) and devices still being asked whether they are it
             val drivers = SensorBoxLink.forEcu(all)
             val driver = pickDriver(kind, drivers)
+            // a serial chip is plugged in and the loop may not have it: say why, once per change («не видит адаптер»
+            // with a [serial] CH340 in the list and no session line)
+            val kept = if (driver != null) "" else all.mapNotNull { d -> SensorBoxLink.whyNotForEcu(d)?.let { "%04X:%04X %s".format(d.device.vendorId, d.device.productId, it) } }.joinToString("; ")
+            if (kept != lastKept) { lastKept = kept; if (kept.isNotEmpty()) SsmTrace.log("USB serial not for the ECU loop: $kept", keep = true) }
             // no CANable on USB: a SensorBox with CAN (an ESP32-S3, firmware 6+) takes its place. Its CAN is switched on by
             // hand, so it goes before a USB serial chip that would only be asked what protocol it speaks (CanLinks); a
             // protocol picked by hand keeps that chip
@@ -345,6 +393,7 @@ class EcuService : Service() {
                 continue
             }
             if (driver == null) {
+                openFailures.gone()
                 if (!triedHostFix && System.currentTimeMillis() - noCableSince > 8000) {
                     triedHostFix = true
                     forceUsbHostMode()
@@ -404,13 +453,18 @@ class EcuService : Service() {
             if (SensorBoxLink.ecuLease?.permitted != true) {
                 conn.close(); SensorBoxLink.releaseEcu(); continue
             }
-            SsmTrace.log("=== ${driver.javaClass.simpleName} %04X:%04X, адаптер $kind, шина ${s.bus}"
+            // the device path too: a new one after a hub event tells a re-enumerated device from a stale one
+            SsmTrace.log("=== ${driver.javaClass.simpleName} %04X:%04X ${driver.device.deviceName}, адаптер $kind, шина ${s.bus}"
                 .format(driver.device.vendorId, driver.device.productId))
             var op2: OpenPort2? = null
             var streams: UsbStreams? = null
             var resetUsbBeforeClose = false
+            var portOpen = false
+            var openStep: UsbOpenFailures.Step? = null
             try {
                 port.open(conn)
+                portOpen = true
+                openFailures.opened()
                 lastHadCableMs = android.os.SystemClock.elapsedRealtime()
                 val id = "%04X:%04X".format(driver.device.vendorId, driver.device.productId)
                 when {
@@ -477,10 +531,19 @@ class EcuService : Service() {
                     Repo.link.value = LinkState.ERROR
                     Repo.linkMessage.value = kg.forester.sg.data.Failure.link(e, "Ошибка связи")
                 }
-                // Some head units' OTG controller wedges after ACC off/on: writeRaw times out on the same port
-                // for minutes (see [writeTimeoutStreak]). Count only the hoho usb-serial SerialTimeoutException,
-                // not Bluetooth/Wi-Fi socket drops.
-                if (e is com.hoho.android.usbserial.driver.SerialTimeoutException) {
+                if (!portOpen) {
+                    // the chip did not even open (Roman's FT232R: «Reset failed: result=-1» every pass, see
+                    // [UsbOpenFailures]). Not a session's error: the write-timeout streak and the stream blame stay as
+                    // they are. A device taken by the wideband under us is not counted either
+                    if (SensorBoxLink.ecuLease?.permitted != false) {
+                        openStep = openFailures.failed(driver.device.deviceName, android.os.SystemClock.elapsedRealtime())
+                        if (openFailures.streak >= UsbOpenFailures.BUS_RESET_FROM) Repo.linkMessage.value =
+                            "Кабель не отвечает по USB. Сбрасываю USB-порт; не поможет — перевоткните кабель или попробуйте другой порт USB"
+                    }
+                } else if (e is com.hoho.android.usbserial.driver.SerialTimeoutException) {
+                    // Some head units' OTG controller wedges after ACC off/on: writeRaw times out on the same port
+                    // for minutes (see [writeTimeoutStreak]). Count only the hoho usb-serial SerialTimeoutException,
+                    // not Bluetooth/Wi-Fi socket drops.
                     writeTimeoutStreak++
                     if (writeTimeoutStreak >= WRITE_TIMEOUT_STREAK) {
                         resetUsbBeforeClose = true
@@ -496,7 +559,8 @@ class EcuService : Service() {
                     val sinceStream = nowMs - streamInitAtMs
                     if (e is java.io.IOException && streamInitAtMs > 0L && sinceStream < STREAM_INIT_BLAME_MS) {
                         activeRomId?.let { rom ->
-                            if (usbGuiltyRoms.add(rom)) SsmTrace.log("USB lost $sinceStream ms after the stream start, fast poll off for ROM $rom in this run")
+                            if (!streamBlame.strike(rom, nowMs)) SsmTrace.log("USB lost $sinceStream ms after the stream start, once for ROM $rom: not blamed yet (cranking does this)")
+                            else if (usbGuiltyRoms.add(rom)) SsmTrace.log("USB lost $sinceStream ms after the stream start, fast poll off for ROM $rom in this run")
                         }
                     } else if (e is java.io.IOException && earlyUsbLoss(ecuInitAtMs, nowMs)) {
                         // Alexey's FT232RL cable on beta11 (2026-11-18): ECU init and VIN fine, then the device gone from
@@ -504,6 +568,11 @@ class EcuService : Service() {
                         // and OTG reads the same ECU fine. Long frames are what the cable fails on: short requests and no
                         // stream for this ROM in this run.
                         activeRomId?.let { rom ->
+                            // one loss is what the starter does a few seconds after the ECU init (see [UsbBlame])
+                            if (!earlyBlame.strike(rom, nowMs)) {
+                                SsmTrace.log("USB lost ${nowMs - ecuInitAtMs} ms after the ECU init, once for ROM $rom: not blamed yet (cranking does this)")
+                                return@let
+                            }
                             usbGuiltyRoms.add(rom)
                             if (ecuReadLimits[rom] != kg.forester.sg.ssm.SsmClient.MIN_SPLIT) {
                                 ecuReadLimits[rom] = kg.forester.sg.ssm.SsmClient.MIN_SPLIT
@@ -523,12 +592,47 @@ class EcuService : Service() {
                     .onFailure { SsmTrace.log("USB reset: $it") }
                 runCatching { if (op2 != null) op2.close() else port.close() }
                 runCatching { conn.close() }
+                // still under the ECU's lease, so no other loop opens the device meanwhile
+                if (openStep == UsbOpenFailures.Step.BUS_RESET) runCatching { busResetFresh(usb, driver.device) }
+                    .onFailure { SsmTrace.log("USB reset: $it") }
                 SensorBoxLink.releaseEcu()
                 logger?.close(); logger = null
             }
-            delay(if (resetUsbBeforeClose) 2500 else 1000)
+            val step = openStep
+            if (step != null) waitUsbChange(usb, openFailures.pauseMs(step))
+            else delay(if (resetUsbBeforeClose) 2500 else 1000)
         }
     }
+
+    /**
+     * After a failed open (see [UsbOpenFailures]): usb-serial's open() has closed the connection it was given, and a reset
+     * on a closed one does nothing (see [resetUsb]), so the bus reset goes through a connection of its own.
+     */
+    private fun busResetFresh(usb: UsbManager, device: android.hardware.usb.UsbDevice) {
+        val c = usb.openDevice(device)
+        if (c == null) { SsmTrace.log("USB open failures × ${openFailures.streak}: no connection for the reset"); return }
+        try {
+            SsmTrace.log("USB open failures × ${openFailures.streak}: resetDevice returned ${resetDevice(c)}")
+        } finally { runCatching { c.close() } }
+    }
+
+    /**
+     * The pause after a failed open, cut short when the USB device list changes: a re-plugged cable or one back from the
+     * bus reset is tried at once rather than at the end of a long back-off.
+     */
+    private suspend fun waitUsbChange(usb: UsbManager, ms: Long) {
+        val before = runCatching { usb.deviceList.keys.toSet() }.getOrNull()
+        val until = android.os.SystemClock.elapsedRealtime() + ms
+        while (android.os.SystemClock.elapsedRealtime() < until) {
+            delay(500)
+            if (before != null && runCatching { usb.deviceList.keys.toSet() }.getOrNull().let { it != null && it != before }) return
+        }
+    }
+
+    /** `UsbDeviceConnection.resetDevice()`, a bus reset: in AOSP but @UnsupportedAppUsage, not in the SDK, so by reflection. */
+    private fun resetDevice(conn: android.hardware.usb.UsbDeviceConnection): Boolean? =
+        runCatching { conn.javaClass.getMethod("resetDevice").invoke(conn) as? Boolean }
+            .onFailure { SsmTrace.log("USB resetDevice: $it") }.getOrNull()
 
     /**
      * See [writeTimeoutStreak]. Runs on the still open [conn]. The soft FTDI reset leaves the streak as it is, so a chip
@@ -543,10 +647,8 @@ class EcuService : Service() {
             // a chip that refuses even control requests is stuck harder: straight to the bus reset
             if (rc.all { it >= 0 }) return
         }
-        // UsbDeviceConnection.resetDevice() exists in AOSP but is @UnsupportedAppUsage, not in the SDK: by reflection.
-        // A bus reset: some kernels give the device a new address, and Android asks for the permission again
-        val ok = runCatching { conn.javaClass.getMethod("resetDevice").invoke(conn) as? Boolean }
-            .onFailure { SsmTrace.log("USB resetDevice: $it") }.getOrNull()
+        // a bus reset: some kernels give the device a new address, and Android asks for the permission again
+        val ok = resetDevice(conn)
         SsmTrace.log("USB write timeouts × $streak: resetDevice returned $ok")
         if (ok == true) writeTimeoutStreak = 0
     }
@@ -595,6 +697,7 @@ class EcuService : Service() {
     }
 
     private var lastUsbList = ""
+    private var lastKept = ""
 
     /** Every USB device, recognised or not, once per change: shows in a sent log which cable someone has. */
     private fun logUsbDevices(usb: UsbManager, drivers: List<UsbSerialDriver>) {
@@ -923,13 +1026,15 @@ class EcuService : Service() {
 
     /**
      * Stream restarts each ECU let pass in silence (see the fast poll in [session]). The ROMs whose stream fell silent
-     * twice are kept in [Settings.fastPollOffRoms] so a cable reopen or an app restart doesn't try them again on this
-     * build.
+     * twice in a drive are kept in [Settings.fastPollOffRoms] so an app restart inside that drive doesn't try them
+     * again; the next drive does.
      */
     private val streamRestarts = StreamRestarts(
         load = { Repo.settings.fastPollOffRoms },
         save = { Repo.settings.fastPollOffRoms = it },
+        retries = { Repo.fastPollRetry.value },
     )
+    private var fastPollRetrySeen = 0
 
     /** ECUs (by ROM) that went mute on a plain cable this run of the service: the long gap from the next connection's start (KLineTransport.longGap). */
     private val longGapRoms = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>()) // newKeySet needs API 24
@@ -1152,12 +1257,14 @@ class EcuService : Service() {
             // «fast poll» (K-line): the ECU sends the values by itself, three times as often; off for this connection
             // when it doesn't, and for this ROM when its restarts have fallen silent (see StreamRestarts) or the host
             // kernel errored out on the big stream-init TX earlier in this run (see [usbGuiltyRoms])
+            // the Fast Poll switch turned on again: this run's USB blame goes too (the stream restarts' count goes in off())
+            Repo.fastPollRetry.value.let { if (it != fastPollRetrySeen) { fastPollRetrySeen = it; usbGuiltyRoms.clear(); streamBlame.clear(); earlyBlame.clear() } }
             val usbGuilty = init.romId in usbGuiltyRoms
             val streamOff = streamRestarts.off(init.romId) || usbGuilty
             var fast = Repo.settings.fastPoll && transport is kg.forester.sg.ssm.KLineTransport && !streamOff
             if (streamOff && Repo.settings.fastPoll) SsmTrace.log(
                 if (usbGuilty) "fast poll: off for ROM ${init.romId}, host kernel errored out on stream earlier in this run, plain requests"
-                else "fast poll: off for ROM ${init.romId}, its stream restarts fell silent, plain requests"
+                else "fast poll: off for ROM ${init.romId} this drive, its stream restarts fell silent, plain requests"
             )
             val fastFrames = Channel<ByteArray>(Channel.CONFLATED)
             var fastAddrs: IntArray = addrs
@@ -1271,7 +1378,7 @@ class EcuService : Service() {
                             val n = streamRestarts.silent(init.romId, fastRun, fastFrameSeen, ignored)
                             if (n >= StreamRestarts.MAX) {
                                 fast = false
-                                SsmTrace.log("fast poll: the ECU fell silent on a stream restart again, plain requests for ROM ${init.romId}")
+                                SsmTrace.log("fast poll: the ECU fell silent on a stream restart again, plain requests for ROM ${init.romId} this drive")
                             } else if (n > 0) SsmTrace.log("fast poll: the ECU fell silent on a stream restart, transmission every " +
                                 "${streamRestarts.tcuGapMs(init.romId, Repo.settings.tcuEvery) / 1000} s")
                             failures++
@@ -1281,7 +1388,7 @@ class EcuService : Service() {
                         continue
                     }
                     failures = 0
-                    fastRun++
+                    if (++fastRun == 1) streamRestarts.streamed(init.romId)
                     streamInitAtMs = 0L
                     if (!fastFrameSeen) { fastFrameSeen = true; SsmTrace.log("fast poll: ${fastAddrs.size} addresses") }
                     if (cycle == 0) logFirstRead(addrs, raw)
@@ -1509,7 +1616,7 @@ class EcuService : Service() {
         if (merged) { /* the file goes on with the next full read */ }
         else if (Repo.settings.logEnabled && (snap.rpm ?: 0) > 0 && !Repo.linkDemo.value) {
             // the ticked parameters are extra columns: a new file when the choice changes
-            val extras = LogColumns.extras(Repo.rrPolled.value, guard.roleIds())
+            val extras = LogColumns.extras(Repo.rrPolled.value, guard.roleIds(), Repo.internalWatch.value, Repo.settings.watchIds)
             if (logger != null && (logger?.extras != extras || logger?.columns?.map { it.key } != LogColumns.enabled().map { it.key })) {
                 logger?.close(); logger = null
             }
@@ -2387,8 +2494,21 @@ class EcuService : Service() {
     private fun forceUsbHostMode() {
         // This head unit's OTG controller can get stuck in device mode (seen after toggling USB debugging).
         val f = "/sys/devices/platform/soc/soc:aon/5fff0000.usb/mode_switch"
+        // readable and not stuck in device mode (or another unit, where reading it fails the same as su would): no su
+        val mode = runCatching { File(f).readText().trim() }.getOrNull()
+        if (mode != null && mode != "device") return
         runCatching {
-            Runtime.getRuntime().exec(arrayOf("su", "-c", "[ \"\$(cat $f)\" = device ] && echo host > $f")).waitFor()
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "[ \"\$(cat $f)\" = device ] && echo host > $f"))
+            // an su that asks or hangs must not hold the pollLoop (the cable would never be picked up again)
+            val end = android.os.SystemClock.elapsedRealtime() + 3000
+            while (true) {
+                try { p.exitValue(); break } catch (_: IllegalThreadStateException) {
+                    if (android.os.SystemClock.elapsedRealtime() > end) {
+                        p.destroy(); SsmTrace.log("usb host mode: su gave no answer in 3 s"); break
+                    }
+                    Thread.sleep(100)
+                }
+            }
         }
     }
 
@@ -2728,39 +2848,85 @@ class EcuService : Service() {
  * held low. Once: the transmission far less often ([tcuGapMs]); [MAX] times: plain requests for that ROM, which kept
  * its line up far better. An ECU that streams through it all keeps the stream as it was.
  *
- * The [MAX]-and-over set is sticky: a cable reopen inside this session, a service restart, or an app relaunch brings
- * it back (the Legacy BP's log of 2026-11-16 had 12 session restarts in 65 min on the same ROM, each one starting the
- * 25-address stream afresh before falling back to plain requests). [load] and [save] carry it; a new build clears the
- * set (keyed by the installed versionCode in [Settings.fastPollOffRoms]). [load] is only called from the constructor.
+ * One mute counts once: the restarts that follow it with no frame in between ([streamed]) are the same silence (a KKL
+ * cable on a 4244307006 had two counted 1.6 s apart, and its stream was gone at once).
+ *
+ * The count lasts a drive: the connections that follow each other less than [DRIVE_GAP_MS] apart. Within it the off
+ * decision holds through cable reopens, a service restart or an app relaunch (the Legacy BP's log of 2026-11-16 had
+ * 12 session restarts in 65 min, each one starting the 25-address stream afresh before falling back to plain
+ * requests); [load] and [save] carry it, with the time of the last connection. The next drive tries the stream again:
+ * kept for good (1.0-beta12) it cost Enderold's 572 its fast poll for every drive after one mute in one of them, at
+ * 2 rows a second instead of 10. [load] is only called from the constructor; [clock] is the wall clock (the drive
+ * spans app restarts), one that went back ends the drive.
  */
 internal class StreamRestarts(
-    load: () -> Set<String> = { emptySet() },
-    private val save: (Set<String>) -> Unit = { },
+    load: () -> Map<String, Long> = { emptyMap() },
+    private val save: (Map<String, Long>) -> Unit = { },
+    private val clock: () -> Long = { System.currentTimeMillis() },
+    /** Grows when the owner asks to try the stream once more (the Fast Poll switch on again): the counts go. */
+    private val retries: () -> Int = { 0 },
 ) {
-    private val fails = java.util.concurrent.ConcurrentHashMap<String, Int>().also { m ->
-        load().forEach { rom -> if (rom.isNotBlank()) m[rom] = MAX }
+    private var retriesSeen = retries()
+
+    /** [n] silent restarts this drive, the ECU last seen at [atMs] (a connection or a counted restart). */
+    private class Count(val n: Int, val atMs: Long)
+    private val counts = java.util.concurrent.ConcurrentHashMap<String, Count>().also { m ->
+        load().forEach { (rom, at) -> if (rom.isNotBlank()) m[rom] = Count(MAX, at) }
+    }
+    /** ROMs whose last counted restart has had no frame since. */
+    private val mute = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>()) // newKeySet needs API 24
+
+    /** This drive's count for [rom], null when there is none or the drive is over (the entry goes then). */
+    private fun count(rom: String, now: Long): Count? {
+        val c = counts[rom] ?: return null
+        if (now - c.atMs in 0 until DRIVE_GAP_MS) return c
+        counts.remove(rom); mute.remove(rom)
+        if (c.n >= MAX) persist()
+        return null
     }
 
-    fun off(rom: String) = (fails[rom] ?: 0) >= MAX
+    private fun persist() = save(counts.filterValues { it.n >= MAX }.mapValues { it.value.atMs })
+
+    /**
+     * Asked once per connection: true while this drive's restarts have fallen silent [MAX] times. A connection inside
+     * the drive moves its end on, so an ECU that keeps going mute stays on plain requests to the end of it.
+     */
+    fun off(rom: String): Boolean {
+        retries().let { if (it != retriesSeen) { retriesSeen = it; counts.clear(); mute.clear() } }
+        val now = clock()
+        val c = count(rom, now) ?: return false
+        counts[rom] = Count(c.n, now)
+        if (c.n < MAX) return false
+        persist()
+        return true
+    }
+
+    /** A frame came on the stream: the next silent restart is another mute. */
+    fun streamed(rom: String) { mute.remove(rom) }
 
     /**
      * No frame since the stream was started again ([run] 0) though it ran in this connection ([frameSeen]), and our
      * start and stop came back off a live line ([ignored], see KLineTransport.ignoredRequests: not the ignition off).
-     * Returns how many such restarts this ROM has had, 0 when this one is not one. On the [MAX]-th one the ROM is
-     * remembered so a cable reopen or an app restart doesn't try the stream again.
+     * Returns how many such mutes this ROM has had this drive, 0 when this restart is not one or the same mute goes on.
+     * On the [MAX]-th one the ROM is saved so a service restart or an app relaunch inside the drive doesn't try the
+     * stream again.
      */
     fun silent(rom: String, run: Int, frameSeen: Boolean, ignored: Int): Int {
         if (run > 0 || !frameSeen || ignored < 2) return 0
-        val n = (fails[rom] ?: 0) + 1
-        fails[rom] = n
-        if (n == MAX) save(fails.entries.asSequence().filter { it.value >= MAX }.map { it.key }.toSet())
+        val now = clock()
+        val n = (count(rom, now)?.n ?: 0) + 1
+        if (!mute.add(rom)) return 0
+        counts[rom] = Count(n, now)
+        if (n == MAX) persist()
         return n
     }
 
-    fun tcuGapMs(rom: String, tcuEvery: Int) = EcuService.fastTcuGapMs(tcuEvery, fails[rom] ?: 0)
+    fun tcuGapMs(rom: String, tcuEvery: Int) = EcuService.fastTcuGapMs(tcuEvery, counts[rom]?.n ?: 0)
 
     companion object {
         const val MAX = 2
+        /** No connection to the ROM this long: the car stood, the next connection is another drive. */
+        const val DRIVE_GAP_MS = 30 * 60_000L
     }
 }
 
@@ -2774,11 +2940,17 @@ internal enum class TcuMiss { NONE, DROP_FWD, BACK_OFF }
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        kg.forester.sg.RunTrail.note("boot receiver: ${intent.action}")
+        SsmTrace.log("boot receiver: ${intent.action}", keep = true)
         Repo.init(context)
         val s = Repo.settings
         // after an update the service was running before: it comes back whatever the autostart says
         val updated = intent.action == Intent.ACTION_MY_PACKAGE_REPLACED
-        if (updated || s.autostartService || s.autostartApp) EcuService.start(context)
+        // Android 12+ refuses a foreground service started from the background (ACC_ON is no boot broadcast): logged, the
+        // app's own start or the activity brings it up then
+        if (updated || s.autostartService || s.autostartApp) {
+            runCatching { EcuService.start(context) }.onFailure { SsmTrace.log("boot receiver: service start refused: $it", keep = true) }
+        }
         // allowed from the background only with "display over other apps" (Android 10+)
         if (!updated) WakeWatch.openApp(context)
     }

@@ -112,6 +112,8 @@ abstract class KLineTransport : SsmTransport {
      */
     private val sent = ArrayDeque<Pair<ByteArray, Long>>()
     @Volatile private var lastForeignMs = 0L
+    /** When requests not ours were heard lately (under [lock]): one alone is not yet another tester (see [foreignAgain]). */
+    private val foreignTimes = ArrayDeque<Long>()
     /** What the other tester asked last, per unit: the addresses whose values come back in that order. */
     private val pending = HashMap<Int, IntArray>()
     /** ECU memory as the other tester's answers showed it: address → (value, when). */
@@ -143,7 +145,7 @@ abstract class KLineTransport : SsmTransport {
         synchronized(lock) {
             lastRxMs = System.currentTimeMillis()
             // while the ECU streams nobody waits in [exchange]: the answers would only pile up
-            if (streamSink == null) inbox.write(data)
+            if (streamSink == null) { inbox.write(data); inboxMs = lastRxMs }
             stream.write(data)
             scan()
         }
@@ -188,7 +190,15 @@ abstract class KLineTransport : SsmTransport {
                 if (dst == SsmClient.ECU) ecuEchoes++
                 return
             }
-            lastForeignMs = now
+            // the very bytes of a request of ours lately, on this connection or the one before: our own echo, late. A
+            // CH340 (NWD unit, 1A86:7523) handed each new open what it still held of the closed connection, a request
+            // of ours to a mute ECU 50 ms after the open: quiet mode for nothing a dozen times in one drive
+            if (wasOwn(f, now)) {
+                if (now - lastLateMs > 30_000) { lastLateMs = now; SsmTrace.log("K-line: our own earlier request heard late, not another tester", f) }
+                return
+            }
+            // a garbled run of bytes whose checksum happens to fit is no read request
+            if (!wellFormed(body)) return
             when (body[0].toInt() and 0xFF) {
                 // A8 00 aaa aaa …: single addresses
                 0xA8 -> pending[dst] = IntArray((body.size - 2) / 3) { k ->
@@ -201,6 +211,11 @@ abstract class KLineTransport : SsmTransport {
                 }
                 else -> pending.remove(dst)
             }
+            if (!foreignAgain(now)) {
+                if (now - lastOddMs > 30_000) { lastOddMs = now; SsmTrace.log("K-line: a request not ours, quiet only if more follow", f) }
+                return
+            }
+            lastForeignMs = now
             if (lastForeignMs - lastLoggedMs > 30_000) { lastLoggedMs = lastForeignMs; SsmTrace.log("another tester on the K-line: listening", f) }
             return
         }
@@ -224,6 +239,27 @@ abstract class KLineTransport : SsmTransport {
     }
 
     private var lastLoggedMs = 0L
+    private var lastLateMs = 0L
+    private var lastOddMs = 0L
+
+    /**
+     * A request not ours at [now] (under [lock]): another tester only once [FOREIGN_CONFIRM] of them have come within
+     * [FOREIGN_WINDOW_MS], or while it is already heard. A tester polls on and on, one stray frame is a leftover or a
+     * garble. Frames of one burst count once: what a chip kept comes all at once, a tester's requests have the
+     * ECU's answers between them.
+     */
+    private fun foreignAgain(now: Long): Boolean {
+        while (foreignTimes.isNotEmpty() && now - foreignTimes.first() > FOREIGN_WINDOW_MS) foreignTimes.removeFirst()
+        if (foreignTimes.isEmpty() || now - foreignTimes.last() >= FOREIGN_SPACING_MS) foreignTimes.addLast(now)
+        return foreignTimes.size >= FOREIGN_CONFIRM || now - lastForeignMs < QUIET_MS
+    }
+
+    /** A read request has its shape: A8 <mode 0/1> and whole 3-byte addresses, A0 its one block. Other commands pass. */
+    private fun wellFormed(body: ByteArray): Boolean = when (body[0].toInt() and 0xFF) {
+        0xA8 -> body.size >= 5 && (body.size - 2) % 3 == 0 && (body[1].toInt() == 0 || body[1].toInt() == 1)
+        0xA0 -> body.size == 6
+        else -> true
+    }
 
     /** When the engine unit last sent anything (an answer, a stream frame, the init); 0 before it ever did. */
     @Volatile var ecuAnsweredMs = 0L
@@ -335,8 +371,10 @@ abstract class KLineTransport : SsmTransport {
 
     private fun send(packet: ByteArray) {
         synchronized(lock) {
-            sent.addLast(packet to System.currentTimeMillis())
+            val now = System.currentTimeMillis()
+            sent.addLast(packet to now)
             while (sent.size > SENT_KEPT) sent.removeFirst()
+            rememberOwn(packet, now)
         }
         writeRaw(packet)
         lastTxMs = System.currentTimeMillis()
@@ -357,6 +395,7 @@ abstract class KLineTransport : SsmTransport {
         if (passive) return null
         synchronized(lock) { inbox.reset() }
         SsmTrace.log("TX", packet)
+        val sentMs = System.currentTimeMillis()
         send(packet)
 
         // 2 s like RomRaider and FreeSSM: older (16-bit) ECUs can be slow with the first answer. A plain read that this
@@ -368,8 +407,15 @@ abstract class KLineTransport : SsmTransport {
         var all = ByteArray(0)
         while (System.currentTimeMillis() < deadline) {
             Thread.sleep(15)
-            all = synchronized(lock) { inbox.toByteArray() }
-            val resp = stripEcho(all, packet) ?: continue
+            var rxMs = 0L
+            all = synchronized(lock) { rxMs = inboxMs; inbox.toByteArray() }
+            val resp = stripEcho(all, packet)
+            if (resp == null) {
+                val lost = echoLost(all, packet, dest, body, sentMs, rxMs) ?: continue
+                SsmTrace.log("RX, our echo lost", all)
+                answeredReads += dest
+                return lost
+            }
             if (resp.size >= 4) {
                 val start = indexOfHeader(resp, dest)
                 if (start < 0) continue
@@ -410,6 +456,49 @@ abstract class KLineTransport : SsmTransport {
         return all.copyOfRange(at + packet.size, all.size)
     }
 
+    /** When the last bytes went into [inbox]. */
+    @Volatile private var inboxMs = 0L
+
+    /**
+     * The answer to a plain read whose echo the cable lost: a CH340 on an NWD unit dropped our whole request (or its
+     * first bytes, or the answer's header) and gave the ECU's answer whole, six times in a row, so six timeouts, «ECU
+     * silent» and a reconnect while the ECU answered every one. Taken only when it is the very answer this request
+     * wants (E8 and a byte per address, the checksum right with a lost header filled in), it is the last thing that
+     * came, what came before it is only a piece of our own request, and it ended no sooner than the line could carry
+     * our request and it ([sentMs], [rxMs]): an earlier request's late answer ends before that.
+     */
+    private fun echoLost(all: ByteArray, packet: ByteArray, dest: Int, body: ByteArray, sentMs: Long, rxMs: Long): ByteArray? {
+        if (!(quickAnswers && cableEchoes) || body.size < 5 || body[0] != 0xA8.toByte() || body[1] != 0.toByte()) return null
+        // our echo still on its way, whole so far
+        if (startsWith(packet, all, 0)) return null
+        val n = (body.size - 2) / 3
+        val total = 6 + n
+        val head = byteArrayOf(0x80.toByte(), 0xF0.toByte(), dest.toByte(), (1 + n).toByte())
+        for (lost in 0..4) {
+            val size = total - lost
+            if (all.size < size) continue
+            val at = all.size - size
+            if (!startsWith(all, head.copyOfRange(lost, 4), at)) continue
+            val frame = head.copyOf(lost) + all.copyOfRange(at, all.size)
+            if (frame[4] != 0xE8.toByte() || checksum(frame, total - 1) != frame[total - 1]) continue
+            if (!pieceOf(all.copyOf(at), packet)) continue
+            if (rxMs - sentMs < (packet.size + size) * 10_000L / 4800 - ECHO_LOST_SLACK_MS) continue
+            return frame.copyOfRange(4, total - 1)
+        }
+        return null
+    }
+
+    /** [b] is [packet] with bytes missing (none at all, its head, its tail, or some in between). */
+    private fun pieceOf(b: ByteArray, packet: ByteArray): Boolean {
+        var j = 0
+        for (x in b) {
+            while (j < packet.size && packet[j] != x) j++
+            if (j == packet.size) return false
+            j++
+        }
+        return true
+    }
+
     private fun startsWith(b: ByteArray, p: ByteArray, from: Int): Boolean {
         if (b.size - from < p.size) return false
         for (i in p.indices) if (b[from + i] != p[i]) return false
@@ -443,6 +532,33 @@ abstract class KLineTransport : SsmTransport {
         /** Our requests kept for their echoes (see [sent]), and for how long. */
         const val SENT_KEPT = 8
         const val SENT_MAX_AGE_MS = 10_000L
+        /** Requests not ours that make another tester (see [foreignAgain]): this many, within this time, this far apart. */
+        const val FOREIGN_CONFIRM = 2
+        const val FOREIGN_WINDOW_MS = 5000L
+        const val FOREIGN_SPACING_MS = 20L
+        /** Our requests remembered across connections (see [wasOwn]), and for how long. */
+        const val OWN_KEPT = 64
+        const val OWN_MAX_AGE_MS = 120_000L
+        /** USB and clocks: an answer whose echo was lost may seem to end this much before the line could carry it. */
+        const val ECHO_LOST_SLACK_MS = 10L
+
+        /**
+         * Our latest requests on any K-line connection of this run: a new connection's transport starts with an empty
+         * [sent], while the cable may still hand it the echoes of the one before (see [frame]).
+         */
+        private val own = ArrayDeque<Pair<ByteArray, Long>>()
+
+        private fun rememberOwn(packet: ByteArray, now: Long) = synchronized(own) {
+            own.addLast(packet to now)
+            while (own.size > OWN_KEPT) own.removeFirst()
+        }
+
+        private fun wasOwn(f: ByteArray, now: Long): Boolean = synchronized(own) {
+            own.any { now - it.second < OWN_MAX_AGE_MS && it.first.contentEquals(f) }
+        }
+
+        /** Tests: a run with no requests of ours before. */
+        internal fun forgetOwn() = synchronized(own) { own.clear() }
 
         /**
          * The wait for the answer to a plain read of [addrs] addresses sent as [packetBytes]: the request's echo and the

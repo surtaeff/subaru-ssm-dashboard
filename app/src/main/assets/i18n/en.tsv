@@ -3032,6 +3032,7 @@ Forester SH (атмо)	Forester SH (NA)
 модель скачалась не до конца	the model didn't download fully
 микрофон молчит: его занял другой ассистент или он выключен, жду…	the microphone is silent: another assistant took it or it is off, waiting…
 идёт звонок: микрофон отдан телефону	a call is on: the microphone is left to the phone
+микрофон занят другим приложением, жду…	another app is using the microphone, waiting…
 микрофон недоступен, пробую снова…	microphone unavailable, trying again…
 ошибка микрофона: {}	microphone error: {}
 Хорошо	OK
@@ -5648,3 +5649,6 @@ ATF крупно со стрелкой и тревогой, селектор, г
 Экономия	Economy
 Текущий расход и режимы крупно, ниже график и бак	Current consumption and modes large, the chart and tank below
 Бак и последние поездки, график расхода во всю ширину	Tank and recent trips, the full-width consumption chart
+Не гасить экран	Keep the screen on
+Пока приложение на экране, телефон или планшет не засыпает и не блокируется, как с навигатором	While the app is on the screen, the phone or tablet doesn't go to sleep or lock, like with a navigator
+Не удалось открыть каталог станций	Couldn't open the station catalogue

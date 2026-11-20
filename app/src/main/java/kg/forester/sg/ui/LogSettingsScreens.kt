@@ -345,6 +345,11 @@ private fun AppearanceSettings() {
             PanelTitle(Lucide.Monitor, "Экран")
             Spacer(Modifier.height(12.dp))
             ScreenSizeSettings()
+            Spacer(Modifier.height(14.dp))
+            val keepOn by Repo.keepScreenOn.collectAsState()
+            SwitchRow("Не гасить экран", "Пока приложение на экране, телефон или планшет не засыпает и не блокируется, как с навигатором", keepOn) {
+                Repo.settings.keepScreenOn = it
+            }
             SettingsSection("Единицы")
             DistanceUnitChooser()
             SettingsSection("Меню и панели")

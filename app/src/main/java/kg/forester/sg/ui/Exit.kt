@@ -26,6 +26,7 @@ import kg.forester.sg.service.EcuService
 
 /** Stops the service (polling, fuel, logs) and closes the app, so nothing keeps running on a phone. */
 fun exitApp(ctx: Context) {
+    kg.forester.sg.RunTrail.note("exit by the user")
     ctx.stopService(Intent(ctx, EcuService::class.java))
     ctx.stopService(Intent(ctx, kg.forester.sg.service.PlayerService::class.java))
     (ctx as? Activity)?.finishAndRemoveTask()

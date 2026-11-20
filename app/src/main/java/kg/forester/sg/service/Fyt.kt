@@ -143,13 +143,13 @@ object Fyt {
     /** Master volume as the MCU reports it (update U_VOL = 2), null = unknown. */
     val volume = MutableStateFlow<Int?>(null)
 
-    private var main: IBinder? = null
-    private var radioModule: IBinder? = null
-    private var bt: IBinder? = null
-    private var sound: IBinder? = null
+    @Volatile private var main: IBinder? = null
+    @Volatile private var radioModule: IBinder? = null
+    @Volatile private var bt: IBinder? = null
+    @Volatile private var sound: IBinder? = null
     private var app: Context? = null
     private val handler = Handler(Looper.getMainLooper())
-    private var stations: Map<String, Pair<String, String>> = emptyMap() // "102.90" -> (id, name)
+    @Volatile private var stations: Map<String, Pair<String, String>> = emptyMap() // "102.90" -> (id, name)
 
     // --- binder plumbing -------------------------------------------------------------------------
 
@@ -289,6 +289,13 @@ object Fyt {
     private val conn = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val tk = service ?: return
+            // off the main thread: four synchronous calls into com.syu.ms and a getprop process. com.syu.ms runs the unit's
+            // ACC sleep and wake itself and may answer late right then, and this comes again after each of its restarts;
+            // on the main thread that wait is an ANR («the app stops responding», Teyes CC3, 1.0-beta12)
+            Thread({ connected(tk) }, "fyt-bind").start()
+        }
+
+        private fun connected(tk: IBinder) {
             main = module(tk, M_MAIN)?.also { register(it, mainCb, 0) }
             radioModule = module(tk, M_RADIO)?.also { m -> listOf(0, 1, 3).forEach { register(m, radioCb, it) } }
             // 1 = the MCU's tuner, 3 / 4 = one the radio app drives (it gets our commands passed on), 2 = none
@@ -302,6 +309,8 @@ object Fyt {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             main = null; radioModule = null; bt = null; sound = null
+            kg.forester.sg.RunTrail.note("fyt: com.syu.ms disconnected")
+            trace("disconnected from com.syu.ms")
             handler.postDelayed({ app?.let { bind(it) } }, 3000)
         }
     }
@@ -313,7 +322,8 @@ object Fyt {
             androidx.core.content.ContextCompat.registerReceiver(ctx.applicationContext, btMeta, f, androidx.core.content.ContextCompat.RECEIVER_EXPORTED)
         }
         app = ctx.applicationContext
-        loadStations()
+        // a file on /sdcard, which is still being mounted right after a wake: not on the main thread
+        Thread({ loadStations() }, "fyt-stations").start()
         runCatching {
             app!!.bindService(Intent("com.syu.ms.toolkit").setPackage("com.syu.ms"), conn, Context.BIND_AUTO_CREATE)
         }

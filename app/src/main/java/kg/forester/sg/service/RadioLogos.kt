@@ -3,6 +3,7 @@ package kg.forester.sg.service
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import kg.forester.sg.ssm.SsmTrace
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -97,13 +98,36 @@ object RadioLogos {
         error("too many redirects")
     }
 
-    private fun get(path: String): String? {
+    /**
+     * [path] from the first server that answers. When none does, why goes to the log in one line (an Android 6 unit
+     * said «Ничего не нашлось» for every country and the log had nothing on it), and the last failure is returned.
+     */
+    private fun fetch(path: String): Result<String> {
+        val why = ArrayList<String>()
+        var last: Throwable? = null
         for (host in SERVERS) {
-            val r = runCatching { open("https://$host$path").inputStream.bufferedReader().use { it.readText() } }.getOrNull()
-            if (r != null) return r
+            try {
+                return Result.success(open("https://$host$path").inputStream.bufferedReader().use { it.readText() })
+            } catch (e: Exception) {
+                last = e
+                why += "${host.substringBefore('.')} ${reason(e)}"
+            }
         }
-        return null
+        SsmTrace.log("radio: catalogue failed ${path.substringBefore('?')}: ${why.joinToString("; ")}", keep = true)
+        return Result.failure(last ?: IllegalStateException("no server"))
     }
+
+    /**
+     * "SSLHandshakeException: … ← CertPathValidatorException: Trust anchor for certification path not found."
+     * For the exchange log only: the panel shows Failure.text, never this.
+     */
+    internal fun reason(e: Throwable): String = generateSequence(e) { it.cause }.take(3)
+        .joinToString(" ← ") { c -> c.javaClass.simpleName + ": " + c.message.orEmpty().take(90) }
+
+    private fun get(path: String): String? = fetch(path).getOrNull()
+
+    /** What the panel shows: the stations, and when the catalogue could not be read, why (else "nothing found" is true). */
+    class Loaded(val stations: List<Station>, val error: Throwable? = null)
 
     /** A logo that is the station's own picture, not a catalogue site's generic icon. */
     private fun goodLogo(url: String) = url.startsWith("http") && !url.contains("radiomap.eu/2015/images/icon") && !url.endsWith("favicon.ico")
@@ -157,20 +181,23 @@ object RadioLogos {
     fun withFreqFirst(list: List<Station>, freqText: String): List<Station> = list.sortedBy { if (hasFreq(it.name, freqText)) 0 else 1 }
 
     /** Internet radio of [cc]: the most listened streams, cached for a day. Blocking. */
-    fun streams(ctx: Context, cc: String): List<Station> {
+    fun streams(ctx: Context, cc: String): Loaded {
         val f = File(ctx.filesDir, "radio/popular_$cc.json")
-        if (f.exists() && System.currentTimeMillis() - f.lastModified() < 86_400_000L) runCatching { return parse(f.readText(), needLogo = false) }
-        val text = get("/json/stations/bycountrycodeexact/$cc?order=votes&reverse=true&limit=300&hidebroken=true")
-            ?: return runCatching { parse(f.readText(), needLogo = false) }.getOrDefault(emptyList())
+        if (f.exists() && System.currentTimeMillis() - f.lastModified() < 86_400_000L) runCatching { return Loaded(parse(f.readText(), needLogo = false)) }
+        val got = fetch("/json/stations/bycountrycodeexact/$cc?order=votes&reverse=true&limit=300&hidebroken=true")
+        // no catalogue: the list of an earlier day, if there is one
+        val text = got.getOrElse { e -> return Loaded(runCatching { parse(f.readText(), needLogo = false) }.getOrDefault(emptyList()), e) }
+        // not the catalogue's JSON (a Wi-Fi login page and the like): not cached, and said as a failure
+        val list = runCatching { parse(text, needLogo = false) }.getOrElse { e -> SsmTrace.log("radio: catalogue answer unreadable: ${reason(e)}", keep = true); return Loaded(emptyList(), e) }
         f.parentFile?.mkdirs(); f.writeText(text)
-        return parse(text, needLogo = false)
+        return Loaded(list)
     }
 
     /** Streams by name, anywhere. Blocking. */
-    fun search(query: String): List<Station> {
-        val text = get("/json/stations/search?name=${URLEncoder.encode(query, "UTF-8")}&order=votes&reverse=true&limit=60&hidebroken=true")
-            ?: return emptyList()
-        return runCatching { parse(text, needLogo = false) }.getOrDefault(emptyList())
+    fun search(query: String): Loaded {
+        val text = fetch("/json/stations/search?name=${URLEncoder.encode(query, "UTF-8")}&order=votes&reverse=true&limit=60&hidebroken=true")
+            .getOrElse { return Loaded(emptyList(), it) }
+        return runCatching { Loaded(parse(text, needLogo = false)) }.getOrElse { Loaded(emptyList(), it) }
     }
 
     /** Tells the catalogue a station was played, as it asks apps to (it ranks stations by it). Blocking. */

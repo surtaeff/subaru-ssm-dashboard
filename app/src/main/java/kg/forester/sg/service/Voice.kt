@@ -216,6 +216,7 @@ object Voice {
             }.onFailure {
                 starting.set(false)
                 android.util.Log.e("Voice", "start failed", it)
+                trace("voice: start failed: ${it.javaClass.simpleName}")
                 status.value = if (enabled(app)) (if (it is ModelNotThere) it.message.orEmpty() else kg.forester.sg.data.Failure.text(it, "Голос не запустился")) else "выключено"
                 service = null
             }
@@ -330,20 +331,24 @@ object Voice {
      * records. Either way the capture is opened again a moment later, for as long as the voice is on.
      */
     private fun listenLoop(rec: Recognizer, myGen: Int) {
+        var waiting = false
         try {
             while (running && gen == myGen) {
                 // a phone call through the unit needs this microphone: don't hold it, or the other side hears nothing
                 if (CallGuard.active(app)) {
-                    status.value = "идёт звонок: микрофон отдан телефону"
+                    if (!waiting) { waiting = true; trace("voice: the microphone stays free: ${CallGuard.signs.joinToString("; ")}") }
+                    status.value = if (CallGuard.otherAppOnly) "микрофон занят другим приложением, жду…" else "идёт звонок: микрофон отдан телефону"
                     level.value = 0f
                     Thread.sleep(1000)
                     continue
                 }
+                if (waiting) { waiting = false; trace("voice: no call any more, the microphone taken again") }
                 val started = capture(rec, myGen)
                 if (!running || gen != myGen) break
                 if (CallGuard.active(app)) continue
                 // pure zeros: another app took the microphone (Android 10+ does that), or the input gives no sound at all
                 // (an emulator with no host microphone, a muted mic); either way try again in a moment
+                trace(if (started) "voice: the microphone gives only silence, trying again" else "voice: the microphone would not start, trying again", every = 60_000)
                 status.value = if (started) "микрофон молчит: его занял другой ассистент или он выключен, жду…" else "микрофон недоступен, пробую снова…"
                 level.value = 0f
                 Thread.sleep(2000)
@@ -372,6 +377,8 @@ object Voice {
         try {
             ar.startRecording()
             if (ar.recordingState != android.media.AudioRecord.RECORDSTATE_RECORDING) return false
+            CallGuard.capturing(app, ar.audioSessionId)
+            trace("voice: listening, source $source", every = 60_000)
             status.value = "слушаю «${wakeWord(app)}»"
             var zerosSince = 0L
             // each capture learns the cabin anew. A second of buffer (not a latency, a read returns as soon as its
@@ -385,7 +392,10 @@ object Voice {
                 val nowMs = SystemClock.elapsedRealtime()
                 if (nowMs - callCheckMs >= 400) {
                     callCheckMs = nowMs
-                    if (CallGuard.active(app)) return true
+                    if (CallGuard.active(app)) {
+                        trace("voice: microphone let go: ${CallGuard.signs.joinToString("; ")}")
+                        return true
+                    }
                 }
                 val n = ar.read(buf, 0, buf.size)
                 if (n < 0) return true // the record died under us
@@ -422,11 +432,25 @@ object Voice {
             return true
         } catch (e: Exception) {
             android.util.Log.e("Voice", "microphone", e)
+            trace("voice: microphone error ${e.javaClass.simpleName}", every = 60_000)
             status.value = "ошибка микрофона: ${kg.forester.sg.data.Failure.link(e, "занят или недоступен")}"
             return true
         } finally {
+            CallGuard.released()
             runCatching { ar.stop() }; ar.release(); agc?.release(); ns?.release()
         }
+    }
+
+    private val traced = HashMap<String, Long>()
+    private var traceLines = 0
+
+    /** A line for a sent log (the assistant's own lines are in logcat only): [every] ms at most for the same one. */
+    private fun trace(msg: String, every: Long = 0L) = synchronized(traced) {
+        val now = SystemClock.elapsedRealtime()
+        if (traceLines >= 150 || (every > 0 && traced[msg]?.let { now - it < every } == true)) return@synchronized
+        traced[msg] = now
+        traceLines++
+        kg.forester.sg.ssm.SsmTrace.log(msg, keep = true)
     }
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())

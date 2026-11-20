@@ -92,12 +92,15 @@ object SensorBoxLink {
     /** What the ECU loop may use: the box and boards still being asked are left out (only with the box switched on). */
     fun forEcu(all: List<UsbSerialDriver>): List<UsbSerialDriver> {
         // the colour screen (an ESP32-S3) is never an ECU cable
-        val drivers = all.filter { !ScreenLink.isScreen(it.device.vendorId) && UsbDeviceRegistry.available(it.device, UsbDeviceRegistry.ECU) }
+        // what is plugged in, and of it what nobody else has open or keeps: a device the box loop (or the wideband's
+        // probe) holds for a few seconds is still plugged in, and is no new arrival when it is let go
+        val present = all.filter { !ScreenLink.isScreen(it.device.vendorId) }
+        val drivers = present.filter { UsbDeviceRegistry.available(it.device, UsbDeviceRegistry.ECU) }
         flashDevice?.let { f -> if (!SensorBox.enabled.value) return drivers.filter { it.device.deviceName != f } }
         if (!SensorBox.enabled.value) return drivers
         val now = System.currentTimeMillis()
         synchronized(lock) {
-            arrivals(ecuSeen, drivers, now)
+            arrivals(ecuSeen, present, now)
             // a Nano's CH340 looks like a KKL cable: never the box's device, and a device this loop has yet to ask
             // only after a while (the ECU loop starts first and would keep it as a cable that never echoes)
             return drivers.filter {
@@ -105,6 +108,26 @@ object SensorBoxLink {
                 n !in busy && n != flashDevice && !isArduino(it.device.vendorId) &&
                     (!boxMayAsk(it) || first.ecuMayTake(n, n == lastBoxDevice, n in asked, now))
             }
+        }
+    }
+
+    /** Why [forEcu] leaves [d] out right now, for the log; null when it does not. */
+    fun whyNotForEcu(d: UsbSerialDriver): String? {
+        val n = d.device.deviceName
+        val own = UsbDeviceRegistry.ownership
+        val kept = own.reservedFor(n)
+        val holder = own.holder(n)
+        return when {
+            ScreenLink.isScreen(d.device.vendorId) -> "a screen board"
+            kept != null && kept != UsbDeviceRegistry.ECU -> "kept for $kept"
+            holder != null -> "open by $holder"
+            n == flashDevice -> "being flashed"
+            !SensorBox.enabled.value -> null
+            isArduino(d.device.vendorId) -> "an Arduino board"
+            n == lastBoxDevice -> "it answered as the SensorBox"
+            synchronized(lock) { n in busy } -> "the SensorBox loop is asking it"
+            synchronized(lock) { boxMayAsk(d) && !first.ecuMayTake(n, false, n in asked, System.currentTimeMillis()) } -> "waiting for the SensorBox loop to ask it first"
+            else -> null
         }
     }
 

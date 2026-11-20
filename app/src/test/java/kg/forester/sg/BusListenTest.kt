@@ -32,10 +32,16 @@ class BusListenTest {
     }
 
     @Test fun aLaptopOnTheSameKLineIsHeardAndLeftAlone() {
+        KLineTransport.forgetOwn()
         val line = Line()
         assertFalse(line.passive)
-        // the laptop asks coolant (0x08) and rpm (0x0E, 0x0F); the ECU answers it
-        line.hear(frame(SsmClient.ECU, 0xF0, byteArrayOf(0xA8.toByte(), 0, 0, 0, 0x08, 0, 0, 0x0E, 0, 0, 0x0F)))
+        // the laptop asks coolant (0x08) and rpm (0x0E, 0x0F) over and over; the ECU answers it
+        val ask = frame(SsmClient.ECU, 0xF0, byteArrayOf(0xA8.toByte(), 0, 0, 0, 0x08, 0, 0, 0x0E, 0, 0, 0x0F))
+        line.hear(ask)
+        // one request alone may be a leftover: not yet
+        assertFalse(line.passive)
+        Thread.sleep(KLineTransport.FOREIGN_SPACING_MS + 20)
+        line.hear(ask)
         assertTrue(line.passive)
         line.hear(frame(0xF0, SsmClient.ECU, byteArrayOf(0xE8.toByte(), 0x82.toByte(), 0x0C, 0x80.toByte())))
         val (a, v) = line.sniffed(intArrayOf(0x08, 0x0E, 0x0F, 0x15), 2000)!!

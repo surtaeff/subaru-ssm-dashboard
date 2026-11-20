@@ -46,6 +46,27 @@ class TunerAndModsTest {
         assertTrue("afr" in noWb && "wideband_afr" !in noWb)
     }
 
+    private fun rr(id: String, addr: Int, bit: Int = -1, kind: kg.forester.sg.ssm.RrParam.Kind = kg.forester.sg.ssm.RrParam.Kind.EXT) =
+        kg.forester.sg.ssm.RrParam(id = id, kind = kind, target = 1, name = id, nameEn = id, desc = "", addr = addr, len = 1, bit = bit,
+            units = "", format = "0", storage = "", expr = null, deps = emptyList(), conversions = emptyMap())
+
+    @Test fun logExtrasAreOnlyWhatTheDriverTicked() {
+        // Enderold's 572 log: the guard's IAM, the AFR target and the fan and A/C switches read for the rules came out as
+        // columns he never chose, with the IAM column itself switched off
+        val sw = kg.forester.sg.ssm.RrParam.Kind.SWITCH
+        val iam = rr("E31", 0x20000); val afrTarget = rr("E123", 0x20010); val ac = rr("S26", 0x65, 5, sw)
+        val fan1 = rr("S28", 0x65, 7, sw); val fan2 = rr("S29", 0x65, 6, sw)
+        val mine = rr("E32", 0x20020); val rpm = rr("P8", 0x0E, kind = kg.forester.sg.ssm.RrParam.Kind.STD)
+        val polled = listOf(iam, afrTarget, ac, fan1, fan2, mine, rpm)
+        val roles = mapOf("iam" to "E31", "afrTarget" to "E123", "ac" to "S26", "fan1" to "S28", "fan2" to "S29")
+        val internal = roles.values.toSet()
+        val on = setOf("rpm", "coolant_c")
+        assertEquals(listOf(mine), LogColumns.extras(polled, roles, internal, ticked = setOf("E32", "P8"), on = on))
+        // ticked by the driver as well: a column as before, but not twice where a regular column already has it
+        assertEquals(listOf(iam, fan1, mine), LogColumns.extras(polled, roles, internal, ticked = setOf("E31", "S28", "E32"), on = on))
+        assertEquals(listOf(fan1, mine), LogColumns.extras(polled, roles, internal, ticked = setOf("E31", "S28", "E32"), on = on + "iam"))
+    }
+
     private fun s(t: Long, maf: Float?) = DynoSample(t, 3000 + t.toInt(), 60f, 100f, 80f, maf)
 
     @Test fun airflowPowerFromThePullsOwnPeakMaf() {
