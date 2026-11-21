@@ -16,6 +16,7 @@ import kg.forester.sg.ssm.SsmTrace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -452,7 +453,7 @@ object Updater {
         // a session already waiting for the person: its confirmation again, not a second copy
         confirm?.let { (id, i) ->
             val alive = runCatching { ctx.packageManager.packageInstaller.getSessionInfo(id) != null }.getOrDefault(false)
-            if (alive && runCatching { ctx.startActivity(i) }.isSuccess) return true to WAITING
+            if (alive) { showConfirm(ctx, i); return true to WAITING }
             confirm = null
         }
         return runCatching { session(ctx, apk); true to WAITING }.getOrElse { t ->
@@ -460,17 +461,62 @@ object Updater {
             SsmTrace.log("update: session failed, the file goes to the installer: $t", keep = true)
             // Android 6's installer opens only a file:// address, and only a file it can read: a copy on the external
             // storage (file:// to another app is refused from Android 7 on, so the FileProvider from there)
-            val uri = if (Build.VERSION.SDK_INT < 24) {
-                val dir = ctx.externalCacheDir ?: ctx.cacheDir
-                val copy = File(dir, apk.name).also { if (it != apk) apk.copyTo(it, overwrite = true) }
-                @Suppress("SetWorldReadable") copy.setReadable(true, false)
-                Uri.fromFile(copy)
-            } else FileProvider.getUriForFile(ctx, ctx.packageName + ".files", apk)
-            ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
+            openFile(ctx, apk)
             true to "Установщик открыт: подтвердите обновление. Если он пишет «конфликт пакетов» — у вас версия с другой " +
                 "подписью (0.8 или собранная самостоятельно): сохраните резервную копию (слева), удалите приложение и поставьте заново"
         }
+    }
+
+    /** The APK file straight to the system installer (no session). */
+    private fun openFile(ctx: Context, apk: File) {
+        val uri = if (Build.VERSION.SDK_INT < 24) {
+            val dir = ctx.externalCacheDir ?: ctx.cacheDir
+            val copy = File(dir, apk.name).also { if (it != apk) apk.copyTo(it, overwrite = true) }
+            @Suppress("SetWorldReadable") copy.setReadable(true, false)
+            Uri.fromFile(copy)
+        } else FileProvider.getUriForFile(ctx, ctx.packageName + ".files", apk)
+        ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    /** The confirmation came while the app was off the screen: shown when it comes back (see [onAppResumed]). */
+    @Volatile private var confirmDue = false
+
+    /**
+     * Shows the installer's confirmation. Android 10+ silently drops an activity started from the background (no
+     * exception: the screen said «Установщик открыт» and nothing opened, Максим, beta13), so off the screen it waits for
+     * the app to come back; on the screen, when the app is still not covered a moment later, the APK goes to the
+     * installer as a file instead.
+     */
+    private fun showConfirm(ctx: Context, i: Intent) {
+        if (!kg.forester.sg.service.WakeWatch.appOnScreen) {
+            confirmDue = true
+            SsmTrace.log("update: confirmation waits for the app to be on screen", keep = true)
+            _state.update { s -> s.copy(failed = false, status = "Обновление готово: откройте приложение, чтобы подтвердить установку") }
+            return
+        }
+        confirmDue = false
+        runCatching { ctx.startActivity(i) }.onFailure {
+            SsmTrace.log("update: confirmation not shown: $it", keep = true)
+            _state.update { s -> s.copy(failed = true, status = "Откройте приложение и нажмите «Скачать и установить» ещё раз") }
+            return
+        }
+        scope.launch {
+            delay(3000)
+            if (!kg.forester.sg.service.WakeWatch.appOnScreen || confirm == null) return@launch // the dialog covers the app, or it is done
+            val apk = _state.value.apk?.takeIf { it.isFile } ?: return@launch
+            SsmTrace.log("update: confirmation did not appear in 3 s, the file goes to the installer", keep = true)
+            runCatching { openFile(ctx, apk) }.onFailure { SsmTrace.log("update: installer by file failed: $it", keep = true) }
+        }
+    }
+
+    /** MainActivity.onResume: a confirmation that came while the app was in the background is shown now. */
+    fun onAppResumed(ctx: Context) {
+        if (!confirmDue) return
+        val (id, i) = confirm ?: run { confirmDue = false; return }
+        val alive = runCatching { ctx.packageManager.packageInstaller.getSessionInfo(id) != null }.getOrDefault(false)
+        if (!alive) { confirmDue = false; confirm = null; return }
+        showConfirm(ctx.applicationContext, i)
     }
 
     private const val WAITING = "Установщик открыт: подтвердите обновление"
@@ -508,13 +554,11 @@ object Updater {
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             val i = confirmIntent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) ?: return
             confirm = session to i
-            runCatching { ctx.startActivity(i) }.onFailure {
-                SsmTrace.log("update: confirmation not shown: $it", keep = true)
-                _state.update { s -> s.copy(failed = true, status = "Откройте приложение и нажмите «Скачать и установить» ещё раз") }
-            }
+            showConfirm(ctx, i)
             return
         }
         confirm = null
+        confirmDue = false
         // a broken file is not offered again
         if (status == PackageInstaller.STATUS_FAILURE_INVALID) _state.value.apk?.delete()
         _state.update { s -> s.copy(failed = status != PackageInstaller.STATUS_SUCCESS, status = installText(status, message),

@@ -15,8 +15,8 @@ android {
         applicationId = "kg.forester.sg"
         minSdk = 23
         targetSdk = 34
-        versionCode = 53
-        versionName = "1.0-beta13"
+        versionCode = 54
+        versionName = "1.0-beta14"
         // Yandex Music's code sign-in («Войти с телефона») needs the official app's OAuth client secret. It is not in this
         // public repo: put yandexClientSecret=… into ~/.gradle/gradle.properties; without it that way in isn't offered
         // (the sign-in on Yandex's page and a pasted token need no secret)

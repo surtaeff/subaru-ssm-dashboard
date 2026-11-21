@@ -333,6 +333,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         kg.forester.sg.ui.SplitScreen.on.value = android.os.Build.VERSION.SDK_INT >= 24 && isInMultiWindowMode
         kg.forester.sg.service.WakeWatch.appOnScreen = true
+        kg.forester.sg.data.Updater.onAppResumed(this)
     }
 
     override fun onPause() {

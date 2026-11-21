@@ -45,7 +45,7 @@ fun AppsScreen() {
     val ctx = LocalContext.current
     // the packages' labels and icons: off the main thread, an empty grid until then
     val apps by produceState(emptyList<kg.forester.sg.data.InstalledApp>()) {
-        value = withContext(Dispatchers.IO) { Shortcuts.installedApps(ctx) }
+        value = withContext(Dispatchers.IO) { Shortcuts.installedApps(ctx, perActivity = true) }
     }
     var query by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize()) {
@@ -65,18 +65,16 @@ fun AppsScreen() {
         Spacer(Modifier.height(12.dp))
         val list = apps.filter { query.isBlank() || it.label.contains(query, true) }
         LazyVerticalGrid(GridCells.Adaptive(roomFor(118.dp, 13f)), Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(list, key = { it.pkg }) { a ->
+            items(list, key = { it.key }) { a ->
                 Column(
                     Modifier.clip(RoundedCornerShape(14.dp)).clickable {
-                        ctx.packageManager.getLaunchIntentForPackage(a.pkg)?.let {
-                            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); runCatching { ctx.startActivity(it) }
-                        }
+                        Shortcuts.launchIntent(ctx, a)?.let { runCatching { ctx.startActivity(it) } }
                     }.padding(10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    val bmp by produceState(AppIcons.cache.get(a.pkg), a.pkg) {
+                    val bmp by produceState(AppIcons.cache.get(a.key), a.key) {
                         if (value == null) value = withContext(Dispatchers.Default) {
-                            runCatching { a.icon?.toBitmap(128, 128)?.asImageBitmap() }.getOrNull()?.also { AppIcons.cache.put(a.pkg, it) }
+                            runCatching { a.icon?.toBitmap(128, 128)?.asImageBitmap() }.getOrNull()?.also { AppIcons.cache.put(a.key, it) }
                         }
                     }
                     bmp.let { if (it != null) Image(it, a.label, Modifier.size(64.dp)) else Spacer(Modifier.size(64.dp)) }

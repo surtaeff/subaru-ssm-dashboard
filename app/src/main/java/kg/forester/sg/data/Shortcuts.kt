@@ -21,7 +21,10 @@ data class Shortcut(
     val phrase: String = "",
 )
 
-data class InstalledApp(val label: String, val pkg: String, val icon: Drawable?)
+/** [activity]: the launcher activity of this icon when one package has several (Teyes: settings + reboot); null = the package's own. */
+data class InstalledApp(val label: String, val pkg: String, val icon: Drawable?, val activity: String? = null) {
+    val key: String get() = if (activity == null) pkg else "$pkg/$activity"
+}
 
 object Shortcuts {
     /** Icons offered in the picker (Lucide). */
@@ -76,15 +79,28 @@ object Shortcuts {
         return out
     }
 
-    fun installedApps(ctx: Context): List<InstalledApp> {
+    /**
+     * Launcher icons of the other apps. [perActivity]: every icon on its own (the app drawer: a package with two icons,
+     * like the head unit's settings and «reboot», shows both and each opens its own activity); otherwise one entry per
+     * package (shortcuts and voice launch packages). Before, the drawer kept whichever icon of the package came first,
+     * and that order is not fixed, so an icon could vanish after an update or a restart.
+     */
+    fun installedApps(ctx: Context, perActivity: Boolean = false): List<InstalledApp> {
         val pm = ctx.packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        return pm.queryIntentActivities(intent, 0)
+        val all = pm.queryIntentActivities(intent, 0)
             .filter { it.activityInfo.packageName != ctx.packageName }
-            .map { InstalledApp(it.loadLabel(pm).toString(), it.activityInfo.packageName, runCatching { it.loadIcon(pm) }.getOrNull()) }
-            .distinctBy { it.pkg }
-            .sortedBy { it.label.lowercase() }
+            .map {
+                InstalledApp(it.loadLabel(pm).toString(), it.activityInfo.packageName, runCatching { it.loadIcon(pm) }.getOrNull(),
+                    if (perActivity) it.activityInfo.name else null)
+            }
+        return (if (perActivity) all.distinctBy { it.key } else all.distinctBy { it.pkg }).sortedBy { it.label.lowercase() }
     }
+
+    /** The icon's own activity when it has one, else the package's launch intent. */
+    fun launchIntent(ctx: Context, a: InstalledApp): Intent? =
+        (if (a.activity != null) Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setClassName(a.pkg, a.activity)
+        else ctx.packageManager.getLaunchIntentForPackage(a.pkg))?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     fun appLabel(ctx: Context, pkg: String): String = runCatching {
         val pm = ctx.packageManager
