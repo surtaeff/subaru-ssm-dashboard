@@ -1,9 +1,9 @@
 {
- "tag": "v1.0-beta13",
- "name": "1.0-beta13",
- "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta13/subaru-ssm-dashboard.apk",
- "size": 141081857,
- "notes": "Быстрый опрос больше не выключается до обновления, KKL-кабель виден при включённых доп. датчиках, USB переживает пуск двигателя, радио на Android 6, не гаснущий экран и другие правки по журналам.",
+ "tag": "v1.0-beta14",
+ "name": "1.0-beta14",
+ "apk": "https://github.com/surtaeff/subaru-ssm-dashboard/releases/download/v1.0-beta14/subaru-ssm-dashboard.apk",
+ "size": 141083462,
+ "notes": "Окно установки обновления появляется, даже если подтверждение пришло, пока приложение было свёрнуто, и в Приложениях снова видны все иконки магнитолы (например, «Перезагрузка»).",
  "logUrl": "https://script.google.com/macros/s/AKfycbyItYtasioVogj8klr_jO6DD3v2052wrEYNdCeyKa0b5J9jsX2sAIYam7JFS9xnCrmYkA/exec",
- "sha256": "dc43e7de9844731056e2b1888e9cf206ec9e9a9d4d2864aa7b9c9055515d9bc2"
+ "sha256": "e74b08ddc490af96a45af81c87eced30ccf67f2e19dbe9c4a9c0af2bc8fcfac4"
 }
